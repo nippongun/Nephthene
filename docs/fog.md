@@ -43,7 +43,7 @@ check, not a measurement.
 ## Rendering (fog.wesl)
 
 Full-screen pass after the main pass (where Bevy's volumetric fog runs), premultiplied over the view target, reading the scene depth.
-The march runs at `render_scale` (default 0.5) into a fog target and a surface-distance target (the scene depth stops each ray at the
+The march runs at `render_scale` (default 0.25) into a fog target and a surface-distance target (the scene depth stops each ray at the
 first surface); a full-resolution composite upsamples both depth-aware.
 The ray is clipped to the altitude band holding fog and marched in `steps` jittered steps. Light per sample: sun x atmosphere
 transmittance x cloud shadow cookie x terrain shadow (`sun_alt`) x multiple-scattering octaves over the optical depth to the pool top;

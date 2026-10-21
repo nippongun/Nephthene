@@ -223,8 +223,10 @@ fn g18_pool_top_is_soft() {
         assert!(kept >= 30, "{label}: {kept} columns with a fog top (need 30)");
         width
     };
-    let green = arm("g18_green", &c, &[]);
-    let red = arm("g18_red", &red_cfg, &["ground_fog.wisp_m=0", "ground_fog.top_fade_m=0"]);
+    // Both arms at full resolution: the gate tests the density profile at the top, and the upsample of a lower render_scale blurs
+    // even the hard top (at 0.25 the red arm measured 3.67 rows).
+    let green = arm("g18_green", &c, &["ground_fog.render_scale=1"]);
+    let red = arm("g18_red", &red_cfg, &["ground_fog.render_scale=1", "ground_fog.wisp_m=0", "ground_fog.top_fade_m=0"]);
     finish("G18", if green >= 1.5 * red { vec![] } else { vec![format!("green width {green:.3} < 1.5x red {red:.3}")] });
 }
 

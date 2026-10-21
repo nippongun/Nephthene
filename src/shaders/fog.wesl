@@ -77,6 +77,9 @@ struct Fog {
     ray_beta: vec3<f32>,
     // Test switch: 1 = the per-step hash value noise instead of the baked noise texture (the old cost; red arm of the cost gate).
     hash_noise: f32,
+    // The fog map and the ground texture hold heights relative to these (f16, sampled with hardware bilinear).
+    map_y0: f32,
+    g_y0: f32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -94,6 +97,7 @@ struct Fog {
 // Composite pass: the half-resolution march (premultiplied fog, surface distance per texel).
 @group(2) @binding(0) var low_fog: texture_2d<f32>;
 @group(2) @binding(1) var low_t: texture_2d<f32>;
+@group(2) @binding(2) var t_smp: sampler;
 
 const PI: f32 = 3.14159265;
 const F16_MAX: f32 = 60000.0;
@@ -140,28 +144,17 @@ fn atmo_transmittance(r: f32, mu: f32) -> vec3<f32> {
     return sample_transmittance_lut(r, mu);
 }
 
-// Bilinear texel of the fog map (nephthene_core::fog::FogMap::at): (pool top, shallow, sunlit altitude, 0).
-fn mtex(i: i32, j: i32) -> vec4<f32> {
-    let n = i32(f.map_n) - 1;
-    return textureLoad(fog_map, vec2<i32>(clamp(i, 0, n), clamp(j, 0, n)), 0);
-}
+// Fog map texel (nephthene_core::fog::FogMap::at): (pool top, shallow, sunlit altitude, amount). One hardware-bilinear fetch, clamped
+// at the edges like FogMap::at; heights come back relative to map_y0.
 fn map_at(xz: vec2<f32>) -> vec4<f32> {
-    let m = f32(f.map_n) - 1.0;
-    let q = clamp(vec2((xz.x - f.map_min.x) / f.map_cell - 0.5, (f.map_min.y - xz.y) / f.map_cell - 0.5), vec2(0.0), vec2(m));
-    let i = vec2<i32>(floor(q));
-    let t = q - floor(q);
-    return mix(mix(mtex(i.x, i.y), mtex(i.x + 1, i.y), t.x), mix(mtex(i.x, i.y + 1), mtex(i.x + 1, i.y + 1), t.x), t.y);
+    let uv = vec2(xz.x - f.map_min.x, f.map_min.y - xz.y) / (f.map_cell * f32(f.map_n));
+    return textureSampleLevel(fog_map, smp, uv, 0.0) + vec4(f.map_y0, 0.0, f.map_y0, 0.0);
 }
 
-// Mirrors nephthene_core::rain::HeightGrid::height (clouds_shaft.wesl ground_h).
-fn gtex(i: i32, j: i32) -> f32 {
-    return textureLoad(ground, vec2<i32>(clamp(i, 0, i32(f.g_w) - 1), clamp(j, 0, i32(f.g_h) - 1)), 0).r;
-}
+// nephthene_core::rain::HeightGrid::height: one hardware-bilinear fetch of the fog's f16 copy of the ground, relative to g_y0.
 fn ground_h(xz: vec2<f32>) -> f32 {
-    let q = clamp(vec2((xz.x - f.g_min.x) / f.g_cell - 0.5, (f.g_min.y - xz.y) / f.g_cell - 0.5), vec2(0.0), vec2(f32(f.g_w) - 1.0, f32(f.g_h) - 1.0));
-    let i = vec2<i32>(floor(q));
-    let t = q - floor(q);
-    return mix(mix(gtex(i.x, i.y), gtex(i.x + 1, i.y), t.x), mix(gtex(i.x, i.y + 1), gtex(i.x + 1, i.y + 1), t.x), t.y);
+    let uv = vec2((xz.x - f.g_min.x) / (f.g_cell * f32(f.g_w)), (f.g_min.y - xz.y) / (f.g_cell * f32(f.g_h)));
+    return textureSampleLevel(ground, smp, uv, 0.0).r + f.g_y0;
 }
 
 // nephthene_core::fog::lit.
@@ -236,7 +229,7 @@ fn top_off(xz: vec2<f32>) -> f32 {
     let q = xz - f.wind;
     let wave = 2.0 * noise(vec3(q.x, 0.0, q.y) / f.wave_tile) - 1.0;
     let b = vec3(q.x, 0.0, q.y) / max(f.billow_tile, 1.0);
-    let billow = 2.0 * (0.7 * noise(b + vec3(41.0, 0.0, 7.0)) + 0.3 * noise(b * 2.3 + vec3(5.0, 0.0, 63.0))) - 1.0;
+    let billow = 2.0 * noise(b + vec3(41.0, 0.0, 7.0)) - 1.0;
     return f.top_wave * wave + f.top_billow * billow;
 }
 
@@ -303,6 +296,11 @@ fn composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let v = view.view_from_clip * vec4(uv_to_ndc(in.uv), z, 1.0);
         t = length(v.xyz / v.w);
     }
+    // Where the 4 texels under the bilinear footprint all hold this pixel's surface (or all sky), one filtered fetch; edges weigh them.
+    let g = textureGather(0, low_t, t_smp, in.uv);
+    let rel = 0.05 * max(t, 1.0);
+    let flat_ = select(all(g > vec4(0.0)) && all(abs(g - vec4(t)) < vec4(rel)), all(g < vec4(0.0)), t < 0.0);
+    if flat_ { return textureSampleLevel(low_fog, smp, in.uv, 0.0); }
     let dim = vec2<i32>(textureDimensions(low_fog));
     let q = in.uv * vec2<f32>(dim) - 0.5;
     let i = vec2<i32>(floor(q));

@@ -58,6 +58,8 @@ pub struct FogGpu {
     /// Air phase for the kept share of shadowed in-scatter: Mie asymmetry and scattering (config sky), Rayleigh scattering (per metre).
     pub mie_g: f32, pub mie_beta: f32, pub ray_beta: Vec3,
     pub hash_noise: f32,
+    /// Bases of the f16 fog map and ground texture heights.
+    pub map_y0: f32, pub g_y0: f32,
 }
 
 /// Main world -> render world, every frame: the uniform, the fog map (Rgba32Float), the ground heights (R32Float), the cloud cookie (R8).
@@ -87,7 +89,7 @@ struct FogTiming {
 #[derive(Resource)]
 struct FogRender {
     atmo: BindGroupLayoutDescriptor, data: [BindGroupLayoutDescriptor; 2], comp: BindGroupLayoutDescriptor, shader: Handle<Shader>, fullscreen: FullscreenShader,
-    smp: Sampler, repeat: Sampler, ubo: UniformBuffer<FogGpu>,
+    smp: Sampler, repeat: Sampler, nearest: Sampler, ubo: UniformBuffer<FogGpu>,
     /// March pipeline per MSAA, composite pipeline per (MSAA, target format).
     march: HashMap<bool, CachedRenderPipelineId>, composite: HashMap<(bool, TextureFormat), CachedRenderPipelineId>,
 }
@@ -107,14 +109,14 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     )));
     let unfiltered = TextureSampleType::Float { filterable: false };
     let data = |ms: bool| BindGroupLayoutDescriptor::new("fog_data", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
-        uniform_buffer::<FogGpu>(false), texture_2d(unfiltered), texture_2d(unfiltered), texture_2d(TextureSampleType::default()),
+        uniform_buffer::<FogGpu>(false), texture_2d(TextureSampleType::default()), texture_2d(TextureSampleType::default()), texture_2d(TextureSampleType::default()),
         sampler(SamplerBindingType::Filtering), if ms { texture_depth_2d_multisampled() } else { texture_depth_2d() },
         texture_3d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
     )));
-    let comp = BindGroupLayoutDescriptor::new("fog_composite", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (texture_2d(unfiltered), texture_2d(unfiltered))));
+    let comp = BindGroupLayoutDescriptor::new("fog_composite", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (texture_2d(TextureSampleType::default()), texture_2d(unfiltered), sampler(SamplerBindingType::NonFiltering))));
     let sampler = |mode| device.create_sampler(&SamplerDescriptor { address_mode_u: mode, address_mode_v: mode, address_mode_w: mode, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default() });
     commands.insert_resource(FogRender {
-        atmo, data: [data(false), data(true)], comp, shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp: sampler(AddressMode::ClampToEdge), repeat: sampler(AddressMode::Repeat),
+        atmo, data: [data(false), data(true)], comp, shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp: sampler(AddressMode::ClampToEdge), repeat: sampler(AddressMode::Repeat), nearest: device.create_sampler(&SamplerDescriptor::default()),
         ubo: UniformBuffer::default(), march: HashMap::new(), composite: HashMap::new(),
     });
 }
@@ -195,7 +197,7 @@ fn fog_pass(
     let data = device.create_bind_group("fog_data", &cache.get_bind_group_layout(&render.data[(*msaa != Msaa::Off) as usize]), &BindGroupEntries::sequential((
         u, &map.texture_view, &ground.texture_view, &cookie.texture_view, &render.smp, depth_view, &noise.texture_view, &render.repeat,
     )));
-    let comp = device.create_bind_group("fog_composite", &cache.get_bind_group_layout(&render.comp), &BindGroupEntries::sequential((&fv.low.default_view, &fv.t.default_view)));
+    let comp = device.create_bind_group("fog_composite", &cache.get_bind_group_layout(&render.comp), &BindGroupEntries::sequential((&fv.low.default_view, &fv.t.default_view, &render.nearest)));
     let offsets = [atmo_i.index(), settings_i.index(), transforms_i.index(), view_i.offset];
     fn attach(view: &TextureView) -> Option<RenderPassColorAttachment<'_>> { Some(RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } }) }
     // Pass i (0 march, 1 composite) writes timestamps 2i (begin) and 2i + 1 (end).
