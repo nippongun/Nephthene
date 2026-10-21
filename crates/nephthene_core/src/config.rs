@@ -270,6 +270,10 @@ pub struct Resolve {
     pub conf_max: f32,
     /// An unmarched pixel whose confidence is below this takes a running mean of each frame's upsample (a revealed strip would otherwise keep its first one until its single march visit). 0 = off.
     pub upsample_mean_frames: f32,
+    /// Reprojection motion (render px) that halves the visits counted by a marched pixel's running mean; while the view moves the pixel takes its single noisy sample (a dot lattice against its smooth neighbours). 0 = off (RED ARM when > 0).
+    pub motion_half_px: f32,
+    /// A pixel with no history takes a 4-tap wide upsample instead of the plain bilinear one (false = RED ARM: 8 px blotches of single-sample noise).
+    pub wide_upsample: bool,
     /// A cut (history reset): a turn of more than `cut_deg` in one frame (180 or more never cuts), or a move of more than `cut_m`.
     pub cut_deg: f32, pub cut_m: f32,
     /// Per-visit jitter step (golden ratio conjugate).
@@ -281,7 +285,7 @@ pub struct Resolve {
 }
 impl Default for Resolve {
     fn default() -> Self {
-        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, upsample_mean_frames: 3.0, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
+        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, upsample_mean_frames: 3.0, motion_half_px: 0.0, wide_upsample: true, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
                   light_jitter_offset: [2053.0, 911.0], no_reproject: false, light_jitter_shared: false }
     }
 }

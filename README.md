@@ -46,7 +46,7 @@ starting values and **untuned**. Sections:
 | `fog`, `moon`, `stars`, `sky`, `wind` | dust fog, moon, star field, Mie dust medium, `sky.msaa_fix`, wind and gusts |
 | `map` | world offset of the weather map, built-in procedural map values |
 | `clouds` (+ `look`, `noise`) | layer heights, march steps, light, shoulder, render scale, update div, shadow cookie, towers, probe view, coverage override |
-| `resolve` | temporal resolve: reject gain, still box, fresh confidence, cut thresholds, jitter, and the test switches `no_reproject`, `light_jitter_shared` |
+| `resolve` | temporal resolve: reject gain, still box, fresh confidence, cut thresholds, jitter, the `wide_upsample` switch, and the test switches `no_reproject`, `light_jitter_shared`, `motion_half_px` |
 | `shafts` | rain-shaft pass |
 | `rain` | streaks, splashes, drop kinematics, wetness, rain light, `force` |
 | `storms` (+ `render`, `fx`) | timetable, cell shape, shader constants, flashes, authored storms, `force` |

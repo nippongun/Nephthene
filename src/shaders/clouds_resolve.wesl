@@ -24,6 +24,9 @@ struct Resolve {
     fresh: f32,
     conf_max: f32,
     upsample_mean_frames: f32,
+    // Reprojection motion (render px) that halves a marched pixel's counted visits (0 = off; test red arm), and 1 = wide upsample for no-history pixels.
+    motion_half_px: f32,
+    wide_upsample: f32,
 }
 
 @group(0) @binding(0) var<uniform> r: Resolve;
@@ -54,7 +57,7 @@ fn main(in: FullscreenVertexOutput) -> Out {
     let h2 = 0.5 / vec2<f32>(low);
     let wide = 0.25 * (textureSampleLevel(cur_tex, hist_sampler, luv + vec2(h2.x, h2.y), 0.0) + textureSampleLevel(cur_tex, hist_sampler, luv + vec2(-h2.x, h2.y), 0.0)
         + textureSampleLevel(cur_tex, hist_sampler, luv + vec2(h2.x, -h2.y), 0.0) + textureSampleLevel(cur_tex, hist_sampler, luv + vec2(-h2.x, -h2.y), 0.0));
-    let cw = select(wide, c, selected);
+    let cw = select(select(up, wide, r.wide_upsample != 0.0), c, selected);
     if r.reset != 0u { return Out(c, select(0.0, 1.0, selected)); }
     // No history (G3 red arm): only the 1/16 pixels marched this frame exist, the rest are empty, so the 4x4 update shows as a lattice.
     if r.alpha >= 1.0 { return Out(select(vec4(0.0), c, selected), 0.0); }
@@ -101,6 +104,8 @@ fn main(in: FullscreenVertexOutput) -> Out {
     }
     // The marched pixel: running mean 1/(1+conf) of this pixel's own samples, floor alpha (cap); a rejected history restarts it.
     let rej = saturate(length(raw - hist) * r.reject_gain);
-    let w = max(1.0 / (1.0 + conf), r.alpha);
+    let moved = length((puv - in.uv) * vec2<f32>(textureDimensions(hist_tex)));
+    let visits = select(conf, conf / (1.0 + moved / max(r.motion_half_px, 1e-6)), r.motion_half_px > 0.0);
+    let w = max(1.0 / (1.0 + visits), r.alpha);
     return Out(mix(hist, c, mix(w, 1.0, rej)), min(conf + 1.0, r.conf_max));
 }

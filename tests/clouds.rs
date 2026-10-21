@@ -219,8 +219,8 @@ fn g9_stripes() {
 // ---------------------------------------------------------------- G10 dot lattice while turning
 
 /// G10: a turning camera at Retina size (2880x1620) must not show the div-4 update as a dot lattice. Eight frames 3 apart under `--sway 8`,
-/// div 4 vs the div-1 reference. Budget: no more dots than the reference has (ratio <= 1). Red arm: `resolve.fresh` 0 (a revealed pixel's
-/// first visit weighs 1, one sample in 16 differs from its smooth neighbours: a lattice).
+/// div 4 vs the div-1 reference. Budget: no more dots than the reference has (ratio <= 1). Red arm: `resolve.motion_half_px` 1 (the marched pixel counts fewer
+/// visits while the view moves, so it takes its single sample while its 15 neighbours keep smooth history: a lattice).
 const G10_RATIO: f32 = 1.0;
 
 fn g10_seq(tag: &str, sets: &[&str]) -> Vec<RgbImage> {
@@ -234,8 +234,8 @@ fn g10_seq(tag: &str, sets: &[&str]) -> Vec<RgbImage> {
 fn g10_turning_dots() {
     let reference = g10_dots(&g10_seq("ref", &["clouds.update_div=1"]));
     let shipped = g10_dots(&g10_seq("def", &["clouds.update_div=4"]));
-    let red = g10_dots(&g10_seq("red", &["clouds.update_div=4", "resolve.fresh=0.0"]));
-    println!("G10 dots per 1000 sky px while turning at Retina: default {shipped:.3}, reference {reference:.3}, ratio {:.2} (limit {G10_RATIO}); red arm (fresh 0) {red:.3}", shipped / reference);
+    let red = g10_dots(&g10_seq("red", &["clouds.update_div=4", "resolve.motion_half_px=1.0"]));
+    println!("G10 dots per 1000 sky px while turning at Retina: default {shipped:.3}, reference {reference:.3}, ratio {:.2} (limit {G10_RATIO}); red arm (motion_half_px 1) {red:.3}", shipped / reference);
     let mut f = vec![];
     if shipped > reference * G10_RATIO { f.push(format!("G10 dot lattice: {shipped:.3} > {reference:.3} x {G10_RATIO}")); }
     if red <= reference * G10_RATIO { f.push(format!("G10 red arm {red:.3} not above {:.3}; the check does not see the lattice", reference * G10_RATIO)); }
@@ -330,7 +330,7 @@ fn g13_streak_lines() {
 /// live weather, continuous yaw 45 deg/s (`--turn 750,1000`), 8 frames 20 apart, div 4 vs div 1 at the same frame. Score = rms of the 8 px-scale
 /// (gaussian sigma 4) luma difference over CLOUD pixels (red - blue > -25 in the reference, dilated), leading 15% columns over the rest, mean over
 /// the frames. Budget: the revealed strip may be half again as wrong as the settled interior (the resolve's own error): ratio <= 1.5.
-/// Red arm: `resolve.upsample_mean_frames` 0 (no running mean of upsamples).
+/// Red arm: `resolve.upsample_mean_frames` 0 and `resolve.wide_upsample` false (no running mean, plain bilinear upsample).
 const G14_RATIO: f32 = 1.5;
 
 fn g14_lead_rest(a: &[RgbImage], b: &[RgbImage]) -> (f32, f32) {
@@ -362,8 +362,8 @@ fn g14_turn_reveal() {
     let reference = g14_seq("ref", &["clouds.update_div=1"]);
     let score = |s: &[RgbImage]| { let (l, r) = g14_lead_rest(s, &reference); (l, r, l / r) };
     let (lead, rest, ratio) = score(&g14_seq("def", &["clouds.update_div=4"]));
-    let (rl, rr, rred) = score(&g14_seq("red", &["clouds.update_div=4", "resolve.upsample_mean_frames=0.0"]));
-    println!("G14 cloud 8 px error vs div 1, turning 45 deg/s: leading 15% {lead:.2}, rest {rest:.2}, ratio {ratio:.2} (limit {G14_RATIO}); red arm (no mean) {rl:.2}, {rr:.2}, ratio {rred:.2}");
+    let (rl, rr, rred) = score(&g14_seq("red", &["clouds.update_div=4", "resolve.upsample_mean_frames=0.0", "resolve.wide_upsample=false"]));
+    println!("G14 cloud 8 px error vs div 1, turning 45 deg/s: leading 15% {lead:.2}, rest {rest:.2}, ratio {ratio:.2} (limit {G14_RATIO}); red arm (no mean, no wide) {rl:.2}, {rr:.2}, ratio {rred:.2}");
     let mut f = vec![];
     if ratio > G14_RATIO { f.push(format!("G14 revealed strip: ratio {ratio:.2} > {G14_RATIO}")); }
     if rred <= G14_RATIO { f.push(format!("G14 red arm ratio {rred:.2} not above {G14_RATIO}; the check does not see the strip")); }
