@@ -65,7 +65,7 @@ Look and cost knobs (all defaults untuned):
 - `diffuse_sun`: the sun's two-stream diffuse light inside the fog; 0 = direct beam only.
 - `cloud_diffuse`, `ignore_cloud_sky`: cloud-covered sky light moves toward the sun's diffuse light through cloud; `ignore_cloud_sky` = clear-sky light (red arm).
 - `step_power`: march step spacing (i/steps)^power, dense near the eye; 1 = uniform.
-- `render_scale`: march resolution as a share of the view (0.5 = a quarter of the pixels); 1 = full resolution.
+- `render_scale`: march resolution as a share of the view (default 0.25 = a sixteenth of the pixels); 1 = full resolution.
 - `hash_noise`: test switch, per-step hashed noise (cost gate red arm).
 - `sky.sun_occlusion`, `sky.occlusion_keep`, `sky.occlusion_steps`: with terrain, the share of a view ray in the terrain's shadow loses its aerial sun in-scatter except `occlusion_keep` (0.2), sampled at `occlusion_steps` (8); `sun_occlusion` false = Bevy's own (red arm).
 
@@ -104,7 +104,7 @@ Thresholds are budgets with the reason in the test doc comments.
 - No fog beyond `extent_m` / 2 (fades over `edge_fade`); far valleys rely on `DistanceFog`. Upgrade: a coarse far field.
 - No bounce from sunlit slopes into shaded fog.
 - Moonlight has no terrain shadow; trees and buildings neither shadow the fog nor drain it (terrain only).
-- The march is half resolution (`render_scale`) with per-frame jitter and no temporal resolve; thin mist seen at grazing angles can be noisy.
+- The march is quarter resolution (`render_scale`) with per-frame jitter and no temporal resolve (edge speckle at the pool top); thin mist seen at grazing angles can be noisy.
   Upgrade: the clouds' temporal resolve.
 - Formation uses one regional amount history per texel with camera-local weather (`Weather.here`); weather map variation across the
   field is not used.
