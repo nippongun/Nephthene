@@ -277,39 +277,34 @@ fn g19_fog_cost() {
     finish("G19", list);
 }
 
-/// Share of pixels whose luma is more than 8 levels off the median of their 3x3 neighbourhood (border excluded): isolated grain dots.
-fn grain(img: &RgbImage) -> f32 {
-    let (w, h) = img.dimensions();
-    let l = |x: u32, y: u32| luma(img.get_pixel(x, y));
-    let mut n = 0usize;
-    for y in 1..h - 1 { for x in 1..w - 1 {
-        let mut v = [0.0f32; 9];
-        for (k, (dx, dy)) in (0..9).map(|k| (k % 3, k / 3)).enumerate() { v[k] = l(x + dx - 1, y + dy - 1); }
-        v.sort_by(|a, b| a.total_cmp(b));
-        if (l(x, y) - v[4]).abs() > 8.0 { n += 1; }
-    } }
-    n as f32 / ((w - 2) * (h - 2)) as f32
+/// Share of pixels whose luma changes by more than 8 levels between two frames of a still view: the march's step jitter that has not
+/// averaged out. Image structure (wisps, edges) is the same in both frames and cancels, unlike a spatial median test.
+fn flicker(a: &RgbImage, b: &RgbImage) -> f32 {
+    let n = a.pixels().zip(b.pixels()).filter(|(p, q)| (luma(p) - luma(q)).abs() > 8.0).count();
+    n as f32 / (a.width() * a.height()) as f32
 }
 
-/// G21 a still view shows no march grain. Pose fog_valley, hour 5.6, fog forced to 0.9, render_scale 1 (one jittered march per pixel, so
-/// the step jitter is per-pixel grain; at lower scales the upsample hides it but enlarges it), the shot's default settle frames with a still
-/// camera. `grain` must be at most 0.05%: a dot more than 8 levels off its neighbours stands out on the fog's smooth tones, and one in 2000
-/// pixels is a budget no viewer reads as grain (the scene with fog off has none). Red arm: ground_fog.temporal_alpha=1 (no history, each
-/// frame shows its own jitter) must exceed it, else the gate cannot fail.
+/// G21 a still view shows no march grain. Pose fog_valley, hour 5.6, fog forced to 0.9, render_scale 1 (one jittered march per pixel,
+/// so the step jitter is per-pixel grain; lower scales hide it in the upsample but enlarge it), two consecutive frames after the default
+/// settle with a still camera and a frozen clock: `flicker` must be at most 0.05%. Each frame re-jitters the march, so grain that has not
+/// averaged out changes every frame; a change of more than 8 levels stands out on the fog's smooth tones, and one pixel in 2000 is a
+/// budget no viewer reads as grain. Red arm: ground_fog.temporal_alpha=1 (no history, each frame shows its own jitter) must exceed it.
 #[test]
 #[ignore = "manual gate"]
 fn g21_still_view_has_no_grain() {
     let arm = |label: &str, extra: &[&str]| {
-        let mut sets = vec!["ground_fog.enabled=true", "ground_fog.force=0.9", "ground_fog.render_scale=1"];
-        sets.extend_from_slice(extra);
-        let g = grain(&shot(&FOG_VALLEY, label, "5.6", &sets, &[]));
-        println!("G21 {label}: grain {:.4}%", 100.0 * g);
+        let mut a = vec!["--terrain", "--hour", "5.6", "--seq", "2,1", "--set", "clouds.enabled=false", "--set", "wind.speed_mps=1.0", "--set", "map.default_coverage=0.1",
+            "--set", "map.default_coverage_swing=0.0", "--set", "ground_fog.enabled=true", "--set", "ground_fog.force=0.9", "--set", "ground_fog.render_scale=1"];
+        for s in extra { a.extend(["--set", s]); }
+        let f = seq(label, FOG_VALLEY.name, 2, &a);
+        let g = flicker(&f[0], &f[1]);
+        println!("G21 {label}: flicker {:.4}%", 100.0 * g);
         g
     };
     let green = arm("g21_green", &[]);
     let red = arm("g21_red", &["ground_fog.temporal_alpha=1"]);
     let mut list = vec![];
-    if green > 0.0005 { list.push(format!("grain {:.4}% > 0.05%", 100.0 * green)); }
-    if red <= 0.0005 { list.push(format!("red arm (temporal_alpha=1) grain {:.4}% <= 0.05%: the gate cannot fail", 100.0 * red)); }
+    if green > 0.0005 { list.push(format!("flicker {:.4}% > 0.05%", 100.0 * green)); }
+    if red <= 0.0005 { list.push(format!("red arm (temporal_alpha=1) flicker {:.4}% <= 0.05%: the gate cannot fail", 100.0 * red)); }
     finish("G21", list);
 }
