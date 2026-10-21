@@ -319,9 +319,16 @@ fn resolve(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var hi = c;
     var lo5 = c;
     var hi5 = c;
+    // ponytail: 0.05 relative depth, the composite's same-surface test; a knob if silhouettes show halos.
+    let rel = 0.05 * max(t, 1.0);
     for (var dy = -2; dy <= 2; dy++) {
         for (var dx = -2; dx <= 2; dx++) {
-            let v = textureLoad(low_fog, clamp(px + vec2(dx, dy), vec2(0), dim - 1), 0);
+            let p = clamp(px + vec2(dx, dy), vec2(0), dim - 1);
+            // Only neighbours on this texel's surface (sky with sky) bound the history: across a silhouette the box admitted the other
+            // side's fog and let a history sample straddling the edge through, a 1-2 px fringe on a turning view.
+            let tn = textureLoad(low_t, p, 0).r;
+            if select(abs(tn - t) > rel, tn > 0.0, t < 0.0) { continue; }
+            let v = textureLoad(low_fog, p, 0);
             lo5 = min(lo5, v);
             hi5 = max(hi5, v);
             if abs(dx) <= 1 && abs(dy) <= 1 { lo = min(lo, v); hi = max(hi, v); }
