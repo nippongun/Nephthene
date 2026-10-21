@@ -9,7 +9,7 @@ use bevy::{
     camera::MainPassResolutionOverride,
     core_pipeline::{
         FullscreenShader,
-        core_3d::{CORE_3D_DEPTH_FORMAT, Transparent3d, TransparentSortingInfo3d, main_opaque_pass_3d},
+        core_3d::{CORE_3D_DEPTH_FORMAT, Transparent3d, TransparentSortingInfo3d, main_opaque_pass_3d, main_transparent_pass_3d},
         schedule::Core3d, Core3dSystems,
     },
     diagnostic::FrameCount,
@@ -150,14 +150,17 @@ pub fn plugin(app: &mut App, timing: bool) {
             (queue_composite, queue_shaft).in_set(RenderSystems::Queue),
             prepare_bind_groups.in_set(RenderSystems::PrepareBindGroups),
         ))
-        .add_systems(Core3d, clouds_march.in_set(Core3dSystems::MainPass).before(main_opaque_pass_3d));
+        .add_systems(Core3d, clouds_march.in_set(Core3dSystems::MainPass).before(main_opaque_pass_3d))
+        .add_systems(Core3d, (transparent_begin.before(main_transparent_pass_3d), transparent_end.after(main_transparent_pass_3d)).in_set(Core3dSystems::MainPass));
 }
 
-/// clouds.pass_timing: GPU pass-boundary timestamps (Metal on Apple Silicon has no inside-encoder ones) for shadow, march, resolve.
-/// Prints `PASSMS` every 60 frames (mean ms per pass). Off: no query set, no readback.
+/// clouds.pass_timing: GPU pass-boundary timestamps (Metal on Apple Silicon has no inside-encoder ones) for six spans, timestamp pair i = 2i, 2i+1:
+/// shadow, march, resolve, shaft_march, shaft_resolve, transparent (the whole main transparent pass, see transparent_begin).
+/// `ran` bit i is set when pass i begins this frame; read_timing adds only the bits set, so a skipped pass counts 0 (not last frame's stale value).
+/// Prints `PASSMS` every 60 frames (sum / 60: mean ms per pass per frame). Off: no query set, no readback.
 #[derive(Resource)]
-struct PassTiming { qs: wgpu::QuerySet, resolve: wgpu::Buffer, read: wgpu::Buffer, sums: [f64; 5], n: u32 }
-const PASSES: [&str; 5] = ["shadow", "march", "resolve", "shaft_march", "shaft_resolve"];
+struct PassTiming { qs: wgpu::QuerySet, resolve: wgpu::Buffer, read: wgpu::Buffer, sums: [f64; 6], n: u32, ran: std::sync::atomic::AtomicU32 }
+const PASSES: [&str; 6] = ["shadow", "march", "resolve", "shaft_march", "shaft_resolve", "transparent"];
 
 #[derive(Resource)]
 struct CloudRender {
@@ -242,12 +245,12 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
         mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default()
     });
     if timing_on.0 && device.features().contains(WgpuFeatures::TIMESTAMP_QUERY) {
-        let size = 10 * 8;
+        let size = 12 * 8;
         let buf = |usage, label| device.wgpu_device().create_buffer(&BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
         commands.insert_resource(PassTiming {
-            qs: device.wgpu_device().create_query_set(&wgpu::QuerySetDescriptor { label: Some("cloud_ts"), ty: wgpu::QueryType::Timestamp, count: 10 }),
+            qs: device.wgpu_device().create_query_set(&wgpu::QuerySetDescriptor { label: Some("cloud_ts"), ty: wgpu::QueryType::Timestamp, count: 12 }),
             resolve: buf(BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC, "cloud_ts_resolve"), read: buf(BufferUsages::COPY_DST | BufferUsages::MAP_READ, "cloud_ts_read"),
-            sums: [0.0; 5], n: 0,
+            sums: [0.0; 6], n: 0, ran: default(),
         });
     }
     let renderer = commands.spawn(Name::new("CloudRenderer")).id();
@@ -457,11 +460,12 @@ fn read_timing(timing: Option<ResMut<PassTiming>>, device: Res<RenderDevice>, qu
     let ts: Vec<u64> = slice.get_mapped_range().expect("timestamps").chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
     t.read.unmap();
     let period = queue.get_timestamp_period() as f64 * 1e-6;
-    for i in 0..5 { if ts[2 * i + 1] >= ts[2 * i] && ts[2 * i] > 0 { t.sums[i] += (ts[2 * i + 1] - ts[2 * i]) as f64 * period; } }
+    let ran = t.ran.swap(0, std::sync::atomic::Ordering::Relaxed);
+    for i in 0..6 { if ts[2 * i + 1] >= ts[2 * i] && ts[2 * i] > 0 && ran & (1 << i) != 0 { t.sums[i] += (ts[2 * i + 1] - ts[2 * i]) as f64 * period; } }
     t.n += 1;
     if t.n == 60 {
         println!("PASSMS {}", PASSES.iter().zip(t.sums).map(|(n, s)| format!("{n} {:.3}", s / 60.0)).collect::<Vec<_>>().join(" | "));
-        (t.sums, t.n) = ([0.0; 5], 0);
+        (t.sums, t.n) = ([0.0; 6], 0);
     }
 }
 
@@ -483,6 +487,7 @@ fn clouds_march(
             if drawn.swap(frame.0 + 1, std::sync::atomic::Ordering::Relaxed) != frame.0 + 1 {
                 let (band, bands) = (params.shadow_band.0, params.shadow_band.1.max(1));
                 let load = if bands > 1 { LoadOp::Load } else { LoadOp::Clear(default()) };
+                if let Some(t) = &timing { t.ran.fetch_or(1 << 0, std::sync::atomic::Ordering::Relaxed); }
                 let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
                     label: Some("cloud_shadow"),
                     color_attachments: &[Some(RenderPassColorAttachment { view: &img.texture_view, depth_slice: None, resolve_target: None, ops: Operations { load, store: StoreOp::Store } })],
@@ -503,6 +508,7 @@ fn clouds_march(
         Some(RenderPassColorAttachment { view: &t.default_view, depth_slice: None, resolve_target: None, ops: Operations::default() })
     }
     if skipped("march") { return; }
+    if let Some(t) = &timing { t.ran.fetch_or(1 << 1, std::sync::atomic::Ordering::Relaxed); }
     let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
         label: Some("cloud_march"), color_attachments: &[attachment(&tex.cur), attachment(&tex.t)],
         depth_stencil_attachment: None, timestamp_writes: ts(1), occlusion_query_set: None, multiview_mask: None,
@@ -515,6 +521,7 @@ fn clouds_march(
 
     let Some(pipeline) = cache.get_render_pipeline(render.resolve_pipeline) else { return };
     if skipped("resolve") { return; }
+    if let Some(t) = &timing { t.ran.fetch_or(1 << 2, std::sync::atomic::Ordering::Relaxed); }
     let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
         label: Some("cloud_resolve"), color_attachments: &[attachment(&tex.write), attachment(&tex.cwrite)],
         depth_stencil_attachment: None, timestamp_writes: ts(2), occlusion_query_set: None, multiview_mask: None,
@@ -526,6 +533,7 @@ fn clouds_march(
     // Rain shafts: half-res march + temporal resolve, drawn later by queue_shaft's item (clouds_shaft_comp.wesl).
     if let (Some(params), Some(sh), Some(smarch), Some(sres)) = (&params, &bg.shaft, cache.get_render_pipeline(render.shaft_march), cache.get_render_pipeline(render.shaft_resolve)) {
         if params.shaft.scale > 0.0 && !skipped("shaft") {
+            if let Some(t) = &timing { t.ran.fetch_or(1 << 3, std::sync::atomic::Ordering::Relaxed); }
             let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
                 label: Some("cloud_shaft_march"), color_attachments: &[attachment(&tex.scur), attachment(&tex.st)],
                 depth_stencil_attachment: None, timestamp_writes: ts(3), occlusion_query_set: None, multiview_mask: None,
@@ -536,6 +544,7 @@ fn clouds_march(
             pass.set_bind_group(2, sh, &[]);
             pass.draw(0..3, 0..1);
             drop(pass);
+            if let Some(t) = &timing { t.ran.fetch_or(1 << 4, std::sync::atomic::Ordering::Relaxed); }
             let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
                 label: Some("cloud_shaft_resolve"), color_attachments: &[attachment(&tex.swrite)],
                 depth_stencil_attachment: None, timestamp_writes: ts(4), occlusion_query_set: None, multiview_mask: None,
@@ -545,11 +554,34 @@ fn clouds_march(
             pass.draw(0..3, 0..1);
         }
     }
-    if let Some(t) = &timing {
-        let e = ctx.command_encoder();
-        e.resolve_query_set(&t.qs, 0..10, &t.resolve, 0);
-        e.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, 80);
-    }
+}
+
+/// Timing span "transparent" begins: an empty pass on the view target, timestamp 10 at its end, so the span is the whole main
+/// transparent pass (cloud composite, shaft composite and rain FX quads); rain FX cost is that span with rain minus without (tests/cost.rs).
+fn transparent_begin(view: ViewQuery<&ViewTarget>, timing: Option<Res<PassTiming>>, mut ctx: RenderContext) {
+    let Some(t) = &timing else { return };
+    let target = view.into_inner();
+    drop(ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
+        label: Some("cloud_ts_transparent"), color_attachments: &[Some(target.get_color_attachment())], depth_stencil_attachment: None,
+        timestamp_writes: Some(wgpu::RenderPassTimestampWrites { query_set: &t.qs, beginning_of_pass_write_index: None, end_of_pass_write_index: Some(10) }),
+        occlusion_query_set: None, multiview_mask: None,
+    }));
+}
+
+/// Timing span "transparent" ends: an empty pass on the view target, timestamp 11 at its start, then the timestamp queries are resolved
+/// (all 12, so this frame's transparent pair is read). The span is the whole main transparent pass; see transparent_begin.
+fn transparent_end(view: ViewQuery<&ViewTarget>, timing: Option<Res<PassTiming>>, mut ctx: RenderContext) {
+    let Some(t) = &timing else { return };
+    let target = view.into_inner();
+    t.ran.fetch_or(1 << 5, std::sync::atomic::Ordering::Relaxed);
+    drop(ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
+        label: Some("cloud_ts_transparent"), color_attachments: &[Some(target.get_color_attachment())], depth_stencil_attachment: None,
+        timestamp_writes: Some(wgpu::RenderPassTimestampWrites { query_set: &t.qs, beginning_of_pass_write_index: Some(11), end_of_pass_write_index: None }),
+        occlusion_query_set: None, multiview_mask: None,
+    }));
+    let e = ctx.command_encoder();
+    e.resolve_query_set(&t.qs, 0..12, &t.resolve, 0);
+    e.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, 96);
 }
 
 struct DrawCloudComposite;

@@ -128,9 +128,8 @@ pub(crate) fn drive(
     if let Some((l, t)) = moon.iter().next() { (m.gpu.moon_dir, m.gpu.moon_color) = body(l, t); }
     // Upwind is where the noise comes from: sampling at p - drift moves the shapes downwind.
     m.gpu.wind = -*drift;
-    // Mean wind, slewed: gusts never lean the shafts.
-    let tgt = w::rain::shaft_slant(&wx.cfg.rain, &wx.cfg.shafts, &wx.cfg.wind);
-    *slant = if *slant == Vec2::ZERO { tgt } else { w::rain::slew_slant(&wx.cfg.shafts, *slant, tgt, time.delta_secs()) };
+    // Mean wind, slewed: gusts never lean the shafts (shafts.gust_lean is the test red arm).
+    *slant = w::rain::shaft_slant_step(&wx.cfg.rain, &wx.cfg.shafts, &wx.cfg.wind, wx.wind, *slant, time.delta_secs());
     m.shaft.slant = *slant;
 }
 

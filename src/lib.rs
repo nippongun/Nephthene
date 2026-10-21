@@ -28,7 +28,7 @@ pub use rain::{Ground, RainState, WetGround};
 pub use sky::{Moon, NephtheneSun, Weather};
 pub use storms::Storms;
 
-/// Ordering handles for host systems: `Tick` is the clock / wind / sun update, `Drive` the cloud uniforms (after the panel's overrides).
+/// Ordering handles for host systems: `Tick` is the clock / wind / sun update, `Drive` the cloud uniforms (after the panel's overrides). The two sets run in that order: Tick, then Drive.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NephtheneSet { Tick, Drive }
 
@@ -46,6 +46,8 @@ impl NephthenePlugin {
 
 impl Plugin for NephthenePlugin {
     fn build(&self, app: &mut App) {
+        // Drive reads what Tick and the overrides wrote this frame; a host system in Drive is ordered too, not only the plugin's own (which also say .after(Tick)).
+        app.configure_sets(Update, (NephtheneSet::Tick, NephtheneSet::Drive).chain());
         let map = self.map.clone().unwrap_or_else(|| WeatherMap::procedural(&self.config.map));
         sky::build(app, &self.config, map);
         if self.config.clouds.enabled { app.add_plugins(clouds::CloudPlugin); }

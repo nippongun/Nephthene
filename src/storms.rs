@@ -13,7 +13,7 @@ impl Plugin for StormPlugin {
         let force = cfg.force.clone();
         if force.is_some() { cfg.enabled = true; }
         if let Some(tag) = &force { assert!(cfg.authored.iter().any(|a| &a.name == tag), "storms.force = {tag}: not an authored storm"); }
-        app.insert_resource(Storms { scene: cfg.scene.clone(), cfg, force, ..default() }).add_systems(Update, select_storms.after(crate::NephtheneSet::Tick));
+        app.insert_resource(Storms { scene: cfg.scene.clone(), cfg, force, ..default() }).add_systems(Update, select_storms.after(crate::NephtheneSet::Tick).before(crate::NephtheneSet::Drive));
     }
 }
 

@@ -32,7 +32,7 @@ impl Plugin for RainPlugin {
         app.add_plugins(MaterialPlugin::<RainMaterial>::default())
             .insert_resource(RainState { force, wetness, ..default() })
             .add_systems(PostStartup, spawn.after(crate::sky::setup))
-            .add_systems(Update, (state, drive, wet_ground).chain().after(crate::NephtheneSet::Tick));
+            .add_systems(Update, (state.before(crate::NephtheneSet::Drive), drive, wet_ground).chain().after(crate::NephtheneSet::Tick));
     }
 }
 

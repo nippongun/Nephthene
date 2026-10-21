@@ -320,11 +320,14 @@ pub struct Shafts {
     pub lean_intensity: f32,
     /// Lighting: grey rain albedo, cloud-above optical depth scale, march steps.
     pub albedo: f32, pub light_od: f32, pub steps: f32,
+    /// Test red arm: the shaft lean follows the live (gusting) drop lean instead of the mean wind's shear lean, so the columns swing with every gust.
+    pub gust_lean: bool,
 }
 impl Default for Shafts {
     fn default() -> Self {
         Shafts { sigma: 0.016, near_m: 50.0, fade_m: 250.0, max_m: 14000.0, xz_m: 1100.0, y_m: 6000.0, ground_keep: 0.4, cloud_lo: 0.05, cloud_hi: 0.4,
-                 streak_lo: 0.3, streak_hi: 0.7, gap: 0.05, shear_frac: 0.1, slant_tau_s: 20.0, lean_intensity: 0.7, albedo: 0.6, light_od: 0.03, steps: 80.0 }
+                 streak_lo: 0.3, streak_hi: 0.7, gap: 0.05, shear_frac: 0.1, slant_tau_s: 20.0, lean_intensity: 0.7, albedo: 0.6, light_od: 0.03, steps: 80.0,
+                 gust_lean: false }
     }
 }
 

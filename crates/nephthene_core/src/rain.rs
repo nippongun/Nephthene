@@ -137,6 +137,9 @@ pub fn shaft_slant_live(r: &RainCfg, sh: &Shafts, wind: Vec3) -> Vec2 { let v = 
 /// Frame-rate independent slew of the lean toward `target`.
 pub fn slew_slant(sh: &Shafts, cur: Vec2, target: Vec2, dt: f32) -> Vec2 { cur + (target - cur) * (1.0 - (-dt / sh.slant_tau_s).exp()) }
 
+/// One frame of the shaft lean: slews `cur` toward the mean-wind lean (`shaft_slant`), or toward the live drop lean with `gust_lean` (red arm). `cur` zero = first frame: start at the target.
+pub fn shaft_slant_step(r: &RainCfg, sh: &Shafts, mean_wind: &crate::Wind, live: Vec3, cur: Vec2, dt: f32) -> Vec2 { let tgt = if sh.gust_lean { shaft_slant_live(r, sh, live) } else { shaft_slant(r, sh, mean_wind) }; if cur == Vec2::ZERO { tgt } else { slew_slant(sh, cur, tgt, dt) } }
+
 /// Where the rain at (xz, y) left the cloud base `base_y`: upwind of it by the lean.
 pub fn column_origin(xz: Vec2, y: f32, base_y: f32, slant: Vec2) -> Vec2 { xz - slant * (base_y - y) }
 
@@ -304,5 +307,25 @@ mod tests {
         assert!((shaft_t_end(0.0, 0.5, 700.0, 1.0e4) - 1400.0).abs() < 1e-2);
         assert_eq!(shaft_t_end(0.0, -0.2, 700.0, 1.0e4), 1.0e4);
         assert_eq!(shaft_t_end(0.0, 0.001, 700.0, 5000.0), 5000.0);
+    }
+    // Budget (m) for the foot of a shaft swinging over a gust cycle: one pixel at 5 km for a 1920 px wide 75 deg view is
+    // 2 * 5000 * tan(37.5 deg) / 1920 = 4.0 m, so a foot that moves less than that does not visibly swing.
+    const SWING_BUDGET_M: f32 = 4.0;
+    #[test]
+    fn shafts_do_not_lean_with_gusts() {
+        let (r, wind) = (rc(), crate::Wind::default());
+        let swing = |cfg: &Shafts| {
+            let (dt, mut cur, mut lo, mut hi) = (1.0 / 60.0, Vec2::ZERO, Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+            for i in 0..(70 * 60) {
+                let t = i as f32 * dt;
+                cur = shaft_slant_step(&r, cfg, &wind, crate::wind(&wind, t), cur, dt);
+                if t >= 10.0 { lo = lo.min(cur); hi = hi.max(cur); }
+            }
+            (hi - lo).max_element() * crate::config::Config::default().clouds.bottom_m
+        };
+        let (default, red) = (swing(&sh()), swing(&Shafts { gust_lean: true, ..sh() }));
+        println!("shaft foot swing over a gust cycle: default {default:.3} m, red arm {red:.3} m (budget {SWING_BUDGET_M} m)");
+        assert!(default <= SWING_BUDGET_M, "default shafts swing {default} m, budget {SWING_BUDGET_M} m");
+        assert!(red > SWING_BUDGET_M, "red arm must swing past the budget, got {red} m (budget {SWING_BUDGET_M} m)");
     }
 }
