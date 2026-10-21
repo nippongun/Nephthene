@@ -8,6 +8,7 @@
 //! `--hour h`, `--live` (clock and wind run; default frozen), `--config file.json`, `--set path=json` (repeatable, e.g.
 //! `--set clouds.update_div=1`), `--settle frames` (default 60), `--seq count,every` / `--at a,b,c` (several frames per run),
 //! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (drive the panel with synthetic pointer input).
+//! `--terrain`: the test valley (nephthene_core::fog::test_valley) as the ground mesh and the plugin's `Ground`, instead of the flat plane.
 //! `--print-config` prints the effective config as JSON and exits (the reference file).
 //! Exit codes: 0 ok, 3 timeout, 4 bad argument.
 use bevy::{
@@ -86,6 +87,7 @@ fn main() {
     } else {
         app.add_plugins(plugins);
     }
+    if args.has("--terrain") { app.insert_resource(nephthene::Ground(nephthene::core::fog::test_valley())); }
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     match shot {
         Some(name) => { app.add_plugins(ShotPlugin { name, args }); }
@@ -111,17 +113,27 @@ fn camera_bundle(cfg: &Config) -> impl Bundle {
     )
 }
 
-/// Flat ground and the sun; the camera is spawned by the mode (look-around or shot).
-fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, cfg: Res<Cfg>) {
-    commands.spawn((
-        Name::new("Ground"), WetGround, Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))),
-        MeshMaterial3d(mats.add(StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() })),
-    ));
+/// Flat ground (or the `--terrain` mesh over a lowered plane) and the sun; the camera is spawned by the mode (look-around or shot).
+fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>) {
+    let mat = mats.add(StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() });
+    // Under the terrain the plane sits just below its lowest point, so it shows only past the terrain's edge.
+    let below = terrain.as_ref().map_or(0.0, |t| t.0.y.iter().cloned().fold(f32::MAX, f32::min) - 10.0);
+    commands.spawn((Name::new("Ground"), WetGround, Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))), MeshMaterial3d(mat.clone()), Transform::from_xyz(0.0, below, 0.0)));
+    if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), WetGround, Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(mat))); }
     commands.spawn((
         NephtheneSun, DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },
         CascadeShadowConfigBuilder { maximum_distance: 250.0, first_cascade_far_bound: 8.0, ..default() }.build(), Transform::default(),
     ));
     let _ = cfg;
+}
+
+/// A height grid as a triangle mesh, one vertex per cell centre (rows north to south), smooth normals.
+fn terrain_mesh(g: &nephthene::core::rain::HeightGrid) -> Mesh {
+    use bevy::{asset::RenderAssetUsages, mesh::{Indices, PrimitiveTopology}};
+    let pos: Vec<[f32; 3]> = (0..g.w * g.h).map(|k| [g.min_x + ((k % g.w) as f32 + 0.5) * g.cell_m, g.y[k as usize], g.max_z - ((k / g.w) as f32 + 0.5) * g.cell_m]).collect();
+    let idx: Vec<u32> = (0..g.h - 1).flat_map(|j| (0..g.w - 1).flat_map(move |i| { let a = j * g.w + i; [a, a + 1, a + g.w, a + 1, a + g.w + 1, a + g.w] })).collect();
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos).with_inserted_indices(Indices::U32(idx)).with_computed_smooth_normals()
 }
 
 // ---------------------------------------------------------------- interactive

@@ -1,0 +1,8 @@
+# Decisions
+
+| Date | Decision | Why | Alternatives rejected |
+|---|---|---|---|
+| 2026-10-21 | Ground fog is its own full-screen pass (shaders/fog.wesl), not Bevy's `VolumetricFog` / `FogVolume`. | Bevy 0.20's volumetric fog gives no sunlight to samples outside the directional shadow cascades (the example's end at 250 m, so km-away valley fog would be ambient only), its ambient term ignores the density texture (`exp(-L*sigma) * ambient` over the whole box), and it does not read the cloud shadow cookie. Sky light is the dominant light in fog. | Bevy `FogVolume` with a CPU-baked 3D density texture (engine-native, but unlit at range). |
+| 2026-10-21 | Fog shape is a 2D baked map (pool top, mist, sunlit altitude, amount) plus an analytic vertical profile, not a 3D froxel/voxel grid. | The physics is 2.5D: a level pool top over the terrain and exponential mist. A 2D map keeps the top and the ground contact sharp at any distance for 256 KB, and the march is clipped to the fog's altitude band. | 3D density texture (vertical resolution limits the flat top and the ground-hugging mist; 4 MB+ re-uploads). |
+| 2026-10-21 | Burn-off is per texel and gated by terrain shadow, not by sun elevation alone. | A valley in a mountain's shadow keeps its fog after open ground has cleared; an elevation-only burn clears both at once. Gate G16 with red arm `ground_fog.ignore_shadow`. | One global amount (elevation-only burn). |
+| 2026-10-21 | Ground fog is off by default. | AGENTS.md rule 2: the shipped look keeps its old value; the goldens are unchanged. | On by default. |

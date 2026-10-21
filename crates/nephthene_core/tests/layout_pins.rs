@@ -1,10 +1,12 @@
-//! Text pins: the Rust uniform structs (src/clouds/render.rs) and the WGSL structs (src/shaders) must list the same fields in the same
-//! order with the same types, the WGSL `StormCell` must follow `storm::pack`'s layout, and the shaders' rain/shaft maths must keep the
+//! Text pins: the Rust uniform structs (src/clouds/render.rs, src/fog/render.rs) and the WGSL structs (src/shaders) must list the same
+//! fields in the same order with the same types, the WGSL `StormCell` must follow `storm::pack`'s layout, and the shaders' rain/shaft maths must keep the
 //! expressions the Rust reference (rain.rs) implements. Reading the files as text is the only check that needs no GPU.
 use glam::Vec2;
 use nephthene_core::{rain as r, storm::{self, Kind, Now, Stage, Storm}};
 
 const RENDER: &str = include_str!("../../../src/clouds/render.rs");
+const FOG_RENDER: &str = include_str!("../../../src/fog/render.rs");
+const FOG: &str = include_str!("../../../src/shaders/fog.wesl");
 const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
@@ -29,19 +31,21 @@ fn rust_to_wgsl(t: &str) -> String {
     match t { "Vec2" => "vec2<f32>", "Vec3" => "vec3<f32>", "Vec4" => "vec4<f32>", "Mat4" => "mat4x4<f32>", o => o }.to_string()
 }
 
-fn same_order(rust_head: &str, wgsl_src: &str, wgsl_head: &str) {
-    let rs: Vec<_> = fields(&body(RENDER, rust_head)).into_iter().map(|(n, t)| (n, rust_to_wgsl(&t))).collect();
+fn same_order(rust_src: &str, rust_head: &str, wgsl_src: &str, wgsl_head: &str) {
+    let rs: Vec<_> = fields(&body(rust_src, rust_head)).into_iter().map(|(n, t)| (n, rust_to_wgsl(&t))).collect();
     let ws = fields(&body(wgsl_src, wgsl_head));
     assert!(rs.len() > 10, "{rust_head}: parsed only {} fields", rs.len());
     assert_eq!(rs, ws, "{rust_head} and WGSL `{wgsl_head}` drifted apart");
 }
 
 #[test]
-fn cloud_uniform_matches_wgsl() { same_order("pub struct CloudGpu {", COMMON, "struct Clouds {"); }
+fn cloud_uniform_matches_wgsl() { same_order(RENDER, "pub struct CloudGpu {", COMMON, "struct Clouds {"); }
 #[test]
-fn shaft_uniform_matches_wgsl() { same_order("pub struct ShaftGpu {", SHAFT, "struct Shaft {"); }
+fn shaft_uniform_matches_wgsl() { same_order(RENDER, "pub struct ShaftGpu {", SHAFT, "struct Shaft {"); }
 #[test]
-fn resolve_uniform_matches_wgsl() { same_order("struct ResolveGpu {", RESOLVE, "struct Resolve {"); }
+fn resolve_uniform_matches_wgsl() { same_order(RENDER, "struct ResolveGpu {", RESOLVE, "struct Resolve {"); }
+#[test]
+fn fog_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogGpu {", FOG, "struct Fog {"); }
 
 /// (field, floats) in pack order; a vec2 is two floats.
 const EXPECT: [(&str, usize); 13] = [("a", 2), ("b", 2), ("core_r", 1), ("base", 1), ("top", 1), ("overshoot", 1), ("anvil_r", 1), ("shift", 2), ("anvil_base", 1), ("precip", 1), ("gust_r", 1), ("shelf_low", 1), ("dir_angle", 1)];

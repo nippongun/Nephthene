@@ -34,6 +34,8 @@ pub struct Config {
     pub rain: RainCfg,
     pub storms: StormCfg,
     pub audio: audio::Cfg,
+    /// Terrain-following radiation fog: valley pools under a flat top and shallow mist in hollows (`fog` above is the distance haze).
+    pub ground_fog: GroundFog,
     /// Tuning of the ticking systems (smoothing, rebuild thresholds).
     pub sim: Sim,
 }
@@ -48,7 +50,7 @@ impl Default for Config {
             fog_brightness: vec![[-14.0, 0.01], [-4.0, 0.05], [0.0, 0.35], [10.0, 0.9], [20.0, 1.0]],
             fog: Fog::default(), moon: Moon::default(), stars: Stars::default(), sky: Sky::default(), wind: Wind::default(),
             map: MapCfg::default(), clouds: Clouds::default(), resolve: Resolve::default(), shafts: Shafts::default(),
-            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), sim: Sim::default(),
+            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
         }
     }
 }
@@ -366,6 +368,78 @@ impl Default for RainCfg {
             wet_up_per_s: 1.0 / 40.0, dry_per_s: 1.0 / 240.0, wet_threshold: 0.05, wet_darken: 0.35, wet_roughness: 0.35, wet_reflectance: 0.5,
             light_gain: 1.0, sun_share: 0.65, sky_share: 0.35, night_floor: 0.04, cloud_dim: 0.8, level_scale: 1.2, light_color: [1.0, 0.98, 0.95],
             day_from_deg: -6.0, day_to_deg: 10.0, dim_from: 0.2, dim_to: 0.7, force: None, wet_epsilon: 0.002,
+        }
+    }
+}
+
+/// Ground fog (nephthene_core::fog, fog.wesl). Formation: clear, calm, moist nights build `amount` 0..1, sunshine burns it off and
+/// lifts its base, wind mixes it out. Shape: cold air drains off slopes into the lowest ground within `pool_radius_m`; the pool top is
+/// level there. Rates, depths and visibilities follow published field ranges (fog 10..300 m deep, ~3 h burn-off at 300 m,
+/// visibility 3.912 / extinction) but every default is UNTUNED.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct GroundFog {
+    /// Off by default: the shipped look has no ground fog.
+    pub enabled: bool,
+    /// Amount 0..1 used instead of the formation model; None = the model.
+    pub force: Option<f32>,
+    /// Test switch (red arm): the fog top follows each column's own ground (a blanket over ridges) instead of the pooled floor.
+    pub ignore_terrain: bool,
+    /// Test switch (red arm): burn-off ignores the terrain shadow (every texel burns as if sunlit, as an elevation-only model would).
+    pub ignore_shadow: bool,
+    /// Amount per game hour: gained at full formation potential, burnt at full insolation, mixed out at full wind.
+    pub form_per_h: f32, pub burn_per_h: f32, pub mix_per_h: f32,
+    /// Sun elevation (deg) band over which nocturnal cooling fades out (full below `night_lo_deg`), and the elevation of full burn.
+    pub night_lo_deg: f32, pub night_hi_deg: f32, pub burn_full_deg: f32,
+    /// Share of the cooling that full cloud cover blocks (clouds radiate back), and of the burn it blocks (shade).
+    pub cover_block: f32, pub cover_shade: f32,
+    /// Wind (m/s): fog forms fully below `wind_lo_mps`, none above `wind_hi_mps`; above `wind_hi_mps` it is mixed out.
+    pub wind_lo_mps: f32, pub wind_hi_mps: f32,
+    /// Moisture 0..1 = base + wet_gain * ground wetness - dust_dry * dust.
+    pub moisture_base: f32, pub wet_gain: f32, pub dust_dry: f32,
+    /// Hours integrated before the start hour (and while the clock is frozen) to reach the state the weather implies.
+    pub spin_up_h: f32,
+    /// Pool depth (m) at amount 1: `depth_flat_m` on open ground, up to `depth_max_m` where the basin is `relief_m` deep or more.
+    pub depth_flat_m: f32, pub depth_max_m: f32, pub relief_m: f32,
+    /// Radius (m) over which cold air drains to the lowest ground (the pool floor and the basin relief are taken over it).
+    pub pool_radius_m: f32,
+    /// Soft top thickness (m), the thinning margin (m) where the pool is shallow, and the top's undulation (m, wavelength m).
+    pub top_soft_m: f32, pub edge_m: f32, pub top_wave_m: f32, pub wave_tile_m: f32,
+    /// Shallow mist: e-folding height (m) above the ground, the radius (m) and depth (m) that make a hollow, the slope (rise/run) band
+    /// over which drainage clears it, and the share it keeps on open flat ground.
+    pub shallow_e_m: f32, pub hollow_radius_m: f32, pub hollow_m: f32, pub slope_lo: f32, pub slope_hi: f32, pub flat_share: f32,
+    /// Visibility (m) inside the pool and inside the shallow mist at amount 1 (extinction = 3.912 / visibility).
+    pub visibility_m: f32, pub shallow_visibility_m: f32,
+    /// Burn-off lifts the fog base off the ground: up to `lift_max_m` (sun at `lift_full_deg`, scaled by 1 - amount), soft over `lift_soft_m`.
+    pub lift_max_m: f32, pub lift_full_deg: f32, pub lift_soft_m: f32,
+    /// Density breakup by 3D value noise: strength 0..1, horizontal and vertical cell (m). Drifts with the wind.
+    pub breakup: f32, pub breakup_tile_m: f32, pub breakup_y_m: f32,
+    /// Droplet single-scattering albedo and phase asymmetry g.
+    pub albedo: f32, pub g: f32,
+    /// Multiple scattering: octaves, energy (a) and optical-depth (b) factor per octave.
+    pub ms_octaves: u32, pub ms_a: f32, pub ms_b: f32,
+    /// Sky light: scale on the zenith sky radiance, and how fast it dims with depth below the fog top (share of the optical depth).
+    pub ambient_scale: f32, pub ambient_od: f32,
+    /// Terrain shadow on the fog: soft band (m) around the sunlit altitude, sun march range and step (m).
+    pub sun_soft_m: f32, pub shadow_range_m: f32, pub shadow_step_m: f32,
+    /// Baked fog map: extent (m, square around the camera), size (px), smoothing passes; rebake after moving `rebake_m` or every `rebake_s`.
+    pub extent_m: f32, pub bake_px: u32, pub blur_passes: u32, pub rebake_m: f32, pub rebake_s: f32,
+    /// March: steps per pixel and the farthest distance (m); density fades over the outer `edge_fade` share of the map.
+    pub steps: u32, pub max_m: f32, pub edge_fade: f32,
+}
+impl Default for GroundFog {
+    fn default() -> Self {
+        GroundFog {
+            enabled: false, force: None, ignore_terrain: false, ignore_shadow: false,
+            form_per_h: 0.5, burn_per_h: 1.2, mix_per_h: 2.0, night_lo_deg: -4.0, night_hi_deg: 4.0, burn_full_deg: 20.0,
+            cover_block: 0.8, cover_shade: 0.6, wind_lo_mps: 2.5, wind_hi_mps: 6.0, moisture_base: 0.55, wet_gain: 0.45, dust_dry: 1.0, spin_up_h: 24.0,
+            depth_flat_m: 25.0, depth_max_m: 160.0, relief_m: 120.0, pool_radius_m: 2500.0,
+            top_soft_m: 12.0, edge_m: 25.0, top_wave_m: 8.0, wave_tile_m: 900.0,
+            shallow_e_m: 5.0, hollow_radius_m: 400.0, hollow_m: 15.0, slope_lo: 0.12, slope_hi: 0.35, flat_share: 0.3,
+            visibility_m: 150.0, shallow_visibility_m: 400.0, lift_max_m: 80.0, lift_full_deg: 20.0, lift_soft_m: 25.0,
+            breakup: 0.45, breakup_tile_m: 250.0, breakup_y_m: 40.0, albedo: 0.99, g: 0.75, ms_octaves: 3, ms_a: 0.6, ms_b: 0.35,
+            ambient_scale: 1.0, ambient_od: 0.5, sun_soft_m: 20.0, shadow_range_m: 4000.0, shadow_step_m: 100.0,
+            extent_m: 12000.0, bake_px: 128, blur_passes: 2, rebake_m: 1500.0, rebake_s: 2.0, steps: 48, max_m: 6000.0, edge_fade: 0.15,
         }
     }
 }
