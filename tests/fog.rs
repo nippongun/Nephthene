@@ -1,4 +1,4 @@
-//! Ground fog gates G15-G19 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
+//! Ground fog gates G15-G21 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
 //! `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`. Metrics print before asserting.
 //! Pixels are classed on the CPU: each pose ray is cast into the test valley and marched through nephthene_core::fog's own density
 //! (no noise), so "pooled" and "clear" pixels come from the model, not from hand-picked image regions.
@@ -275,4 +275,41 @@ fn g19_fog_cost() {
         None => list.push("red arm produced no FOGMS line: the gate cannot be checked".into()),
     }
     finish("G19", list);
+}
+
+/// Share of pixels whose luma is more than 8 levels off the median of their 3x3 neighbourhood (border excluded): isolated grain dots.
+fn grain(img: &RgbImage) -> f32 {
+    let (w, h) = img.dimensions();
+    let l = |x: u32, y: u32| luma(img.get_pixel(x, y));
+    let mut n = 0usize;
+    for y in 1..h - 1 { for x in 1..w - 1 {
+        let mut v = [0.0f32; 9];
+        for (k, (dx, dy)) in (0..9).map(|k| (k % 3, k / 3)).enumerate() { v[k] = l(x + dx - 1, y + dy - 1); }
+        v.sort_by(|a, b| a.total_cmp(b));
+        if (l(x, y) - v[4]).abs() > 8.0 { n += 1; }
+    } }
+    n as f32 / ((w - 2) * (h - 2)) as f32
+}
+
+/// G21 a still view shows no march grain. Pose fog_valley, hour 5.6, fog forced to 0.9, render_scale 1 (one jittered march per pixel, so
+/// the step jitter is per-pixel grain; at lower scales the upsample hides it but enlarges it), the shot's default settle frames with a still
+/// camera. `grain` must be at most 0.05%: a dot more than 8 levels off its neighbours stands out on the fog's smooth tones, and one in 2000
+/// pixels is a budget no viewer reads as grain (the scene with fog off has none). Red arm: ground_fog.temporal_alpha=1 (no history, each
+/// frame shows its own jitter) must exceed it, else the gate cannot fail.
+#[test]
+#[ignore = "manual gate"]
+fn g21_still_view_has_no_grain() {
+    let arm = |label: &str, extra: &[&str]| {
+        let mut sets = vec!["ground_fog.enabled=true", "ground_fog.force=0.9", "ground_fog.render_scale=1"];
+        sets.extend_from_slice(extra);
+        let g = grain(&shot(&FOG_VALLEY, label, "5.6", &sets, &[]));
+        println!("G21 {label}: grain {:.4}%", 100.0 * g);
+        g
+    };
+    let green = arm("g21_green", &[]);
+    let red = arm("g21_red", &["ground_fog.temporal_alpha=1"]);
+    let mut list = vec![];
+    if green > 0.0005 { list.push(format!("grain {:.4}% > 0.05%", 100.0 * green)); }
+    if red <= 0.0005 { list.push(format!("red arm (temporal_alpha=1) grain {:.4}% <= 0.05%: the gate cannot fail", 100.0 * red)); }
+    finish("G21", list);
 }

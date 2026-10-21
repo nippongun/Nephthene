@@ -62,6 +62,7 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>, ground: Opti
         // ponytail: 64^3 cells of noise lattice: tiles every 64 noise cells (16 km at the 250 m breakup cell), too far to see.
         noise: images.add({ let mut im = image(64, 64, TextureFormat::R8Unorm, f::noise_lattice(64)); im.texture_descriptor.size.depth_or_array_layers = 64; im.texture_descriptor.dimension = TextureDimension::D3; im }),
         render_scale: wx.cfg.ground_fog.render_scale,
+        temporal_alpha: wx.cfg.ground_fog.temporal_alpha, still_px: wx.cfg.ground_fog.still_px, cut_deg: wx.cfg.resolve.cut_deg, cut_m: wx.cfg.resolve.cut_m,
         timing: wx.cfg.clouds.pass_timing,
     });
     commands.insert_resource(Baker { grid: Arc::new(grid), terrain: ground.is_some(), field: None, m: vec![], alt: vec![], task: None, pending_h: 0.0, since: 0.0, key: None, cfg: None });
@@ -153,6 +154,7 @@ fn drive(
     if wx.rate > 0.0 { *drift += wx.wind.xz() * time.delta_secs(); }
     let body = |l: &DirectionalLight, t: &Transform| (t.back().as_vec3(), l.color.to_linear().to_vec3() * l.illuminance);
     params.render_scale = c.render_scale;
+    (params.temporal_alpha, params.still_px, params.cut_deg, params.cut_m) = (c.temporal_alpha, c.still_px, wx.cfg.resolve.cut_deg, wx.cfg.resolve.cut_m);
     let g = &mut params.gpu;
     if let Some((l, t)) = sun.iter().next() { (g.sun_dir, g.sun_color) = body(l, t); }
     if let Some((l, t)) = moon.iter().next() { (g.moon_dir, g.moon_color) = body(l, t); }
