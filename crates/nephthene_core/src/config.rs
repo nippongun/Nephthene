@@ -426,6 +426,9 @@ pub struct GroundFog {
     /// Haze above the pool top: density falls off by e over `top_fade_m` (eroded by the wisps), so the top fades with height.
     /// 0 (with wisp_m 0) = the hard top (test red arm).
     pub top_fade_m: f32,
+    /// Billows: the pool top rises and falls by up to `top_billow_m` over `billow_tile_m`, and is lit and self-shadowed by that
+    /// local top, so a sunlit pool seen from above has lit and shaded billows instead of one flat sheet. 0 = flat (test red arm).
+    pub top_billow_m: f32, pub billow_tile_m: f32,
     /// Droplet single-scattering albedo and phase asymmetry g.
     pub albedo: f32, pub g: f32,
     /// Multiple scattering: octaves, energy (a) and optical-depth (b) factor per octave.
@@ -457,7 +460,7 @@ impl Default for GroundFog {
             top_soft_m: 12.0, edge_m: 25.0, top_wave_m: 8.0, wave_tile_m: 900.0,
             shallow_e_m: 5.0, hollow_radius_m: 400.0, hollow_m: 15.0, slope_lo: 0.12, slope_hi: 0.35, flat_share: 0.3,
             visibility_m: 150.0, shallow_visibility_m: 400.0, lift_max_m: 80.0, lift_full_deg: 20.0, lift_soft_m: 25.0,
-            breakup: 0.45, breakup_tile_m: 250.0, breakup_y_m: 40.0, wisp_m: 40.0, wisp_erode: 0.7, top_fade_m: 25.0, albedo: 0.99, g: 0.75, ms_octaves: 3, ms_a: 0.6, ms_b: 0.35, diffuse_sun: 1.0,
+            breakup: 0.45, breakup_tile_m: 250.0, breakup_y_m: 40.0, wisp_m: 40.0, wisp_erode: 0.7, top_fade_m: 25.0, top_billow_m: 25.0, billow_tile_m: 300.0, albedo: 0.99, g: 0.75, ms_octaves: 3, ms_a: 0.6, ms_b: 0.35, diffuse_sun: 1.0,
             ambient_scale: 1.0, ambient_od: 0.5, ground_albedo: 0.2, cloud_diffuse: 0.35, ignore_cloud_sky: false, sun_soft_m: 20.0, shadow_range_m: 4000.0, shadow_step_m: 100.0,
             extent_m: 12000.0, bake_px: 128, blur_passes: 2, rebake_m: 1500.0, rebake_s: 2.0, steps: 48, max_m: 6000.0, edge_fade: 0.15, step_power: 2.0,
         }

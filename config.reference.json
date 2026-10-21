@@ -107,7 +107,10 @@
     "mie_absorption": 0.000002,
     "mie_asymmetry": 0.8,
     "mie_scale_height_km": 1.6,
-    "msaa_fix": true
+    "msaa_fix": true,
+    "sun_occlusion": true,
+    "occlusion_keep": 0.2,
+    "occlusion_steps": 8
   },
   "wind": {
     "from_deg": 225.0,
@@ -448,14 +451,22 @@
     "breakup": 0.45,
     "breakup_tile_m": 250.0,
     "breakup_y_m": 40.0,
+    "wisp_m": 40.0,
+    "wisp_erode": 0.7,
+    "top_fade_m": 25.0,
+    "top_billow_m": 25.0,
+    "billow_tile_m": 300.0,
     "albedo": 0.99,
     "g": 0.75,
     "ms_octaves": 3,
     "ms_a": 0.6,
     "ms_b": 0.35,
+    "diffuse_sun": 1.0,
     "ambient_scale": 1.0,
     "ambient_od": 0.5,
     "ground_albedo": 0.2,
+    "cloud_diffuse": 0.35,
+    "ignore_cloud_sky": false,
     "sun_soft_m": 20.0,
     "shadow_range_m": 4000.0,
     "shadow_step_m": 100.0,
@@ -466,7 +477,8 @@
     "rebake_s": 2.0,
     "steps": 48,
     "max_m": 6000.0,
-    "edge_fade": 0.15
+    "edge_fade": 0.15,
+    "step_power": 2.0
   },
   "sim": {
     "here_tau_s": 5.0,

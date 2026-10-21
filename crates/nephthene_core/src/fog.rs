@@ -214,14 +214,14 @@ fn blur(v: &[f32], n: u32) -> Vec<f32> {
     }).collect()
 }
 
-/// Extinction per metre at altitude `y` over `ground` for a fog map texel (fog.wesl `fog_density` mirrors it). `wave` -1..1 moves the
-/// top; `n` 0..1 is the breakup noise, which erodes the pool into wisps toward its top; `sun_k` = smoothstep(0, lift_full_deg, sun
+/// Extinction per metre at altitude `y` over `ground` for a fog map texel (fog.wesl `fog_density` mirrors it). `dtop` (m) moves the
+/// top (the shader's waves and billows); `n` 0..1 is the breakup noise, which erodes the pool into wisps toward its top; `sun_k` = smoothstep(0, lift_full_deg, sun
 /// elevation) drives the lift ([`lift_m`]) where the texel's top is sunlit; `sig` is [`sigma`], thinned while the texel's amount is low.
 /// The shader also multiplies the result by the noise breakup and the map's edge fade.
-pub fn density(c: &GroundFog, texel: [f32; 4], ground: f32, y: f32, sun_k: f32, wave: f32, n: f32, sig: (f32, f32)) -> f32 {
+pub fn density(c: &GroundFog, texel: [f32; 4], ground: f32, y: f32, sun_k: f32, dtop: f32, n: f32, sig: (f32, f32)) -> f32 {
     let h = y - ground;
     if h < 0.0 { return 0.0; }
-    let top = texel[0] + c.top_wave_m * wave;
+    let top = texel[0] + dtop;
     // ponytail: 0.2 is the noise band a wisp edge fades over; a knob when wisps are tuned.
     let thr = c.wisp_erode * (1.0 - ((top - y) / c.wisp_m.max(1e-3)).clamp(0.0, 1.0));
     let wisp = if c.wisp_m > 0.0 { smoothstep(thr, thr + 0.2, n) } else { 1.0 };

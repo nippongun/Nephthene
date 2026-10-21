@@ -52,6 +52,9 @@ pub struct FogGpu {
     pub top_fade: f32,
     /// Cloud cover at the eye (0 = clear, no clouds, or ground_fog.ignore_cloud_sky) and ground_fog.cloud_diffuse.
     pub cloud_cover: f32, pub cloud_diffuse: f32,
+    pub top_billow: f32, pub billow_tile: f32,
+    /// Air phase for the kept share of shadowed in-scatter: Mie asymmetry and scattering (config sky), Rayleigh scattering (per metre).
+    pub mie_g: f32, pub mie_beta: f32, pub ray_beta: Vec3,
 }
 
 /// Main world -> render world, every frame: the uniform, the fog map (Rgba32Float), the ground heights (R32Float), the cloud cookie (R8).

@@ -69,6 +69,12 @@ struct Fog {
     // Cloud cover at the eye (0 = clear or no clouds) and the share of the sun's flux the cloud deck passes on diffusely.
     cloud_cover: f32,
     cloud_diffuse: f32,
+    top_billow: f32,
+    billow_tile: f32,
+    // Air phase for the kept share of shadowed in-scatter: Mie asymmetry and scattering, Rayleigh scattering (per metre).
+    mie_g: f32,
+    mie_beta: f32,
+    ray_beta: vec3<f32>,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -145,10 +151,10 @@ fn lit(y: f32, sun_alt: f32) -> f32 { return smoothstep(sun_alt - f.sun_soft, su
 
 // nephthene_core::fog::density: texel = (pool top, shallow, sunlit altitude, amount). The noise `n` erodes the pool into wisps toward
 // its top; the base lifts only where the sun reaches the top.
-fn fog_density(texel: vec4<f32>, g: f32, y: f32, wave: f32, n: f32) -> f32 {
+fn fog_density(texel: vec4<f32>, g: f32, y: f32, dtop: f32, n: f32) -> f32 {
     let h = y - g;
     if h < 0.0 { return 0.0; }
-    let top = texel.x + f.top_wave * wave;
+    let top = texel.x + dtop;
     // ponytail: 0.2 is the noise band a wisp edge fades over (nephthene_core::fog::density).
     let thr = f.wisp_erode * (1.0 - clamp((top - y) / max(f.wisp_m, 1e-3), 0.0, 1.0));
     let wisp = select(1.0, smoothstep(thr, thr + 0.2, n), f.wisp_m > 0.0);
@@ -207,6 +213,24 @@ fn ms(od: f32, c: f32) -> f32 {
     return s;
 }
 
+// Pool top offset (m) at xz: the small wave and the billows, drifting with the wind.
+fn top_off(xz: vec2<f32>) -> f32 {
+    let q = xz - f.wind;
+    let wave = 2.0 * vnoise(vec3(q.x, 0.0, q.y) / f.wave_tile) - 1.0;
+    let b = vec3(q.x, 0.0, q.y) / max(f.billow_tile, 1.0);
+    let billow = 2.0 * (0.7 * vnoise(b + vec3(41.0, 0.0, 7.0)) + 0.3 * vnoise(b * 2.3 + vec3(5.0, 0.0, 63.0))) - 1.0;
+    return f.top_wave * wave + f.top_billow * billow;
+}
+
+// Share of the shadowed air's in-scatter the shadow does not remove: the multiple-scattered light, about isotropic, so `occ_keep` of
+// the isotropic level, not of the forward-peaked single scattering toward the sun (that re-added a sun-shaped glow). Per channel, the
+// air phase is Rayleigh + Mie (Henyey-Greenstein) weighted by their scattering.
+fn kept(c: f32) -> vec3<f32> {
+    let pr = 3.0 / (16.0 * PI) * (1.0 + c * c);
+    let phase = (f.ray_beta * pr + vec3(f.mie_beta * hg(c, f.mie_g))) / max(f.ray_beta + vec3(f.mie_beta), vec3(1e-12));
+    return min(vec3(f.occ_keep / (4.0 * PI)) / max(phase, vec3(1e-6)), vec3(1.0));
+}
+
 // Share of the view ray from the eye to `t_end` that lies in the terrain's shadow (below each column's sunlit altitude), at occ_steps
 // points jittered per pixel by `jit` (even spacing would band the share in steps of 1 / occ_steps). Outside the fog map counts as sunlit.
 fn shadowed(eye: vec3<f32>, d: vec3<f32>, t_end: f32, jit: f32) -> f32 {
@@ -238,7 +262,7 @@ fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     }
     var x_ap = vec3(0.0);
     if occ && t_scene > 0.0 {
-        x_ap = shadowed(eye, d, t_scene, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (1.0 - f.occ_keep) * sample_aerial_view_lut(in.uv, t_scene) * view.exposure;
+        x_ap = shadowed(eye, d, t_scene, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (vec3(1.0) - kept(dot(d, f.sun_dir))) * sample_aerial_view_lut(in.uv, t_scene) * view.exposure;
     }
     let fog = march(in, d, eye, t_scene, occ);
     return vec4(fog.rgb - x_ap * (1.0 - fog.a), fog.a);
@@ -289,23 +313,28 @@ fn march(in: FullscreenVertexOutput, d: vec3<f32>, eye: vec3<f32>, t_scene: f32,
         let g = ground_h(p.xz);
         if p.y < g || (p.y > texel.x + f.top_soft + f.top_wave && texel.y <= 0.0) { continue; }
         let q = p - vec3(f.wind.x, 0.0, f.wind.y);
-        let wave = 2.0 * vnoise(vec3(q.x, 0.0, q.z) / f.wave_tile) - 1.0;
+        let dtop = top_off(p.xz);
         let nq = q / vec3(f.breakup_tile, f.breakup_y, f.breakup_tile);
         let n = 0.65 * vnoise(nq) + 0.35 * vnoise(nq * 2.7 + vec3(17.0, 3.0, 29.0));
-        var dens = fog_density(texel, g, p.y, wave, n);
+        var dens = fog_density(texel, g, p.y, dtop, n);
         if dens <= 0.0 { continue; }
         let rim = max(abs(p.x - centre.x), abs(p.z - centre.y)) / half;
         dens *= (1.0 - f.breakup * n) * (1.0 - smoothstep(1.0 - f.edge_fade, 1.0, rim));
         // Optical depth up to the pool top (the fog the light crosses to get here), plus the mist above.
         let h = max(p.y - g, 0.0);
-        let od_up = f.sigma * max(texel.x - p.y, 0.0) + f.sigma_shallow * texel.y * f.shallow_e * exp(-h / max(f.shallow_e, 1e-3));
+        let od_up = f.sigma * max(texel.x + dtop - p.y, 0.0) + f.sigma_shallow * texel.y * f.shallow_e * exp(-h / max(f.shallow_e, 1e-3));
         // Isotropic in-scattering of diffuse light: half from the sky above (dimmed by the fog over the sample), half from below
         // (the fog and ground under the sample reflecting it).
         let tau_down = f.sigma * smoothstep(0.0, 0.5, texel.w) * max(min(texel.x, p.y) - g, 0.0);
         var light = amb * exp(-f.ambient_od * od_up) * (0.5 + 0.5 * below(tau_down, f.ground_albedo));
         if f.sun_dir.y > -0.05 {
             let sun = f.sun_color * atmo_transmittance(R + max(p.y, 0.0), f.sun_dir.y) * cloud_shadow(p);
-            light += sun * lit(p.y, texel.z) * ms(od_up / max(f.sun_dir.y, 0.05), cs);
+            // Toward the sun the light crosses the fog up to the local top where its ray leaves the pool: billows facing the sun are lit,
+            // the far sides are shaded by the crest in front.
+            let up = max(texel.x + dtop - p.y, 0.0);
+            let exit = p.xz + f.sun_dir.xz / max(f.sun_dir.y, 0.05) * up;
+            let od_sun = f.sigma * max(texel.x + top_off(exit) - p.y, 0.0) / max(f.sun_dir.y, 0.05);
+            light += sun * lit(p.y, texel.z) * ms(od_sun, cs);
             // Diffuse sunlight from the sunlit top: two-stream diffuse transmission of a conservative layer, 1 / (1 + 0.75 (1 - g) tau),
             // minus the direct beam, as isotropic radiance (flux / pi). Neutral in colour: it is what makes deep fog white.
             let mu0 = max(f.sun_dir.y, 0.05);
@@ -332,7 +361,7 @@ fn march(in: FullscreenVertexOutput, d: vec3<f32>, eye: vec3<f32>, t_scene: f32,
     let s_sky = sample_sky_view_lut(re, direction_world_to_atmosphere(d));
     var s_air = min(s_sky * (vec3(1.0) - t_air) / max(vec3(1.0) - t_inf, vec3(1e-4)), s_sky);
     // The air in front of the fog loses its sun glow where the terrain shadows it, as the aerial perspective does (main).
-    if occ { s_air *= 1.0 - shadowed(eye, d, tc, jit) * (1.0 - f.occ_keep); }
+    if occ { s_air *= vec3(1.0) - shadowed(eye, d, tc, jit) * (vec3(1.0) - kept(cs)); }
     let rgb = (lum * t_air + alpha * s_air) * view.exposure;
     return vec4(min(rgb, vec3(F16_MAX)), alpha);
 }

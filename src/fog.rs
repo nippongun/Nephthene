@@ -158,6 +158,8 @@ fn drive(
     (g.sun_soft, g.ambient_scale, g.ambient_od, g.ms_a, g.ms_b, g.ms_octaves, g.edge_fade) = (c.sun_soft_m, c.ambient_scale, c.ambient_od, c.ms_a, c.ms_b, c.ms_octaves, c.edge_fade);
     // Cover the clouds draw: the panel / config override, else the map at the camera; none without clouds.
     let cover = clouds.as_ref().map_or(0.0, |cp| if cp.gpu.coverage_override >= 0.0 { cp.gpu.coverage_override } else { wx.here.coverage });
+    // ponytail: Rayleigh scattering at sea level, Bevy's Atmosphere::earth values (sky.rs keeps its Rayleigh); read the medium to upgrade.
+    (g.top_billow, g.billow_tile, g.mie_g, g.mie_beta, g.ray_beta) = (c.top_billow_m, c.billow_tile_m, sky.mie_asymmetry, sky.mie_scattering, Vec3::new(5.802e-6, 13.558e-6, 33.1e-6));
     (g.top_fade, g.cloud_diffuse, g.cloud_cover) = (c.top_fade_m, c.cloud_diffuse, if c.ignore_cloud_sky { 0.0 } else { cover });
     if let Some(cp) = clouds {
         let s = &cp.shadow_gpu;
