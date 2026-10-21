@@ -1,0 +1,30 @@
+[package]
+name = "nephthene"
+version = "0.1.0"
+edition = "2024"
+description = "Nephthene: a weather system for Bevy (clock, sun/moon, sky, volumetric clouds, cloud shadows, rain, storms, panel)."
+license = "MIT OR Apache-2.0"
+
+[workspace]
+members = [".", "crates/nephthene_core"]
+default-members = [".", "crates/nephthene_core"]
+resolver = "3"
+
+[features]
+default = ["panel"]
+# The mouse-driven weather panel (bevy_feathers widgets).
+panel = ["bevy/bevy_feathers", "bevy/bevy_ui_widgets"]
+
+[dependencies]
+bevy = { version = "0.20.0", features = ["jpeg", "pbr_light_textures"] }
+wgpu = { version = "30", default-features = false } # pass-timing query set types (clouds/render.rs); same version as bevy_render
+nephthene_core = { path = "crates/nephthene_core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Dev builds: deps optimised so debug runs are playable.
+[profile.dev.package."*"]
+opt-level = 3
