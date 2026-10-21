@@ -15,3 +15,11 @@ Weather library for Bevy 0.20 (Rust 2024). Layout: `crates/nephthene_core` (pure
 6. Shortest working diff. Stdlib and engine-native first. No speculative abstraction. Pure logic goes in `nephthene_core` with unit tests; the plugin stays a thin adapter.
 7. No game-specific names, assets, bug IDs or feature IDs anywhere in this repo. Comments say the reason directly.
 8. Bugs and decisions go in `docs/` (create `docs/bugs.md` and `docs/decisions.md` when the first entry exists); never delete a bug row, change its status.
+
+## Roles (save tokens)
+- **Planner** (main session, large model): research, design, decisions; writes the task graph. No mechanical edits itself.
+- **Executors** (`.claude/agents/executor.md`, Haiku): one graph node each, only its files, run its check.
+- **Verifier** (`.claude/agents/verifier.md`, Sonnet, fresh): re-runs checks and tries to refute; never edits (rule 5).
+- Run a graph: workflow `graph` (`.claude/workflows/graph.js`), args `{goal, nodes: [{id, deps, files, task, check}], final_check}`. Nodes start when their deps pass; one retry on refutation. The planner commits after the final verdict.
+- Node size: one file or one tight pair (Rust + WGSL struct), a check that runs in minutes. Write the task so an executor needs no other context.
+- Cloud: `rust-toolchain.toml` pins rustc; the SessionStart hook installs Bevy's system packages and lavapipe (`VK_ICD_FILENAMES`), so shots and gates run on CPU (fog gates matched Metal within 1%; goldens stay Apple-only).

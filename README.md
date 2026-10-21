@@ -2,13 +2,13 @@
 
 A weather system for [Bevy](https://bevy.org) 0.20: a clock that drives sun, moon, stars and exposure; a Bevy `Atmosphere` sky with
 dust; HZD-style raymarched volumetric clouds with a temporal resolve; cloud shadows; GPU rain with splashes and wet ground; distant rain
-shafts; optional storm cells; wind; a weather map; wind/rain audio mapping; and a mouse-driven weather panel.
+shafts; optional storm cells; terrain-following ground fog (valley pools, shallow mist, burn-off); wind; a weather map; wind/rain audio mapping; and a mouse-driven weather panel.
 
 Two crates:
 
 | crate | what |
 |---|---|
-| `nephthene_core` (`crates/nephthene_core`) | Pure Rust, no Bevy: `Config`, clock/sun/moon, wind, weather map, rain, storm timetable, audio mapping, panel state. Unit and integration tests. |
+| `nephthene_core` (`crates/nephthene_core`) | Pure Rust, no Bevy: `Config`, clock/sun/moon, wind, weather map, ground fog, rain, storm timetable, audio mapping, panel state. Unit and integration tests. |
 | `nephthene` (this package) | The Bevy plugin: render passes, shaders (embedded), systems, the panel. |
 
 ## Use
@@ -24,13 +24,14 @@ The scene provides a camera with `AtmosphereSettings` (add `Exposure` / `Distanc
 
 ## Run
 
-- Example (a window, your terminal only): `cargo run --release --example sky`. Drag the left mouse button to look, wheel to move, `` ` `` opens the panel.
+- Example (a window, your terminal only): `cargo run --release --example sky`. Hold the left mouse button and move to look; W/S forward and back, A/D strafe, E up, Q down, Left Shift 5x, wheel changes speed; `` ` `` opens the panel.
 - Headless shot (never opens a window): `cargo run --release --example sky -- --shot sky_west --hour 17.5 --out shots`. Options are listed at the top of `examples/sky.rs`; `--set clouds.update_div=1` overrides any config key, `--config file.json` loads a file, `--print-config` prints the full reference (`config.reference.json`).
 - Under an agent (`CLAUDECODE=1`) a windowed run refuses to start.
 
 ## Tests (all headless)
 
 - `cargo test --release` runs: core unit and integration tests, the golden still gate (`tests/golden.rs`, goldens in `tests/golden/`, Apple Silicon/Metal), the metric self-test.
+- Manual fog gates G15-G16 (terrain, mountain shadow): `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`.
 - Manual cloud gates G7-G14 (a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
 - Regenerate goldens after an approved look change: `NEPHTHENE_UPDATE_GOLDEN=1 cargo test --release --test golden golden_cloud_sky`.
 - Python metric tools: `tools/README.md`.
@@ -48,6 +49,7 @@ starting values and **untuned**. Sections:
 | `clouds` (+ `look`, `noise`) | layer heights, march steps, light, shoulder, render scale, update div, shadow cookie, towers, probe view, coverage override |
 | `resolve` | temporal resolve: reject gain, still box, fresh confidence, cut thresholds, jitter, the `wide_upsample` switch, and the test switches `no_reproject`, `light_jitter_shared`, `motion_half_px` |
 | `shafts` | rain-shaft pass |
+| `ground_fog` | terrain-following radiation fog: formation from night cooling, cloud cover, wind, wetness and dust; burn-off and base lift; valley pooling depth, shallow mist, optics, bake and march (`render_scale`, half resolution by default, depth-aware composite); test switches `ignore_terrain`, `ignore_shadow`, `hash_noise`; off by default via `enabled` (the panel's Fog section switches it on at runtime). See `docs/fog.md` |
 | `rain` | streaks, splashes, drop kinematics, wetness, rain light, `force` |
 | `storms` (+ `render`, `fx`) | timetable, cell shape, shader constants, flashes, authored storms, `force` |
 | `audio` | wind/rain bed mapping (the plugin does not play sound; use `core::audio` from your audio code) |

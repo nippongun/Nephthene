@@ -1,13 +1,15 @@
-//! Nephthene example: a neutral scene (flat ground, sun, a mouse-driven look-around camera) under the weather system.
+//! Nephthene example: a neutral scene (flat ground, sun, a flying camera) under the weather system.
 //!
-//! Interactive (your terminal only): `cargo run --release --example sky`. Drag the left mouse button to look around, the wheel moves
-//! the camera forward and back, ` (Backquote) opens the weather panel (clock, coverage, wind, rain, map).
+//! Interactive (your terminal only): `cargo run --release --example sky`. Hold the left mouse button and move to look around.
+//! W/S move forward and back along the view, A/D strafe, E up, Q down, Left Shift is 5x, the wheel changes the base speed.
+//! ` (Backquote) opens the weather panel (clock, coverage, wind, rain, map); while it is open the mouse look and wheel are off.
 //! Headless (never opens a window; renders to an image): `cargo run --release --example sky -- --shot sky_west --out shots`.
 //!
 //! Shot options: `--shot <pose>` (examples/poses.json), `--out <dir>` (default shots), `--size WxH`, `--scale-factor f`,
 //! `--hour h`, `--live` (clock and wind run; default frozen), `--config file.json`, `--set path=json` (repeatable, e.g.
 //! `--set clouds.update_div=1`), `--settle frames` (default 60), `--seq count,every` / `--at a,b,c` (several frames per run),
 //! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (drive the panel with synthetic pointer input).
+//! `--terrain`: the test valley (nephthene_core::fog::test_valley) as the ground mesh and the plugin's `Ground`, instead of the flat plane.
 //! `--print-config` prints the effective config as JSON and exits (the reference file).
 //! Exit codes: 0 ok, 3 timeout, 4 bad argument.
 use bevy::{
@@ -86,10 +88,11 @@ fn main() {
     } else {
         app.add_plugins(plugins);
     }
+    if args.has("--terrain") { app.insert_resource(nephthene::Ground(nephthene::core::fog::test_valley())); }
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     match shot {
         Some(name) => { app.add_plugins(ShotPlugin { name, args }); }
-        None => { app.add_systems(Update, look_around); }
+        None => { app.add_systems(Update, fly); }
     }
     if let AppExit::Error(c) = app.run() { std::process::exit(c.get() as i32); }
 }
@@ -111,12 +114,13 @@ fn camera_bundle(cfg: &Config) -> impl Bundle {
     )
 }
 
-/// Flat ground and the sun; the camera is spawned by the mode (look-around or shot).
-fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, cfg: Res<Cfg>) {
-    commands.spawn((
-        Name::new("Ground"), WetGround, Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))),
-        MeshMaterial3d(mats.add(StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() })),
-    ));
+/// Flat ground (or the `--terrain` mesh over a lowered plane) and the sun; the camera is spawned by the mode (look-around or shot).
+fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>) {
+    let mat = mats.add(StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() });
+    // Under the terrain the plane sits just below its lowest point, so it shows only past the terrain's edge.
+    let below = terrain.as_ref().map_or(0.0, |t| t.0.y.iter().cloned().fold(f32::MAX, f32::min) - 10.0);
+    commands.spawn((Name::new("Ground"), WetGround, Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))), MeshMaterial3d(mat.clone()), Transform::from_xyz(0.0, below, 0.0)));
+    if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), WetGround, Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(mat))); }
     commands.spawn((
         NephtheneSun, DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },
         CascadeShadowConfigBuilder { maximum_distance: 250.0, first_cascade_far_bound: 8.0, ..default() }.build(), Transform::default(),
@@ -124,25 +128,51 @@ fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     let _ = cfg;
 }
 
+/// A height grid as a triangle mesh, one vertex per cell centre (rows north to south), smooth normals.
+fn terrain_mesh(g: &nephthene::core::rain::HeightGrid) -> Mesh {
+    use bevy::{asset::RenderAssetUsages, mesh::{Indices, PrimitiveTopology}};
+    let pos: Vec<[f32; 3]> = (0..g.w * g.h).map(|k| [g.min_x + ((k % g.w) as f32 + 0.5) * g.cell_m, g.y[k as usize], g.max_z - ((k / g.w) as f32 + 0.5) * g.cell_m]).collect();
+    let idx: Vec<u32> = (0..g.h - 1).flat_map(|j| (0..g.w - 1).flat_map(move |i| { let a = j * g.w + i; [a, a + 1, a + g.w, a + 1, a + g.w + 1, a + g.w] })).collect();
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos).with_inserted_indices(Indices::U32(idx)).with_computed_smooth_normals()
+}
+
 // ---------------------------------------------------------------- interactive
 
-fn look_around(mut commands: Commands, cfg: Res<Cfg>, cams: Query<Entity, With<Cam>>, mut cam: Query<&mut Transform, With<Cam>>,
-    mouse: Res<ButtonInput<MouseButton>>, motion: Res<AccumulatedMouseMotion>, scroll: Res<AccumulatedMouseScroll>, panel: Option<Res<nephthene::Panel>>) {
+fn fly(mut commands: Commands, cfg: Res<Cfg>, cams: Query<Entity, With<Cam>>, mut cam: Query<&mut Transform, With<Cam>>,
+    mouse: Res<ButtonInput<MouseButton>>, keys: Res<ButtonInput<KeyCode>>, motion: Res<AccumulatedMouseMotion>, scroll: Res<AccumulatedMouseScroll>,
+    panel: Option<Res<nephthene::Panel>>, time: Res<Time>, mut speed: Local<Option<f32>>) {
     if cams.is_empty() {
         commands.spawn((camera_bundle(&cfg.0), Transform::from_xyz(0.0, 1.7, 0.0).looking_at(Vec3::new(0.0, 400.0, 1000.0), Vec3::Y)));
         return;
     }
     let Ok(mut t) = cam.single_mut() else { return };
-    if panel.is_some_and(|p| p.0.open) { return; } // the panel owns the mouse while open
-    if mouse.pressed(MouseButton::Left) {
-        let (mut yaw, mut pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
-        yaw -= motion.delta.x * 0.003;
-        pitch = (pitch - motion.delta.y * 0.003).clamp(-1.5, 1.5);
-        t.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+    // ponytail: base speed 20 m/s, 1.2x per wheel line, clamped to 1..2000 m/s; all untuned.
+    let base = speed.get_or_insert(20.0);
+    if !panel.is_some_and(|p| p.0.open) { // the panel owns the mouse while open
+        if mouse.pressed(MouseButton::Left) {
+            let (mut yaw, mut pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
+            yaw -= motion.delta.x * 0.003;
+            pitch = (pitch - motion.delta.y * 0.003).clamp(-1.5, 1.5);
+            t.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+        }
+        *base = (*base * 1.2f32.powf(scroll.delta.y)).clamp(1.0, 2000.0);
     }
-    // ponytail: wheel speed 5 m per line, untuned.
-    let f = t.forward() * scroll.delta.y * 5.0;
-    t.translation += f;
+    // Ctrl, Alt and Cmd chords (Cmd+Q, Cmd+W) must not also fly the camera.
+    let chord = [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight, KeyCode::SuperLeft, KeyCode::SuperRight].iter().any(|k| keys.pressed(*k));
+    if !chord {
+        let (f, r) = (*t.forward(), *t.right());
+        let mut d = Vec3::ZERO;
+        if keys.pressed(KeyCode::KeyW) { d += f; }
+        if keys.pressed(KeyCode::KeyS) { d -= f; }
+        if keys.pressed(KeyCode::KeyD) { d += r; }
+        if keys.pressed(KeyCode::KeyA) { d -= r; }
+        if keys.pressed(KeyCode::KeyE) { d += Vec3::Y; }
+        if keys.pressed(KeyCode::KeyQ) { d -= Vec3::Y; }
+        // ponytail: Left Shift is 5x, untuned.
+        let boost = if keys.pressed(KeyCode::ShiftLeft) { 5.0 } else { 1.0 };
+        t.translation += d.normalize_or_zero() * *base * boost * time.delta_secs();
+    }
 }
 
 // ---------------------------------------------------------------- headless shots
@@ -173,7 +203,9 @@ impl Plugin for ShotPlugin {
             // Deterministic frames: 60 Hz of simulated time per update, whatever the wall clock does.
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_micros(16_667)))
             .add_systems(Startup, spawn_cam)
-            .add_systems(Update, (drive, cam_motion));
+            // The sway / turn phase reads the frame count `drive` advances: ordered, so adding systems elsewhere cannot flip which runs first
+            // (an unordered pair moved the golden sway frames when the fog plugin added systems).
+            .add_systems(Update, (cam_motion, drive).chain());
     }
 }
 
