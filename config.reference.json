@@ -203,6 +203,7 @@
     "still_px": 0.5,
     "fresh": 1.0,
     "conf_max": 255.0,
+    "upsample_mean_frames": 3.0,
     "cut_deg": 20.0,
     "cut_m": 200.0,
     "jitter_step": 0.618034,

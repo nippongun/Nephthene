@@ -31,7 +31,7 @@ The scene provides a camera with `AtmosphereSettings` (add `Exposure` / `Distanc
 ## Tests (all headless)
 
 - `cargo test --release` runs: core unit and integration tests, the golden still gate (`tests/golden.rs`, goldens in `tests/golden/`, Apple Silicon/Metal), the metric self-test.
-- Manual cloud gates G7-G13 (a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
+- Manual cloud gates G7-G14 (a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
 - Regenerate goldens after an approved look change: `NEPHTHENE_UPDATE_GOLDEN=1 cargo test --release --test golden golden_cloud_sky`.
 - Python metric tools: `tools/README.md`.
 

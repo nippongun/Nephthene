@@ -268,6 +268,8 @@ pub struct Resolve {
     pub fresh: f32,
     /// Confidence cap (samples).
     pub conf_max: f32,
+    /// An unmarched pixel whose confidence is below this takes a running mean of each frame's upsample (a revealed strip would otherwise keep its first one until its single march visit). 0 = off.
+    pub upsample_mean_frames: f32,
     /// A cut (history reset): a turn of more than `cut_deg` in one frame (180 or more never cuts), or a move of more than `cut_m`.
     pub cut_deg: f32, pub cut_m: f32,
     /// Per-visit jitter step (golden ratio conjugate).
@@ -279,7 +281,7 @@ pub struct Resolve {
 }
 impl Default for Resolve {
     fn default() -> Self {
-        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
+        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, upsample_mean_frames: 3.0, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
                   light_jitter_offset: [2053.0, 911.0], no_reproject: false, light_jitter_shared: false }
     }
 }

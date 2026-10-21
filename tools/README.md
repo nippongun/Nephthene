@@ -12,3 +12,5 @@ Python needs numpy, scipy, Pillow. Shell tools call `cargo run --release --examp
 | `cloud_speckle.py` | Isolated dots (> 3 levels off the 3x3 median per 1000 px), excess over a reference | `python3 tools/cloud_speckle.py <dir> [ref_dir]` |
 | `frame_seq_diff.py` | Ground flicker over a frame sequence (frame diff, second difference) | `python3 tools/frame_seq_diff.py <dir-or-glob> [--ground-y0 0.5] [--thr 0.05]` |
 | `cloud_size.py` | Offline cloud cell size spectrum and tower thickness from a CPU port of the density (about 50 s) | `python3 tools/cloud_size.py [--config file.json] [--legacy]` |
+| `cloud_turn_err.py` | Per-frame error of a turning series vs div 1 at the same frames, split leading 15% / rest on cloud pixels (lead/rest ratio is gate G14) | `python3 tools/cloud_turn_err.py <dir> <div1_ref_dir> [--lead left\|right\|none]` |
+| `cloud_turn_eval.sh` | Turn-rate sweep: captures div 4 and cached div 1 at each rate, prints the errors | `tools/cloud_turn_eval.sh <workdir> [45,90]` |

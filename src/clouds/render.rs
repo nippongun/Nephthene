@@ -125,7 +125,7 @@ struct ResolveGpu {
     delta: Vec3, alpha: f32, max_distance: f32, reset: u32, ox: u32, oy: u32,
     /// resolve.no_reproject: history sampled where the pixel is, not where it was (test red arm: a turning camera ghosts).
     noreproj: u32, div: u32, n: u32,
-    reject_gain: f32, still_px: f32, fresh: f32, conf_max: f32,
+    reject_gain: f32, still_px: f32, fresh: f32, conf_max: f32, upsample_mean_frames: f32,
 }
 
 /// HZD's 16-frame cover order of a 4x4 block (value = x + 4y). untuned.
@@ -313,7 +313,7 @@ fn prepare_textures_and_uniform(
             prev_clip_from_ray: hist.map_or(view.clip_from_view * rot.transpose(), |h| h.clip_from_view * h.rot_inv), ray_from_clip: rot * view.clip_from_view.inverse(),
             delta: hist.map_or(Vec3::ZERO, |h| cam - h.cam), alpha: params.temporal_alpha, max_distance: params.gpu.max_distance, reset: reset as u32, ox, oy, div, n: if reset { 0 } else { hist.map_or(0, |h| h.since + 1) },
             noreproj: params.resolve.no_reproject as u32,
-            reject_gain: params.resolve.reject_gain, still_px: params.resolve.still_px, fresh: params.resolve.fresh, conf_max: params.resolve.conf_max,
+            reject_gain: params.resolve.reject_gain, still_px: params.resolve.still_px, fresh: params.resolve.fresh, conf_max: params.resolve.conf_max, upsample_mean_frames: params.resolve.upsample_mean_frames,
         });
         ubo.write_buffer(&device, &queue);
         commands.entity(e).insert((

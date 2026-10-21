@@ -1,4 +1,4 @@
-//! Cloud gates G7-G13 (headless; every shot is the `sky` example in `--shot` mode). Manual gates are #[ignore]:
+//! Cloud gates G7-G14 (headless; every shot is the `sky` example in `--shot` mode). Manual gates are #[ignore]:
 //! `cargo test --release --test clouds -- --ignored --nocapture` runs them all, `... g11` one. Metrics print before asserting.
 //! Every threshold is a budget (reference run's own noise plus a stated allowance), not a fit to a measurement.
 //! Red arms use config switches (`--set`): resolve.no_reproject, clouds.temporal_alpha = 1 and the update_div / steps references.
@@ -321,6 +321,53 @@ fn g13_streak_lines() {
     if ship > reference * G13_RATIO { f.push(format!("G13 streak lines: {ship:.3} > {reference:.3} x {G13_RATIO}")); }
     if red <= reference * G13_RATIO { f.push(format!("G13 red arm {red:.3} not above {:.3}; the check does not see the streaks", reference * G13_RATIO)); }
     finish("G13", f);
+}
+
+// ---------------------------------------------------------------- G14 continuous turn, revealed side
+
+/// G14: a pixel is marched once per 16 frames, so on a continuously turning view the strip revealed in the last ~12 frames (the leading 15% of the
+/// width at 45 deg/s) held its first bilinear upsample, a different one in each frame's band: hard vertical seams and 8 px blotches. Retina pose,
+/// live weather, continuous yaw 45 deg/s (`--turn 750,1000`), 8 frames 20 apart, div 4 vs div 1 at the same frame. Score = rms of the 8 px-scale
+/// (gaussian sigma 4) luma difference over CLOUD pixels (red - blue > -25 in the reference, dilated), leading 15% columns over the rest, mean over
+/// the frames. Budget: the revealed strip may be half again as wrong as the settled interior (the resolve's own error): ratio <= 1.5.
+/// Red arm: `resolve.upsample_mean_frames` 0 (no running mean of upsamples).
+const G14_RATIO: f32 = 1.5;
+
+fn g14_lead_rest(a: &[RgbImage], b: &[RgbImage]) -> (f32, f32) {
+    let (mut lead, mut rest) = (0f32, 0f32);
+    for (x, r) in a.iter().zip(b) {
+        let ((la, w, h), (lb, _, _)) = (sky_luma(x), sky_luma(r));
+        let d: Vec<f32> = la.iter().zip(&lb).map(|(p, q)| p - q).collect();
+        let lo = blur(&d, w, h, 4.0);
+        let cloud: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| { let p = r.get_pixel(x as u32, y as u32); if p[0] as i32 - p[2] as i32 > -25 { 1.0 } else { 0.0 } }).collect();
+        let near = blur(&cloud, w, h, 8.0);
+        let (mut sl, mut nl, mut sr, mut nr) = (0f32, 0f32, 0f32, 0f32);
+        for i in 0..w * h { if near[i] > 0.1 {
+            if i % w < w * 15 / 100 { sl += lo[i] * lo[i]; nl += 1.0 } else { sr += lo[i] * lo[i]; nr += 1.0 }
+        } }
+        lead += (sl / nl.max(1.0)).sqrt(); rest += (sr / nr.max(1.0)).sqrt();
+    }
+    (lead / a.len() as f32, rest / a.len() as f32)
+}
+
+fn g14_seq(tag: &str, sets: &[&str]) -> Vec<RgbImage> {
+    let mut a = vec!["--hour", "17.5", "--live", "--settle", "60", "--turn", "750,1000", "--at", "20,40,60,80,100,120,140,160"];
+    for s in sets { a.extend(["--set", s]); }
+    seq(&format!("g14_{tag}"), "golden_ne25_retina", 8, &a)
+}
+
+#[test]
+#[ignore = "manual gate"]
+fn g14_turn_reveal() {
+    let reference = g14_seq("ref", &["clouds.update_div=1"]);
+    let score = |s: &[RgbImage]| { let (l, r) = g14_lead_rest(s, &reference); (l, r, l / r) };
+    let (lead, rest, ratio) = score(&g14_seq("def", &["clouds.update_div=4"]));
+    let (rl, rr, rred) = score(&g14_seq("red", &["clouds.update_div=4", "resolve.upsample_mean_frames=0.0"]));
+    println!("G14 cloud 8 px error vs div 1, turning 45 deg/s: leading 15% {lead:.2}, rest {rest:.2}, ratio {ratio:.2} (limit {G14_RATIO}); red arm (no mean) {rl:.2}, {rr:.2}, ratio {rred:.2}");
+    let mut f = vec![];
+    if ratio > G14_RATIO { f.push(format!("G14 revealed strip: ratio {ratio:.2} > {G14_RATIO}")); }
+    if rred <= G14_RATIO { f.push(format!("G14 red arm ratio {rred:.2} not above {G14_RATIO}; the check does not see the strip")); }
+    finish("G14", f);
 }
 
 // ---------------------------------------------------------------- G3-style resolve red arm (temporal_alpha 1)
