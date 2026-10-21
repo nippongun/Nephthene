@@ -25,6 +25,23 @@ impl Channel {
 /// The whole map recoloured for display.
 pub fn channel_rgba(map: &WeatherMap, ch: Channel) -> Vec<u8> { map.rgba.chunks_exact(4).flat_map(|t| ch.pixel([t[0], t[1], t[2], t[3]])).collect() }
 
+/// A map texel as the renderer samples it: R is the coverage override and G the precip override when set (the values `apply` hands the shader).
+pub fn effective_texel(map: &WeatherMap, ctl: &Ctl, i: u32, j: u32) -> [u8; 4] {
+    let k = ((j * map.width + i) * 4) as usize;
+    let mut t: [u8; 4] = std::array::from_fn(|c| map.rgba[k + c]);
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let (cov, rain) = (ctl.gpu_coverage(), ctl.gpu_precip());
+    if cov >= 0.0 { t[0] = byte(cov); }
+    if rain >= 0.0 { t[1] = byte(rain); }
+    t
+}
+
+/// The whole map recoloured for display with the overrides applied; same layout as `channel_rgba`.
+pub fn effective_rgba(map: &WeatherMap, ctl: &Ctl) -> Vec<u8> {
+    (0..map.height).flat_map(|j| (0..map.width).map(move |i| (i, j)))
+        .flat_map(|(i, j)| ctl.channel.pixel(effective_texel(map, ctl, i, j))).collect()
+}
+
 /// Map (x, z) metres -> (u, v) in 0..1 across the map image, v down from the north edge (rows run north to south); unclamped.
 pub fn map_uv(map: &WeatherMap, x: f32, z: f32) -> [f32; 2] { [(x - map.min_x) / map.size_x, (map.max_z - z) / map.size_z] }
 
@@ -151,5 +168,30 @@ mod tests {
         c.clouds = false; c.shadows = false;
         assert_eq!((c.gpu_coverage(), c.shadow_strength(1.0)), (0.0, 0.0));
         assert_eq!(DEBUG_NAMES.len(), 6);
+    }
+    #[test]
+    fn panel_map_shows_the_effective_weather() {
+        let m = WeatherMap::procedural(&crate::config::MapCfg::default());
+        let mut c = Ctl { channel: Channel::Coverage, ..Ctl::default() };
+        // Red arm: the old recolour ignores the coverage override, so it must stay the same.
+        let old = channel_rgba(&m, Channel::Coverage);
+        let before = effective_rgba(&m, &c);
+        c.coverage = Some(0.9);
+        assert_eq!(channel_rgba(&m, Channel::Coverage), old);
+        let after = effective_rgba(&m, &c);
+        assert_ne!(before, after);
+        let v = after[0];
+        assert!((229..=230).contains(&v) && after.chunks_exact(4).all(|p| p == [v, v, v, 255]));
+        // Clouds off forces zero coverage, whatever the override says.
+        c.clouds = false;
+        assert!(effective_rgba(&m, &c).chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+        // Rain toggle forces full precip on the rain channel, and off gives the map back.
+        c.clouds = true; c.coverage = None; c.channel = Channel::Rain;
+        let rain_before = effective_rgba(&m, &c);
+        c.rain = true;
+        assert_ne!(effective_rgba(&m, &c), rain_before);
+        assert!(effective_rgba(&m, &c).chunks_exact(4).all(|p| p == [255, 255, 255, 255]));
+        c.rain = false;
+        assert_eq!(effective_rgba(&m, &c), rain_before);
     }
 }

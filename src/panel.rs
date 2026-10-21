@@ -26,12 +26,12 @@ struct DashPanel;
 struct MapView;
 /// Which control an event came from.
 #[derive(Component, Clone, Copy, PartialEq, Debug)]
-pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, Clouds, Shadows, Debug, UpdateDiv, Channel, Giz(usize) }
+pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, Clouds, Shadows, Debug, UpdateDiv, Channel, Giz(usize) }
 /// Option index a select currently shows (so a state change elsewhere moves it).
 #[derive(Component)]
 struct SelShown(usize);
 #[derive(Component, Clone, Copy, Default)]
-enum Txt { #[default] Time, Play, Here, Rain, Sun, Frame, Hover, Pin }
+enum Txt { #[default] Time, Play, Here, Rain, Sun, Frame, Hover, Pin, Fog }
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Mark { Cam, Heading, Pin }
 
@@ -98,7 +98,7 @@ fn checkbox(cm: &mut Commands, parent: Entity, wid: Wid, text: &str) {
 fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images: ResMut<Assets<Image>>) {
     let map = &wx.map;
     let mut img = Image::new(Extent3d { width: map.width, height: map.height, depth_or_array_layers: 1 }, TextureDimension::D2,
-        c::channel_rgba(map, dash.0.channel), TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
+        c::effective_rgba(map, &dash.0), TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
     img.sampler = ImageSampler::nearest();
     let handle = images.add(img);
     commands.insert_resource(MapImage(handle.clone()));
@@ -145,6 +145,29 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
     dim(cm, r, "(forces rain: streaks, splashes, wet ground)");
     cm.spawn((Node { flex_grow: 1.0, ..default() }, ChildOf(r)));
     button(cm, r, Wid::Reset, "Reset all", None);
+    // fog: the switch, the amount (model or forced), and the knobs that shape the pool and its top
+    heading(cm, root, "Fog");
+    let r = row(cm, root);
+    lbl(cm, r, "Ground fog");
+    toggle(cm, r, Wid::FogOn);
+    let r = row(cm, root);
+    lbl(cm, r, "Amount");
+    select(cm, r, Wid::FogMode, &["model", "force"], wx.cfg.ground_fog.force.is_some() as usize);
+    let r = row(cm, root);
+    slider(cm, r, Wid::FogAmount, 0.0, 1.0);
+    let r = row(cm, root);
+    lbl(cm, r, "Burn-off per hour");
+    slider(cm, r, Wid::FogBurn, 0.0, 3.0);
+    let r = row(cm, root);
+    lbl(cm, r, "Pool depth (m)");
+    slider(cm, r, Wid::FogDepth, 20.0, 400.0);
+    let r = row(cm, root);
+    lbl(cm, r, "Visibility (m)");
+    slider(cm, r, Wid::FogVis, 30.0, 1000.0);
+    let r = row(cm, root);
+    lbl(cm, r, "Wisps (m)");
+    slider(cm, r, Wid::FogWisp, 0.0, 120.0);
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Fog, ChildOf(root)));
     // view
     heading(cm, root, "View");
     let r = row(cm, root);
@@ -212,14 +235,20 @@ fn on_f32(ev: On<ValueChange<f32>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx
         Some(Wid::Cov) => d.0.coverage = Some(v.clamp(0.0, 1.0)),
         Some(Wid::WindDir) => d.0.wind_from = Some(c::wrap_deg(v)),
         Some(Wid::WindSpeed) => d.0.wind_speed = Some(c::clamp_speed(v)),
+        Some(Wid::FogAmount) => wx.cfg.ground_fog.force = Some(v.clamp(0.0, 1.0)),
+        Some(Wid::FogBurn) => wx.cfg.ground_fog.burn_per_h = v,
+        Some(Wid::FogDepth) => wx.cfg.ground_fog.depth_max_m = v,
+        Some(Wid::FogVis) => wx.cfg.ground_fog.visibility_m = v,
+        Some(Wid::FogWisp) => wx.cfg.ground_fog.wisp_m = v,
         _ => {}
     }
 }
 
-fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>) {
+fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>) {
     let v = ev.value;
     match kind(&q, ev.source) {
         Some(Wid::Rain) => d.0.rain = v,
+        Some(Wid::FogOn) => wx.cfg.ground_fog.enabled = v,
         Some(Wid::Clouds) => d.0.clouds = v,
         Some(Wid::Shadows) => d.0.shadows = v,
         Some(Wid::Giz(i)) => d.0.gizmos[i] = v,
@@ -227,13 +256,19 @@ fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>) {
     }
 }
 
-fn on_select(ev: On<ValueChange<Entity>>, q: Query<&Wid>, idx: Query<&OptionIndex>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, params: Option<ResMut<CloudParams>>, mut shown: Query<&mut SelShown>) {
+/// Forced fog amount when "force" is picked on a clear (or nearly clear) model: a visible start, the user drags from there.
+/// ponytail: a panel start value, not a look; move it to Config if the panel ever needs another default.
+const FOG_FORCE_START: f32 = 0.9;
+const FOG_CLEAR: f32 = 0.01;
+
+fn on_select(ev: On<ValueChange<Entity>>, q: Query<&Wid>, idx: Query<&OptionIndex>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, params: Option<ResMut<CloudParams>>, mut shown: Query<&mut SelShown>, fog: Res<crate::fog::FogState>) {
     let (Some(k), Ok(i)) = (kind(&q, ev.source), idx.get(ev.value).map(|i| i.0)) else { return };
     if let Ok(mut s) = shown.get_mut(ev.source) { s.0 = i; }
     let base = wx.cfg.clock.minutes_per_second / 60.0;
     match k {
         Wid::Rate => wx.rate = c::RATES[i.min(3)] * base,
         Wid::CovMode => d.0.coverage = if i == 0 { None } else { Some(d.0.coverage.unwrap_or(wx.here.coverage)) },
+        Wid::FogMode => wx.cfg.ground_fog.force = if i == 0 { None } else { Some(if fog.amount < FOG_CLEAR { FOG_FORCE_START } else { fog.amount }) },
         Wid::Debug => d.0.debug = i as u32,
         Wid::Channel => d.0.channel = Channel::ALL[i.min(4)],
         Wid::UpdateDiv => if let Some(mut p) = params { p.update_div = [1, 2, 4][i.min(2)]; },
@@ -280,17 +315,21 @@ fn sync_widgets(
     mut commands: Commands, d: Res<Panel>, wx: Res<Weather>, mut panels: Query<&mut Node, With<DashPanel>>,
     sliders: Query<(Entity, &Wid, &SliderValue)>, checks: Query<(Entity, &Wid, Has<Checked>), With<Checkbox>>,
     nums: Query<(Entity, &Wid, &NumberInputValue)>, sels: Query<(Entity, &Wid, &SelShown)>, rows: Query<(Entity, &OptionIndex)>, kids: Query<&Children>,
-    params: Option<Res<CloudParams>>, map_img: Option<Res<MapImage>>, mut images: ResMut<Assets<Image>>, mut chan: Local<Option<Channel>>,
+    params: Option<Res<CloudParams>>, map_img: Option<Res<MapImage>>, mut images: ResMut<Assets<Image>>, mut shown_map: Local<Option<(Channel, Option<f32>, bool, bool)>>, fog: Res<crate::fog::FogState>,
 ) {
     for mut n in &mut panels { let want = if d.0.open { Display::Flex } else { Display::None }; if n.display != want { n.display = want; } }
     if !d.0.open { return; }
     let base = wx.cfg.clock.minutes_per_second / 60.0;
+    let g = &wx.cfg.ground_fog;
     for (e, k, v) in &sliders {
-        let want = match k { Wid::Hour => wx.hour, Wid::Cov => d.0.coverage.unwrap_or(wx.here.coverage), _ => continue };
+        let want = match k {
+            Wid::Hour => wx.hour, Wid::Cov => d.0.coverage.unwrap_or(wx.here.coverage), Wid::FogAmount => g.force.unwrap_or(fog.amount),
+            Wid::FogBurn => g.burn_per_h, Wid::FogDepth => g.depth_max_m, Wid::FogVis => g.visibility_m, Wid::FogWisp => g.wisp_m, _ => continue,
+        };
         if (v.0 - want).abs() > 1e-4 { commands.entity(e).insert(SliderValue(want)); }
     }
     for (e, k, on) in &checks {
-        let want = match k { Wid::Rain => d.0.rain, Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
+        let want = match k { Wid::Rain => d.0.rain, Wid::FogOn => g.enabled, Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
         if want && !on { commands.entity(e).insert(Checked); } else if !want && on { commands.entity(e).remove::<Checked>(); }
     }
     for (e, k, v) in &nums {
@@ -300,15 +339,18 @@ fn sync_widgets(
     for (e, k, shown) in &sels {
         let want = match k {
             Wid::Rate => c::rate_index(if base > 0.0 { wx.rate / base } else { 0.0 }), Wid::CovMode => d.0.coverage.is_some() as usize,
+            Wid::FogMode => g.force.is_some() as usize,
             Wid::Debug => d.0.debug as usize, Wid::UpdateDiv => params.as_ref().map_or(2, |p| match p.update_div { 1 => 0, 2 => 1, _ => 2 }), Wid::Channel => d.0.channel.index(), _ => continue,
         };
         if shown.0 == want { continue; }
         let row = kids.iter_descendants(e).find(|x| rows.get(*x).is_ok_and(|(_, i)| i.0 == want));
         if let Some(row) = row { commands.trigger(SetSelected { entity: e, row }); commands.entity(e).insert(SelShown(want)); }
     }
-    if *chan != Some(d.0.channel) && let Some(m) = &map_img && let Some(mut i) = images.get_mut(&m.0) {
-        i.data = Some(c::channel_rgba(&wx.map, d.0.channel));
-        *chan = Some(d.0.channel);
+    // The image shows the overrides the shader uses (coverage, rain, clouds), so it is rebuilt when any of them changes.
+    let key = (d.0.channel, d.0.coverage, d.0.rain, d.0.clouds);
+    if *shown_map != Some(key) && let Some(m) = &map_img && let Some(mut i) = images.get_mut(&m.0) {
+        i.data = Some(c::effective_rgba(&wx.map, &d.0));
+        *shown_map = Some(key);
     }
 }
 
@@ -316,7 +358,7 @@ fn cam_pose(cam: &Query<&GlobalTransform, With<AtmosphereSettings>>) -> Option<(
 
 #[allow(clippy::too_many_arguments)]
 fn refresh_ui(
-    d: Res<Panel>, wx: Res<Weather>, rain: Res<RainState>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, time: Res<Time>, hover: Res<MapHover>,
+    d: Res<Panel>, wx: Res<Weather>, rain: Res<RainState>, fog: Res<crate::fog::FogState>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, time: Res<Time>, hover: Res<MapHover>,
     mut ms: Local<f32>, mut texts: Query<(&Txt, &mut Text)>, mut marks: Query<(&Mark, &mut Node)>,
 ) {
     *ms += (time.delta_secs() * 1000.0 - *ms) * 0.1;
@@ -328,13 +370,13 @@ fn refresh_ui(
     let map = &wx.map;
     let (el, az) = w::sun(&wx.cfg.clock, wx.hour);
     let pin_txt = match ctl.pin {
-        Some([x, z]) => { let [i, j] = c::texel_at(map, x, z); let t = &map.rgba[((j * map.width + i) * 4) as usize..][..4];
-            format!("pinned ({x:.0}, {z:.0}) m: {}", ctl.channel.read([t[0], t[1], t[2], t[3]])) }
+        Some([x, z]) => { let [i, j] = c::texel_at(map, x, z);
+            format!("pinned ({x:.0}, {z:.0}) m: {}", ctl.channel.read(c::effective_texel(map, ctl, i, j))) }
         None => "click the map to pin a point".into(),
     };
     let hover_txt = match hover.0 {
-        Some(uv) => { let (x, z) = (map.min_x + uv.x * map.size_x, map.max_z - uv.y * map.size_z); let [i, j] = c::texel_at(map, x, z); let t = &map.rgba[((j * map.width + i) * 4) as usize..][..4];
-            format!("({x:.0}, {z:.0}) m: {}", ctl.channel.read([t[0], t[1], t[2], t[3]])) }
+        Some(uv) => { let (x, z) = (map.min_x + uv.x * map.size_x, map.max_z - uv.y * map.size_z); let [i, j] = c::texel_at(map, x, z);
+            format!("({x:.0}, {z:.0}) m: {}", ctl.channel.read(c::effective_texel(map, ctl, i, j))) }
         None => "hover the map".into(),
     };
     for (k, mut t) in &mut texts {
@@ -345,6 +387,7 @@ fn refresh_ui(
             Txt::Rain => format!("rain: intensity {:.2}   wetness {:.2}   fall {:.1} m/s   slant {:.0} deg   source {}", rain.intensity, rain.wetness, -rain.vel.y, rain.slant_deg(), rain.source()),
             Txt::Sun => format!("sun elevation {el:.1} deg   azimuth {az:.1} deg   heading {:.0}", c::heading_deg(fwd.to_array())),
             Txt::Frame => format!("frame {:.1} ms ({:.0} fps)", *ms, 1000.0 / ms.max(0.1)),
+            Txt::Fog => format!("fog amount {:.2}   lift {:.0} m", fog.amount, fog.lift),
             Txt::Hover => hover_txt.clone(),
             Txt::Pin => pin_txt.clone(),
         };
