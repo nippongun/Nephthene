@@ -63,16 +63,25 @@ const verifyPrompt = (n, rep) => [
   'Re-run the check and read the diff. Refute if anything is off.',
 ].join('\n\n')
 
+// Role agents (.claude/agents) load at session start; a session that predates them gets the same model told to read its role file.
+const MODEL = { executor: 'haiku', verifier: 'sonnet' }
+const role = async (kind, prompt, opts) => {
+  try { return await agent(prompt, { ...opts, agentType: kind }) } catch (e) {
+    if (!String(e).includes('not found')) throw e
+    return agent(`You are the ${kind}: read .claude/agents/${kind}.md and follow it exactly.\n\n${prompt}`, { ...opts, model: MODEL[kind] })
+  }
+}
+
 const promises = {}
 const run = async n => {
   const deps = await Promise.all((n.deps || []).map(d => promises[d]))
   if (deps.some(r => !r || !r.pass)) { log(`${n.id}: skipped (a dependency failed)`); return { id: n.id, pass: false, skipped: true } }
   let refuted = ''
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const rep = await agent(executorPrompt(n, refuted), { label: `exec ${n.id} #${attempt}`, phase: 'Execute', agentType: 'executor', schema: REPORT })
+    const rep = await role('executor', executorPrompt(n, refuted), { label: `exec ${n.id} #${attempt}`, phase: 'Execute', schema: REPORT })
     if (!rep) return { id: n.id, pass: false, problems: ['executor died'] }
     if (rep.blocked) { log(`${n.id}: blocked: ${rep.blocked}`); return { id: n.id, pass: false, blocked: rep.blocked } }
-    const v = await agent(verifyPrompt(n, rep), { label: `verify ${n.id} #${attempt}`, phase: 'Verify', agentType: 'verifier', schema: VERDICT })
+    const v = await role('verifier', verifyPrompt(n, rep), { label: `verify ${n.id} #${attempt}`, phase: 'Verify', schema: VERDICT })
     if (v && v.pass) return { id: n.id, pass: true, attempt, changed: rep.changed, evidence: v.evidence }
     refuted = v ? v.problems.join('\n') : 'verifier died'
     log(`${n.id}: attempt ${attempt} refuted: ${refuted.slice(0, 160)}`)
@@ -85,11 +94,11 @@ const results = await Promise.all(order.map(n => promises[n.id]))
 const failed = results.filter(r => !r.pass)
 let final = null
 if (!failed.length && g.final_check) {
-  final = await agent([
+  final = await role('verifier', [
     `Claim: "${g.goal}" is done; every node passed its own check.`,
     `Final check: ${g.final_check}`,
     `Nodes: ${results.map(r => `${r.id} (${(r.changed || []).join(', ')})`).join('; ')}`,
     'Run the final check, read the whole diff against HEAD, and refute if the change as a whole is wrong, incomplete or breaks a rule.',
-  ].join('\n\n'), { label: 'final verify', phase: 'Final', agentType: 'verifier', schema: VERDICT })
+  ].join('\n\n'), { label: 'final verify', phase: 'Final', schema: VERDICT })
 }
 return { pass: !failed.length && (!g.final_check || !!(final && final.pass)), results, final }
