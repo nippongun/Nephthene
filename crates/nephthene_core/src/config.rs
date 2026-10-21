@@ -418,8 +418,9 @@ pub struct GroundFog {
     pub albedo: f32, pub g: f32,
     /// Multiple scattering: octaves, energy (a) and optical-depth (b) factor per octave.
     pub ms_octaves: u32, pub ms_a: f32, pub ms_b: f32,
-    /// Sky light: scale on the zenith sky radiance, and how fast it dims with depth below the fog top (share of the optical depth).
-    pub ambient_scale: f32, pub ambient_od: f32,
+    /// Sky light: scale on the mean sky radiance, how fast it dims with depth below the fog top (share of the optical depth), and the
+    /// albedo of the ground under the fog (reflects sky light back up into it).
+    pub ambient_scale: f32, pub ambient_od: f32, pub ground_albedo: f32,
     /// Terrain shadow on the fog: soft band (m) around the sunlit altitude, sun march range and step (m).
     pub sun_soft_m: f32, pub shadow_range_m: f32, pub shadow_step_m: f32,
     /// Baked fog map: extent (m, square around the camera), size (px), smoothing passes; rebake after moving `rebake_m` or every `rebake_s`.
@@ -438,7 +439,7 @@ impl Default for GroundFog {
             shallow_e_m: 5.0, hollow_radius_m: 400.0, hollow_m: 15.0, slope_lo: 0.12, slope_hi: 0.35, flat_share: 0.3,
             visibility_m: 150.0, shallow_visibility_m: 400.0, lift_max_m: 80.0, lift_full_deg: 20.0, lift_soft_m: 25.0,
             breakup: 0.45, breakup_tile_m: 250.0, breakup_y_m: 40.0, albedo: 0.99, g: 0.75, ms_octaves: 3, ms_a: 0.6, ms_b: 0.35,
-            ambient_scale: 1.0, ambient_od: 0.5, sun_soft_m: 20.0, shadow_range_m: 4000.0, shadow_step_m: 100.0,
+            ambient_scale: 1.0, ambient_od: 0.5, ground_albedo: 0.2, sun_soft_m: 20.0, shadow_range_m: 4000.0, shadow_step_m: 100.0,
             extent_m: 12000.0, bake_px: 128, blur_passes: 2, rebake_m: 1500.0, rebake_s: 2.0, steps: 48, max_m: 6000.0, edge_fade: 0.15,
         }
     }

@@ -455,6 +455,7 @@
     "ms_b": 0.35,
     "ambient_scale": 1.0,
     "ambient_od": 0.5,
+    "ground_albedo": 0.2,
     "sun_soft_m": 20.0,
     "shadow_range_m": 4000.0,
     "shadow_step_m": 100.0,

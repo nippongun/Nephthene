@@ -143,6 +143,7 @@ fn drive(
     if let Some((l, t)) = moon.iter().next() { (g.moon_dir, g.moon_color) = body(l, t); }
     (g.sigma, g.sigma_shallow) = f::sigma(c);
     g.sun_k = smoothstep(0.0, c.lift_full_deg, w::sun(&wx.cfg.clock, wx.hour).0);
+    g.ground_albedo = c.ground_albedo;
     (g.albedo, g.g, g.steps, g.frame, g.max_m, g.lift_max) = (c.albedo, c.g, c.steps.max(1), frame.0, c.max_m, c.lift_max_m);
     (g.top_soft, g.edge_m, g.top_wave, g.wave_tile, g.shallow_e, g.lift_soft) = (c.top_soft_m, c.edge_m, c.top_wave_m, c.wave_tile_m, c.shallow_e_m, c.lift_soft_m);
     (g.breakup, g.breakup_tile, g.breakup_y, g.wind) = (c.breakup, c.breakup_tile_m, c.breakup_y_m, *drift);

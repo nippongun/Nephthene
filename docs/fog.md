@@ -45,8 +45,9 @@ check, not a measurement.
 Full-screen pass after the main pass (where Bevy's volumetric fog runs), premultiplied over the view target, reading the scene depth.
 The ray is clipped to the altitude band holding fog and marched in `steps` jittered steps. Light per sample: sun x atmosphere
 transmittance x cloud shadow cookie x terrain shadow (`sun_alt`) x multiple-scattering octaves over the optical depth to the pool top;
-moon the same without terrain shadow; sky light = zenith sky-view radiance x `ambient_scale`, dimmed by `ambient_od` x optical depth
-above. Aerial perspective as the rain shafts.
+moon the same without terrain shadow; sky light = mean sky-view radiance over the hemisphere x `ambient_scale`, half from above
+(dimmed by `ambient_od` x optical depth above) and half reflected from below (two-stream: the fog layer under the sample over ground of
+`ground_albedo`). Aerial perspective as the rain shafts.
 
 ## Verify locally
 
@@ -69,6 +70,7 @@ Gates: G15 (fog follows terrain; red arm `ground_fog.ignore_terrain`), G16 (moun
 - Pool floor is a square min filter: blind to drainage outlets (a valley open downstream pools like a closed basin). Upgrade: a
   priority-flood depression fill on the field grid.
 - No fog beyond `extent_m` / 2 (fades over `edge_fade`); far valleys rely on `DistanceFog`. Upgrade: a coarse far field.
+- No bounce from sunlit slopes into shaded fog.
 - Moonlight has no terrain shadow; trees and buildings neither shadow the fog nor drain it (terrain only).
 - The march is full resolution with per-frame jitter and no temporal resolve; thin mist seen at grazing angles can be noisy.
   Upgrade: half resolution with the clouds' resolve.

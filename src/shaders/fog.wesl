@@ -2,8 +2,8 @@
 // The ray runs from the eye to the scene depth (or max_m for sky) clipped to the altitude band [y_lo, y_hi] that holds fog. Density is
 // `fog_density` (nephthene_core::fog::density) from the baked fog map (pool top, shallow mist, sunlit altitude) and the terrain height,
 // broken up by value noise. Light: sun through the atmosphere, the cloud shadow cookie, the terrain (baked sunlit altitude) and the fog
-// above (optical depth to the top, multiple-scattering octaves); the moon the same without terrain shadow; sky light from the zenith
-// sky-view radiance dimmed by the fog above. Aerial perspective as clouds_shaft.wesl. Every constant comes from config ground_fog.
+// above (optical depth to the top, multiple-scattering octaves); the moon the same without terrain shadow; sky light from the mean sky-view
+// radiance, half from above (dimmed by the fog above) and half reflected from below (fog layer and ground, two-stream). Aerial perspective as clouds_shaft.wesl. Every constant comes from config ground_fog.
 import bevy_pbr::atmosphere::{
     bindings::{atmosphere, view},
     bruneton_functions::sample_transmittance_lut_segment,
@@ -56,6 +56,7 @@ struct Fog {
     sh_up: vec3<f32>,
     edge_fade: f32,
     sun_k: f32,
+    ground_albedo: f32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -150,6 +151,31 @@ fn cloud_shadow(p: vec3<f32>) -> f32 {
     return textureSampleLevel(cookie, smp, vec2(0.5 - 0.5 * l.x, 0.5 + 0.5 * l.y), 0.0).r;
 }
 
+// Mean sky radiance over the upper hemisphere: 3 rings x 8 azimuths of the sky-view LUT, weighted by ring solid angle. A low sun leaves
+// the zenith the darkest part of the sky, so the zenith alone underlights fog.
+fn sky_mean(r: f32) -> vec3<f32> {
+    var s = vec3(0.0);
+    var wsum = 0.0;
+    for (var i = 0u; i < 3u; i++) {
+        let el = (f32(i) + 0.5) / 3.0 * 0.5 * PI;
+        for (var k = 0u; k < 8u; k++) {
+            let az = f32(k) / 8.0 * 2.0 * PI;
+            s += cos(el) * sample_sky_view_lut(r, direction_world_to_atmosphere(vec3(cos(el) * sin(az), sin(el), cos(el) * cos(az))));
+            wsum += cos(el);
+        }
+    }
+    return s / wsum;
+}
+
+// Diffuse reflectance of what lies below a sample: a conservative fog layer of optical depth `tau` over ground of albedo `a`
+// (two-stream: layer R = tau (1 - g) / (2 + tau (1 - g)), ground seen through it adds (1 - R)^2 a / (1 - R a)). Thick fog reflects
+// sky light back up, which is why it reads white, not grey.
+fn below(tau: f32, a: f32) -> f32 {
+    let x = tau * (1.0 - f.g);
+    let r = x / (2.0 + x);
+    return r + (1.0 - r) * (1.0 - r) * a / max(1.0 - r * a, 1e-3);
+}
+
 // In-scattered light for optical depth `od` toward the light: octaves of weaker extinction, energy and anisotropy (multiple scattering).
 fn ms(od: f32, c: f32) -> f32 {
     var s = 0.0;
@@ -188,7 +214,7 @@ fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let R = atmosphere.inner_radius;
     let ce = get_view_position();
     let re = length(ce);
-    let amb = sample_sky_view_lut(re, direction_world_to_atmosphere(vec3(0.0, 1.0, 0.0))) * f.ambient_scale;
+    let amb = sky_mean(re) * f.ambient_scale;
     let cs = dot(d, f.sun_dir);
     let cm = dot(d, f.moon_dir);
     let half = 0.5 * f.map_cell * f32(f.map_n);
@@ -216,8 +242,10 @@ fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         // Optical depth up to the pool top (the fog the light crosses to get here), plus the mist above.
         let h = max(p.y - g, 0.0);
         let od_up = f.sigma * max(texel.x - p.y, 0.0) + f.sigma_shallow * texel.y * f.shallow_e * exp(-h / max(f.shallow_e, 1e-3));
-        // Uniform sky radiance in-scatters as itself (the phase integrates to 1); zenith radiance stands in for the sky and ground average.
-        var light = amb * exp(-f.ambient_od * od_up);
+        // Isotropic in-scattering of diffuse light: half from the sky above (dimmed by the fog over the sample), half from below
+        // (the fog and ground under the sample reflecting it).
+        let tau_down = f.sigma * smoothstep(0.0, 0.5, texel.w) * max(min(texel.x, p.y) - g, 0.0);
+        var light = amb * exp(-f.ambient_od * od_up) * (0.5 + 0.5 * below(tau_down, f.ground_albedo));
         if f.sun_dir.y > -0.05 {
             light += f.sun_color * atmo_transmittance(R + max(p.y, 0.0), f.sun_dir.y) * lit(p.y, texel.z) * cloud_shadow(p) * ms(od_up / max(f.sun_dir.y, 0.05), cs);
         }

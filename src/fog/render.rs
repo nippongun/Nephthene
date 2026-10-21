@@ -44,6 +44,8 @@ pub struct FogGpu {
     pub sh_up: Vec3, pub edge_fade: f32,
     /// smoothstep(0, lift_full_deg, sun elevation): the burn-off lift where a texel's top is sunlit (nephthene_core::fog::lift_m).
     pub sun_k: f32,
+    /// Ground albedo under the fog (sky light reflected back up into it).
+    pub ground_albedo: f32,
 }
 
 /// Main world -> render world, every frame: the uniform, the fog map (Rgba32Float), the ground heights (R32Float), the cloud cookie (R8).
