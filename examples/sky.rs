@@ -203,7 +203,9 @@ impl Plugin for ShotPlugin {
             // Deterministic frames: 60 Hz of simulated time per update, whatever the wall clock does.
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_micros(16_667)))
             .add_systems(Startup, spawn_cam)
-            .add_systems(Update, (drive, cam_motion));
+            // The sway / turn phase reads the frame count `drive` advances: ordered, so adding systems elsewhere cannot flip which runs first
+            // (an unordered pair moved the golden sway frames when the fog plugin added systems).
+            .add_systems(Update, (cam_motion, drive).chain());
     }
 }
 
