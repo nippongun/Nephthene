@@ -215,13 +215,17 @@ fn blur(v: &[f32], n: u32) -> Vec<f32> {
 }
 
 /// Extinction per metre at altitude `y` over `ground` for a fog map texel (fog.wesl `fog_density` mirrors it). `wave` -1..1 moves the
-/// top; `sun_k` = smoothstep(0, lift_full_deg, sun elevation) drives the lift ([`lift_m`]) where the texel's top is sunlit; `sig` is
-/// [`sigma`], thinned while the texel's amount is low. Noise breakup multiplies the result in the shader.
-pub fn density(c: &GroundFog, texel: [f32; 4], ground: f32, y: f32, sun_k: f32, wave: f32, sig: (f32, f32)) -> f32 {
+/// top; `n` 0..1 is the breakup noise, which erodes the pool into wisps toward its top; `sun_k` = smoothstep(0, lift_full_deg, sun
+/// elevation) drives the lift ([`lift_m`]) where the texel's top is sunlit; `sig` is [`sigma`], thinned while the texel's amount is low.
+/// The shader also multiplies the result by the noise breakup and the map's edge fade.
+pub fn density(c: &GroundFog, texel: [f32; 4], ground: f32, y: f32, sun_k: f32, wave: f32, n: f32, sig: (f32, f32)) -> f32 {
     let h = y - ground;
     if h < 0.0 { return 0.0; }
     let top = texel[0] + c.top_wave_m * wave;
-    let pool = smoothstep(-0.5, 0.5, (top - y) / c.top_soft_m.max(1e-3)) * smoothstep(0.0, c.edge_m, top - ground) * smoothstep(0.0, 0.5, texel[3]);
+    // ponytail: 0.2 is the noise band a wisp edge fades over; a knob when wisps are tuned.
+    let thr = c.wisp_erode * (1.0 - ((top - y) / c.wisp_m.max(1e-3)).clamp(0.0, 1.0));
+    let wisp = if c.wisp_m > 0.0 { smoothstep(thr, thr + 0.2, n) } else { 1.0 };
+    let pool = smoothstep(-0.5, 0.5, (top - y) / c.top_soft_m.max(1e-3)) * smoothstep(0.0, c.edge_m, top - ground) * smoothstep(0.0, 0.5, texel[3]) * wisp;
     let mist = texel[1] * (-h / c.shallow_e_m.max(1e-3)).exp();
     let lift = lift_m(c, sun_k, lit(c, texel[0].max(ground), texel[2]), texel[3]);
     let base = if lift > 0.0 { smoothstep(lift, lift + c.lift_soft_m, h) } else { 1.0 };
@@ -292,7 +296,7 @@ mod tests {
     /// Density 1 m above the ground at (x, z).
     fn near_ground(c: &GroundFog, m: &FogMap, g: &HeightGrid, x: f32, z: f32) -> f32 {
         let gy = g.height(x, z);
-        density(c, m.at(x, z), gy, gy + 1.0, 0.0, 0.0, sigma(c))
+        density(c, m.at(x, z), gy, gy + 1.0, 0.0, 0.0, 0.5, sigma(c))
     }
     fn full(c: &GroundFog, g: &HeightGrid, sun: Vec3) -> FogMap {
         let f = field(c, g, [0.0, 0.0]);
@@ -314,7 +318,7 @@ mod tests {
         assert!(near_ground(&c, &m, &g, 4000.0, 0.0) < ss * c.flat_share, "ridge keeps only the open-ground mist");
         assert!(near_ground(&c, &m, &g, -3500.0, 2500.0) > 0.8 * sp, "the closed basin pools too");
         let floor = g.height(0.0, 0.0);
-        assert!(density(&c, m.at(0.0, 0.0), floor, tops[4] + 2.0 * c.top_soft_m, 0.0, 0.0, sigma(&c)) < 1e-4, "above the top");
+        assert!(density(&c, m.at(0.0, 0.0), floor, tops[4] + 2.0 * c.top_soft_m, 0.0, 0.0, 0.5, sigma(&c)) < 1e-4, "above the top");
         // Red arm: a blanket that follows each column's own ground fogs the ridge as much as the floor.
         let blanket = GroundFog { ignore_terrain: true, ..c.clone() };
         assert!(near_ground(&blanket, &full(&blanket, &g, Vec3::Y), &g, 4000.0, 0.0) > 0.5 * sp, "ignore_terrain fogs the ridge");
@@ -353,6 +357,18 @@ mod tests {
     }
 
     #[test]
+    fn wisps_erode_the_top_not_the_core() {
+        let c = GroundFog::default();
+        let texel = [100.0, 0.0, NO_SUN, 1.0];
+        let at = |c: &GroundFog, y: f32, n: f32| density(c, texel, 0.0, y, 0.0, 0.0, n, sigma(c));
+        let (low, high) = (0.3, 0.9);
+        assert_eq!(at(&c, 20.0, low), at(&c, 20.0, high), "deep in the pool the noise does not erode");
+        assert!(at(&c, 95.0, low) < 0.2 * at(&c, 95.0, high), "near the top low noise is eroded away: {} vs {}", at(&c, 95.0, low), at(&c, 95.0, high));
+        let hard = GroundFog { wisp_m: 0.0, ..c.clone() };
+        assert_eq!(at(&hard, 95.0, low), at(&hard, 95.0, high), "red arm: wisp_m 0 keeps the hard top");
+    }
+
+    #[test]
     fn flat_ground_gets_a_shallow_level_layer_and_burn_lift_clears_the_ground() {
         let c = GroundFog::default();
         let flat = HeightGrid::flat(10.0);
@@ -362,8 +378,8 @@ mod tests {
         assert!((m.min_x + c.extent_m / 2.0) % m.cell_m == 0.0, "centre snapped to texels");
         let s = sigma(&c);
         let thin = [m.at(0.0, 0.0)[0], m.at(0.0, 0.0)[1], m.at(0.0, 0.0)[2], 0.2];
-        assert!(density(&c, thin, 10.0, 11.0, 1.0, 0.0, s) < 1e-4, "sunlit thinning fog lifts off the ground");
-        assert!(density(&c, thin, 10.0, 11.0, 0.0, 0.0, s) > 0.0, "before sunrise it sits on it");
+        assert!(density(&c, thin, 10.0, 11.0, 1.0, 0.0, 0.5, s) < 1e-4, "sunlit thinning fog lifts off the ground");
+        assert!(density(&c, thin, 10.0, 11.0, 0.0, 0.0, 0.5, s) > 0.0, "before sunrise it sits on it");
         assert!(m.y_lo <= 10.0 && m.y_hi >= m.at(0.0, 0.0)[0], "slab bounds {} {}", m.y_lo, m.y_hi);
         let moved = field(&c, &flat, [3000.0, 0.0]);
         let r = resample(&f, &vec![0.7; f.ground.len()], &moved, 0.1);

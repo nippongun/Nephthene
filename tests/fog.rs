@@ -38,7 +38,7 @@ fn classes(c: &GroundFog, g: &HeightGrid, m: &[f32], hour: f32, w: u32, h: u32) 
             let p = POS + d * t;
             let gy = g.height(p.x, p.z);
             if p.y < gy { hit = Some(p); break; }
-            od += fog::density(c, map.at(p.x, p.z), gy, p.y, sun_k, 0.0, fog::sigma(c)) * dt;
+            od += fog::density(c, map.at(p.x, p.z), gy, p.y, sun_k, 0.0, 0.5, fog::sigma(c)) * dt;
             t += dt;
         }
         out.push((x, y, hit, 1.0 - (-od).exp()));

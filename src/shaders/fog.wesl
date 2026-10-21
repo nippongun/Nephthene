@@ -7,7 +7,7 @@
 import bevy_pbr::atmosphere::{
     bindings::{atmosphere, view},
     bruneton_functions::sample_transmittance_lut_segment,
-    functions::{sample_transmittance_lut, sample_sky_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, uv_to_ndc, get_view_position},
+    functions::{sample_transmittance_lut, sample_sky_view_lut, sample_aerial_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, uv_to_ndc, get_view_position},
 };
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 
@@ -57,6 +57,14 @@ struct Fog {
     edge_fade: f32,
     sun_k: f32,
     ground_albedo: f32,
+    wisp_m: f32,
+    wisp_erode: f32,
+    diffuse_sun: f32,
+    step_power: f32,
+    // Terrain sun occlusion of the aerial in-scatter (config sky.sun_occlusion): on, kept share, samples per ray.
+    occ_on: f32,
+    occ_keep: f32,
+    occ_steps: u32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -131,12 +139,16 @@ fn ground_h(xz: vec2<f32>) -> f32 {
 // nephthene_core::fog::lit.
 fn lit(y: f32, sun_alt: f32) -> f32 { return smoothstep(sun_alt - f.sun_soft, sun_alt + f.sun_soft, y); }
 
-// nephthene_core::fog::density: texel = (pool top, shallow, sunlit altitude, amount). The base lifts only where the sun reaches the top.
-fn fog_density(texel: vec4<f32>, g: f32, y: f32, wave: f32) -> f32 {
+// nephthene_core::fog::density: texel = (pool top, shallow, sunlit altitude, amount). The noise `n` erodes the pool into wisps toward
+// its top; the base lifts only where the sun reaches the top.
+fn fog_density(texel: vec4<f32>, g: f32, y: f32, wave: f32, n: f32) -> f32 {
     let h = y - g;
     if h < 0.0 { return 0.0; }
     let top = texel.x + f.top_wave * wave;
-    let pool = smoothstep(-0.5, 0.5, (top - y) / max(f.top_soft, 1e-3)) * smoothstep(0.0, f.edge_m, top - g) * smoothstep(0.0, 0.5, texel.w);
+    // ponytail: 0.2 is the noise band a wisp edge fades over (nephthene_core::fog::density).
+    let thr = f.wisp_erode * (1.0 - clamp((top - y) / max(f.wisp_m, 1e-3), 0.0, 1.0));
+    let wisp = select(1.0, smoothstep(thr, thr + 0.2, n), f.wisp_m > 0.0);
+    let pool = smoothstep(-0.5, 0.5, (top - y) / max(f.top_soft, 1e-3)) * smoothstep(0.0, f.edge_m, top - g) * smoothstep(0.0, 0.5, texel.w) * wisp;
     let mist = texel.y * exp(-h / max(f.shallow_e, 1e-3));
     let lift = f.lift_max * f.sun_k * lit(max(texel.x, g), texel.z) * (1.0 - clamp(texel.w, 0.0, 1.0));
     let base = select(1.0, smoothstep(lift, lift + f.lift_soft, h), lift > 0.0);
@@ -189,17 +201,47 @@ fn ms(od: f32, c: f32) -> f32 {
     return s;
 }
 
+// Share of the view ray from the eye to `t_end` that lies in the terrain's shadow (below each column's sunlit altitude), at occ_steps
+// points jittered per pixel by `jit` (even spacing would band the share in steps of 1 / occ_steps). Outside the fog map counts as sunlit.
+fn shadowed(eye: vec3<f32>, d: vec3<f32>, t_end: f32, jit: f32) -> f32 {
+    let half = 0.5 * f.map_cell * f32(f.map_n);
+    let centre = f.map_min + vec2(half, -half);
+    var s = 0.0;
+    for (var k = 0u; k < f.occ_steps; k++) {
+        let p = eye + d * (t_end * (f32(k) + jit) / f32(f.occ_steps));
+        if max(abs(p.x - centre.x), abs(p.z - centre.y)) > half { continue; }
+        s += 1.0 - lit(p.y, map_at(p.xz).z);
+    }
+    return s / f32(max(f.occ_steps, 1u));
+}
+
+// Fog over the scene, plus the terrain-occlusion correction of the aerial perspective drawn on geometry (render_sky): the shadowed share
+// of the ray to a surface loses that share of its aerial in-scatter (all but occ_keep). Returned premultiplied, so with the correction X
+// the target becomes (dst - X)(1 - a) + rgb; the view target is float, so the negative source term subtracts.
 @fragment
 fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    if f.y_hi <= f.y_lo { return vec4(0.0); }
+    let occ = f.occ_on > 0.0 && f.sun_dir.y > -0.05;
+    if f.y_hi <= f.y_lo && !occ { return vec4(0.0); }
     let d = uv_to_ray_direction(in.uv);
     let eye = view.world_position;
     let z = textureLoad(depth, vec2<i32>(in.position.xy), 0);
-    var t1 = f.max_m;
+    var t_scene = -1.0;
     if z > 0.0 {
         let v = view.view_from_clip * vec4(uv_to_ndc(in.uv), z, 1.0);
-        t1 = min(t1, length(v.xyz / v.w));
+        t_scene = length(v.xyz / v.w);
     }
+    var x_ap = vec3(0.0);
+    if occ && t_scene > 0.0 {
+        x_ap = shadowed(eye, d, t_scene, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (1.0 - f.occ_keep) * sample_aerial_view_lut(in.uv, t_scene) * view.exposure;
+    }
+    let fog = march(in, d, eye, t_scene, occ);
+    return vec4(fog.rgb - x_ap * (1.0 - fog.a), fog.a);
+}
+
+fn march(in: FullscreenVertexOutput, d: vec3<f32>, eye: vec3<f32>, t_scene: f32, occ: bool) -> vec4<f32> {
+    if f.y_hi <= f.y_lo { return vec4(0.0); }
+    var t1 = f.max_m;
+    if t_scene > 0.0 { t1 = min(t1, t_scene); }
     var t0 = 0.0;
     if abs(d.y) > 1e-5 {
         let ta = (f.y_lo - eye.y) / d.y;
@@ -220,23 +262,28 @@ fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let half = 0.5 * f.map_cell * f32(f.map_n);
     let centre = f.map_min + vec2(half, -half);
     let jit = pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u);
-    let dt = (t1 - t0) / f32(f.steps);
+    let span = t1 - t0;
 
     var tr = 1.0;
     var lum = vec3(0.0);
     var wt = 0.0;
     var wsum = 0.0;
+    var t_prev = t0;
     for (var i = 0u; i < f.steps; i++) {
-        let t = t0 + (f32(i) + jit) * dt;
+        // Steps spaced as ((i + jitter) / steps)^step_power: dense near the eye, where the fog hides the most.
+        let t = t0 + span * pow((f32(i) + jit) / f32(f.steps), max(f.step_power, 1.0));
+        let dt = t - t_prev;
+        t_prev = t;
         let p = eye + d * t;
         let texel = map_at(p.xz);
         let g = ground_h(p.xz);
+        if p.y < g || (p.y > texel.x + f.top_soft + f.top_wave && texel.y <= 0.0) { continue; }
         let q = p - vec3(f.wind.x, 0.0, f.wind.y);
         let wave = 2.0 * vnoise(vec3(q.x, 0.0, q.z) / f.wave_tile) - 1.0;
-        var dens = fog_density(texel, g, p.y, wave);
-        if dens <= 0.0 { continue; }
         let nq = q / vec3(f.breakup_tile, f.breakup_y, f.breakup_tile);
         let n = 0.65 * vnoise(nq) + 0.35 * vnoise(nq * 2.7 + vec3(17.0, 3.0, 29.0));
+        var dens = fog_density(texel, g, p.y, wave, n);
+        if dens <= 0.0 { continue; }
         let rim = max(abs(p.x - centre.x), abs(p.z - centre.y)) / half;
         dens *= (1.0 - f.breakup * n) * (1.0 - smoothstep(1.0 - f.edge_fade, 1.0, rim));
         // Optical depth up to the pool top (the fog the light crosses to get here), plus the mist above.
@@ -247,7 +294,13 @@ fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let tau_down = f.sigma * smoothstep(0.0, 0.5, texel.w) * max(min(texel.x, p.y) - g, 0.0);
         var light = amb * exp(-f.ambient_od * od_up) * (0.5 + 0.5 * below(tau_down, f.ground_albedo));
         if f.sun_dir.y > -0.05 {
-            light += f.sun_color * atmo_transmittance(R + max(p.y, 0.0), f.sun_dir.y) * lit(p.y, texel.z) * cloud_shadow(p) * ms(od_up / max(f.sun_dir.y, 0.05), cs);
+            let sun = f.sun_color * atmo_transmittance(R + max(p.y, 0.0), f.sun_dir.y) * cloud_shadow(p);
+            light += sun * lit(p.y, texel.z) * ms(od_up / max(f.sun_dir.y, 0.05), cs);
+            // Diffuse sunlight from the sunlit top: two-stream diffuse transmission of a conservative layer, 1 / (1 + 0.75 (1 - g) tau),
+            // minus the direct beam, as isotropic radiance (flux / pi). Neutral in colour: it is what makes deep fog white.
+            let mu0 = max(f.sun_dir.y, 0.05);
+            let td = max(1.0 / (1.0 + 0.75 * (1.0 - f.g) * od_up) - exp(-od_up / mu0), 0.0);
+            light += sun * lit(texel.x, texel.z) * f.diffuse_sun * td * mu0 / PI;
         }
         if f.moon_dir.y > 0.0 {
             light += f.moon_color * atmo_transmittance(R + max(p.y, 0.0), f.moon_dir.y) * ms(od_up / max(f.moon_dir.y, 0.05), cm);
@@ -267,7 +320,9 @@ fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let t_air = sample_transmittance_lut_segment(re, mu, tc);
     let t_inf = sample_transmittance_lut(re, mu);
     let s_sky = sample_sky_view_lut(re, direction_world_to_atmosphere(d));
-    let s_air = min(s_sky * (vec3(1.0) - t_air) / max(vec3(1.0) - t_inf, vec3(1e-4)), s_sky);
+    var s_air = min(s_sky * (vec3(1.0) - t_air) / max(vec3(1.0) - t_inf, vec3(1e-4)), s_sky);
+    // The air in front of the fog loses its sun glow where the terrain shadows it, as the aerial perspective does (main).
+    if occ { s_air *= 1.0 - shadowed(eye, d, tc, jit) * (1.0 - f.occ_keep); }
     let rgb = (lum * t_air + alpha * s_air) * view.exposure;
     return vec4(min(rgb, vec3(F16_MAX)), alpha);
 }

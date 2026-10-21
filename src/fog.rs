@@ -1,7 +1,8 @@
 //! Ground fog, main world: keeps the terrain fields and per-texel fog amounts around the camera (nephthene_core::fog), steps them with
 //! the clock and the weather at the camera (each texel burns only while the sun reaches it over the terrain), bakes the fog map (first
 //! bake inline, later ones on a background task) and fills the uniform the render world marches (fog/render.rs, shaders/fog.wesl).
-//! Built by `NephthenePlugin` when config `ground_fog.enabled`. Read [`FogState`].
+//! Always built by `NephthenePlugin`; idle unless config `ground_fog.enabled` (the panel can switch it on) or `sky.sun_occlusion` with a
+//! terrain `Ground` (the pass then only removes the aerial sun glow from shadowed air). Read [`FogState`].
 use std::sync::Arc;
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
@@ -41,7 +42,7 @@ type Key = [f32; 7];
 
 /// Fog state around the camera and the bake in flight.
 #[derive(Resource)]
-struct Baker { grid: Arc<HeightGrid>, field: Option<Arc<Field>>, m: Vec<f32>, alt: Vec<f32>, task: Option<Task<Baked>>, pending_h: f32, since: f32, key: Option<Key> }
+struct Baker { grid: Arc<HeightGrid>, terrain: bool, field: Option<Arc<Field>>, m: Vec<f32>, alt: Vec<f32>, task: Option<Task<Baked>>, pending_h: f32, since: f32, key: Option<Key>, cfg: Option<GroundFog> }
 
 fn image(w: u32, h: u32, format: TextureFormat, data: Vec<u8>) -> Image {
     let mut im = Image::new(Extent3d { width: w, height: h, depth_or_array_layers: 1 }, TextureDimension::D2, data, format, RenderAssetUsages::RENDER_WORLD);
@@ -58,7 +59,7 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>, ground: Opti
         // No clouds: a white cookie (sh_on stays 0 and the shader never reads it).
         cookie: images.add(image(1, 1, TextureFormat::R8Unorm, vec![255])),
     });
-    commands.insert_resource(Baker { grid: Arc::new(grid), field: None, m: vec![], alt: vec![], task: None, pending_h: 0.0, since: 0.0, key: None });
+    commands.insert_resource(Baker { grid: Arc::new(grid), terrain: ground.is_some(), field: None, m: vec![], alt: vec![], task: None, pending_h: 0.0, since: 0.0, key: None, cfg: None });
 }
 
 /// The pass reads the scene depth: the atmosphere camera's depth texture must be bindable.
@@ -67,18 +68,18 @@ fn depth_readable(mut cams: Query<&mut Camera3d, With<AtmosphereSettings>>) {
     for mut c in &mut cams { if c.depth_texture_usages.0 & bit == 0 { c.depth_texture_usages.0 |= bit; } }
 }
 
-/// A bake: new fields if the camera left the old ones, then the amounts (spun up for a frozen clock or the first bake, else stepped by
-/// the game hours since the last bake), then the map.
+/// A bake: new fields if the camera left the old ones (or the config changed), then the amounts (spun up for a frozen clock, the first
+/// bake or a config change, else stepped by the game hours since the last bake; none with the fog off), then the map.
 fn job(c: &GroundFog, grid: &HeightGrid, clock: &w::Clock, hour: f32, air: Air, at: Vec2, old: Option<(Arc<Field>, Vec<f32>)>, spin: bool, dt_h: f32) -> Baked {
     let (el, az) = w::sun(clock, hour);
     let sun = w::dir(el, az);
-    let fresh = old.as_ref().is_none_or(|(o, _)| at.distance(Vec2::new(o.min_x, o.max_z) + Vec2::new(0.5, -0.5) * c.extent_m) > c.rebake_m);
+    let fresh = spin || old.as_ref().is_none_or(|(o, _)| at.distance(Vec2::new(o.min_x, o.max_z) + Vec2::new(0.5, -0.5) * c.extent_m) > c.rebake_m);
     let field = if fresh { Arc::new(f::field(c, grid, [at.x, at.y])) } else { old.as_ref().unwrap().0.clone() };
-    let mut m = if spin { f::spin_up_local(c, clock, hour, &air, grid, &field) } else {
+    let mut m = if !c.enabled { vec![0.0; field.ground.len()] } else if spin { f::spin_up_local(c, clock, hour, &air, grid, &field) } else {
         let (o, om) = old.unwrap();
         if fresh { f::resample(&o, &om, &field, f::spin_up(c, clock, hour, &air)) } else { om }
     };
-    let alt = if spin { f::sun_alt(c, grid, &field, sun) } else { f::step(c, grid, &field, &mut m, dt_h, el, &air, sun) };
+    let alt = if spin || !c.enabled { f::sun_alt(c, grid, &field, sun) } else { f::step(c, grid, &field, &mut m, dt_h, el, &air, sun) };
     let map = f::map(c, &field, &m, &alt);
     (field, m, map)
 }
@@ -100,6 +101,10 @@ fn bake(
         (b.field, b.m) = (Some(field), m);
     };
     if let Some(r) = b.task.as_mut().and_then(check_ready) { b.task = None; done(r, &mut b, &mut params); }
+    if !c.enabled && !(wx.cfg.sky.sun_occlusion && b.terrain) {
+        (params.gpu.y_lo, params.gpu.y_hi, b.cfg, *fog) = (0.0, 0.0, None, FogState::default());
+        return;
+    }
     let Some(at) = cam.iter().next().map(|g| g.translation().xz()) else { return };
     let air = Air { coverage: wx.here.coverage, wind_mps: wx.cfg.wind.speed_mps, wetness: rain.map_or(0.0, |r| r.wetness), dust: wx.here.dust };
     let frozen = wx.rate <= 0.0 || c.force.is_some();
@@ -108,9 +113,10 @@ fn bake(
     let moved = b.field.as_ref().is_none_or(|o| at.distance(Vec2::new(o.min_x, o.max_z) + Vec2::new(0.5, -0.5) * c.extent_m) > c.rebake_m);
     let origin = b.field.as_ref().map_or([f32::NAN; 2], |o| [o.min_x, o.max_z]);
     let key = [wx.hour, air.coverage, air.wind_mps, air.wetness, air.dust, origin[0], origin[1]];
-    let due = if frozen { moved || b.key.is_none_or(|k| k.iter().zip(&key).any(|(a, b)| (a - b).abs() > 1e-3) || k[5].is_nan()) } else { moved || b.since > c.rebake_s };
+    let changed = b.cfg.as_ref() != Some(c);
+    let due = changed || if frozen { moved || b.key.is_none_or(|k| k.iter().zip(&key).any(|(a, b)| (a - b).abs() > 1e-3) || k[5].is_nan()) } else { moved || b.since > c.rebake_s };
     if b.task.is_none() && due {
-        let spin = frozen || b.field.is_none();
+        let spin = frozen || b.field.is_none() || changed;
         let old = b.field.clone().map(|o| (o, b.m.clone()));
         let (cfg, grid, clock, hour, dt_h) = (c.clone(), b.grid.clone(), wx.cfg.clock.clone(), wx.hour, b.pending_h);
         if b.field.is_none() {
@@ -119,7 +125,7 @@ fn bake(
         } else {
             b.task = Some(AsyncComputeTaskPool::get().spawn(async move { job(&cfg, &grid, &clock, hour, air, at, old, spin, dt_h) }));
         }
-        (b.pending_h, b.since, b.key) = (0.0, 0.0, Some(key));
+        (b.pending_h, b.since, b.key, b.cfg) = (0.0, 0.0, Some(key), Some(c.clone()));
     }
     // The state at the camera, for readers.
     let el = w::sun(&wx.cfg.clock, wx.hour).0;
@@ -132,7 +138,7 @@ fn bake(
 
 /// Per frame: lights, extinction, wind drift (frozen in shots) and the cloud shadow cookie's frame.
 fn drive(
-    time: Res<Time>, wx: Res<Weather>, mut params: ResMut<FogParams>, clouds: Option<Res<CloudParams>>, frame: Res<FrameCount>, mut drift: Local<Vec2>,
+    time: Res<Time>, wx: Res<Weather>, mut params: ResMut<FogParams>, clouds: Option<Res<CloudParams>>, frame: Res<FrameCount>, mut drift: Local<Vec2>, b: Res<Baker>,
     sun: Query<(&DirectionalLight, &Transform), (With<NephtheneSun>, Without<Moon>)>, moon: Query<(&DirectionalLight, &Transform), With<Moon>>,
 ) {
     let c = &wx.cfg.ground_fog;
@@ -143,7 +149,9 @@ fn drive(
     if let Some((l, t)) = moon.iter().next() { (g.moon_dir, g.moon_color) = body(l, t); }
     (g.sigma, g.sigma_shallow) = f::sigma(c);
     g.sun_k = smoothstep(0.0, c.lift_full_deg, w::sun(&wx.cfg.clock, wx.hour).0);
-    g.ground_albedo = c.ground_albedo;
+    (g.ground_albedo, g.wisp_m, g.wisp_erode, g.diffuse_sun, g.step_power) = (c.ground_albedo, c.wisp_m, c.wisp_erode, c.diffuse_sun, c.step_power);
+    let sky = &wx.cfg.sky;
+    (g.occ_on, g.occ_keep, g.occ_steps) = ((sky.sun_occlusion && b.terrain) as u32 as f32, sky.occlusion_keep, sky.occlusion_steps.max(1));
     (g.albedo, g.g, g.steps, g.frame, g.max_m, g.lift_max) = (c.albedo, c.g, c.steps.max(1), frame.0, c.max_m, c.lift_max_m);
     (g.top_soft, g.edge_m, g.top_wave, g.wave_tile, g.shallow_e, g.lift_soft) = (c.top_soft_m, c.edge_m, c.top_wave_m, c.wave_tile_m, c.shallow_e_m, c.lift_soft_m);
     (g.breakup, g.breakup_tile, g.breakup_y, g.wind) = (c.breakup, c.breakup_tile_m, c.breakup_y_m, *drift);

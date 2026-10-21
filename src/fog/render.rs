@@ -10,7 +10,7 @@ use bevy::{
         extract_component::{ComponentUniforms, DynamicUniformIndex},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
-        render_resource::{binding_types::{sampler, texture_2d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer}, *},
+        render_resource::{binding_types::{sampler, texture_2d, texture_3d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer}, *},
         renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
         texture::GpuImage,
         view::{ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
@@ -46,6 +46,9 @@ pub struct FogGpu {
     pub sun_k: f32,
     /// Ground albedo under the fog (sky light reflected back up into it).
     pub ground_albedo: f32,
+    pub wisp_m: f32, pub wisp_erode: f32, pub diffuse_sun: f32, pub step_power: f32,
+    /// Terrain sun occlusion of the aerial in-scatter (config sky.sun_occlusion; 0 = off or no terrain), kept share, samples per ray.
+    pub occ_on: f32, pub occ_keep: f32, pub occ_steps: u32,
 }
 
 /// Main world -> render world, every frame: the uniform, the fog map (Rgba32Float), the ground heights (R32Float), the cloud cookie (R8).
@@ -78,7 +81,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
         (0, uniform_buffer::<GpuAtmosphere>(true)), (1, uniform_buffer::<GpuAtmosphereSettings>(true)),
         (2, uniform_buffer::<AtmosphereTransform>(true)), (3, uniform_buffer::<ViewUniform>(true)),
         (8, texture_2d(TextureSampleType::default())), (10, texture_2d(TextureSampleType::default())),
-        (12, sampler(SamplerBindingType::Filtering)),
+        (11, texture_3d(TextureSampleType::default())), (12, sampler(SamplerBindingType::Filtering)),
     )));
     let unfiltered = TextureSampleType::Float { filterable: false };
     let data = |ms: bool| BindGroupLayoutDescriptor::new("fog_data", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
@@ -134,7 +137,7 @@ fn fog_pass(
     atmo_uniforms: Res<ComponentUniforms<GpuAtmosphere>>, settings_uniforms: Res<ComponentUniforms<GpuAtmosphereSettings>>, mut ctx: RenderContext,
 ) {
     let (Some(render), Some(params)) = (render, params) else { return };
-    if params.gpu.y_hi <= params.gpu.y_lo { return; }
+    if params.gpu.y_hi <= params.gpu.y_lo && params.gpu.occ_on <= 0.0 { return; }
     let (target, depth, msaa, pipeline, atmo, atmo_i, settings_i, transforms_i, view_i) = view.into_inner();
     let Some(pipeline) = cache.get_render_pipeline(pipeline.0) else { return };
     let (Some(map), Some(ground), Some(cookie)) = (images.get(&params.map), images.get(&params.ground), images.get(&params.cookie)) else { return };
@@ -142,7 +145,7 @@ fn fog_pass(
     let Some(depth_view) = depth.attachment.depth_stencil_views().depth_only_view() else { return };
     let device = ctx.render_device().clone();
     let atmo_bg = device.create_bind_group("fog_atmosphere", &cache.get_bind_group_layout(&render.atmo), &BindGroupEntries::with_indices((
-        (0, a), (1, s), (2, t), (3, v), (8, &atmo.transmittance_lut.default_view), (10, &atmo.sky_view_lut.default_view), (12, &**atmo_sampler),
+        (0, a), (1, s), (2, t), (3, v), (8, &atmo.transmittance_lut.default_view), (10, &atmo.sky_view_lut.default_view), (11, &atmo.aerial_view_lut.default_view), (12, &**atmo_sampler),
     )));
     let data = device.create_bind_group("fog_data", &cache.get_bind_group_layout(&render.data[(*msaa != Msaa::Off) as usize]), &BindGroupEntries::sequential((
         u, &map.texture_view, &ground.texture_view, &cookie.texture_view, &render.smp, depth_view,

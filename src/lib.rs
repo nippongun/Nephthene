@@ -50,7 +50,7 @@ impl Plugin for NephthenePlugin {
         sky::build(app, &self.config, map);
         if self.config.clouds.enabled { app.add_plugins(clouds::CloudPlugin); }
         app.add_plugins((rain::RainPlugin, storms::StormPlugin));
-        if self.config.ground_fog.enabled { app.add_plugins(fog::FogPlugin); }
+        app.add_plugins(fog::FogPlugin);
         #[cfg(feature = "panel")]
         app.add_plugins(panel::PanelPlugin);
     }

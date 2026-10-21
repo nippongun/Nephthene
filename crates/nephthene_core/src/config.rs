@@ -129,9 +129,15 @@ pub struct Sky {
     /// Replace Bevy's `render_sky.wesl` with a copy that shades per MSAA sample (Bevy 0.20.0 reads depth sample 0 for all samples,
     /// leaving a pale hairline at geometry edges). Off = Bevy's own.
     pub msaa_fix: bool,
+    /// Terrain occludes the sun in the air: with a terrain `Ground`, the share of a view ray in the terrain's shadow loses its aerial
+    /// in-scatter (the sun glow Bevy's aerial perspective puts on a ridge face with the sun behind it), all but `occlusion_keep` of it
+    /// (the multiple-scattered share the shadow does not block), sampled at `occlusion_steps` points. Off = Bevy's own (test red arm).
+    pub sun_occlusion: bool, pub occlusion_keep: f32, pub occlusion_steps: u32,
 }
 impl Default for Sky {
-    fn default() -> Self { Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true } }
+    fn default() -> Self {
+        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8 }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -414,10 +420,16 @@ pub struct GroundFog {
     pub lift_max_m: f32, pub lift_full_deg: f32, pub lift_soft_m: f32,
     /// Density breakup by 3D value noise: strength 0..1, horizontal and vertical cell (m). Drifts with the wind.
     pub breakup: f32, pub breakup_tile_m: f32, pub breakup_y_m: f32,
+    /// Wisps: within `wisp_m` below the pool top the breakup noise erodes the pool, up to `wisp_erode` (0..1) at the top, so the top is
+    /// ragged and fades with height instead of a hard level sheet. wisp_m 0 = the hard top (test red arm).
+    pub wisp_m: f32, pub wisp_erode: f32,
     /// Droplet single-scattering albedo and phase asymmetry g.
     pub albedo: f32, pub g: f32,
     /// Multiple scattering: octaves, energy (a) and optical-depth (b) factor per octave.
     pub ms_octaves: u32, pub ms_a: f32, pub ms_b: f32,
+    /// Scale on the sun's diffuse light inside the fog (two-stream diffuse transmission from the sunlit top: neutral, whitens deep fog).
+    /// 0 = direct beam only (test red arm).
+    pub diffuse_sun: f32,
     /// Sky light: scale on the mean sky radiance, how fast it dims with depth below the fog top (share of the optical depth), and the
     /// albedo of the ground under the fog (reflects sky light back up into it).
     pub ambient_scale: f32, pub ambient_od: f32, pub ground_albedo: f32,
@@ -425,8 +437,9 @@ pub struct GroundFog {
     pub sun_soft_m: f32, pub shadow_range_m: f32, pub shadow_step_m: f32,
     /// Baked fog map: extent (m, square around the camera), size (px), smoothing passes; rebake after moving `rebake_m` or every `rebake_s`.
     pub extent_m: f32, pub bake_px: u32, pub blur_passes: u32, pub rebake_m: f32, pub rebake_s: f32,
-    /// March: steps per pixel and the farthest distance (m); density fades over the outer `edge_fade` share of the map.
-    pub steps: u32, pub max_m: f32, pub edge_fade: f32,
+    /// March: steps per pixel and the farthest distance (m); density fades over the outer `edge_fade` share of the map. Steps are spaced
+    /// as (i / steps)^step_power along the ray, dense near the eye where fog changes the image most; 1 = uniform (test red arm).
+    pub steps: u32, pub max_m: f32, pub edge_fade: f32, pub step_power: f32,
 }
 impl Default for GroundFog {
     fn default() -> Self {
@@ -438,9 +451,9 @@ impl Default for GroundFog {
             top_soft_m: 12.0, edge_m: 25.0, top_wave_m: 8.0, wave_tile_m: 900.0,
             shallow_e_m: 5.0, hollow_radius_m: 400.0, hollow_m: 15.0, slope_lo: 0.12, slope_hi: 0.35, flat_share: 0.3,
             visibility_m: 150.0, shallow_visibility_m: 400.0, lift_max_m: 80.0, lift_full_deg: 20.0, lift_soft_m: 25.0,
-            breakup: 0.45, breakup_tile_m: 250.0, breakup_y_m: 40.0, albedo: 0.99, g: 0.75, ms_octaves: 3, ms_a: 0.6, ms_b: 0.35,
+            breakup: 0.45, breakup_tile_m: 250.0, breakup_y_m: 40.0, wisp_m: 40.0, wisp_erode: 0.7, albedo: 0.99, g: 0.75, ms_octaves: 3, ms_a: 0.6, ms_b: 0.35, diffuse_sun: 1.0,
             ambient_scale: 1.0, ambient_od: 0.5, ground_albedo: 0.2, sun_soft_m: 20.0, shadow_range_m: 4000.0, shadow_step_m: 100.0,
-            extent_m: 12000.0, bake_px: 128, blur_passes: 2, rebake_m: 1500.0, rebake_s: 2.0, steps: 48, max_m: 6000.0, edge_fade: 0.15,
+            extent_m: 12000.0, bake_px: 128, blur_passes: 2, rebake_m: 1500.0, rebake_s: 2.0, steps: 48, max_m: 6000.0, edge_fade: 0.15, step_power: 2.0,
         }
     }
 }
