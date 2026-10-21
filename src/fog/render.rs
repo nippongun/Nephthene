@@ -49,6 +49,9 @@ pub struct FogGpu {
     pub wisp_m: f32, pub wisp_erode: f32, pub diffuse_sun: f32, pub step_power: f32,
     /// Terrain sun occlusion of the aerial in-scatter (config sky.sun_occlusion; 0 = off or no terrain), kept share, samples per ray.
     pub occ_on: f32, pub occ_keep: f32, pub occ_steps: u32,
+    pub top_fade: f32,
+    /// Cloud cover at the eye (0 = clear, no clouds, or ground_fog.ignore_cloud_sky) and ground_fog.cloud_diffuse.
+    pub cloud_cover: f32, pub cloud_diffuse: f32,
 }
 
 /// Main world -> render world, every frame: the uniform, the fog map (Rgba32Float), the ground heights (R32Float), the cloud cookie (R8).

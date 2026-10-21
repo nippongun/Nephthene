@@ -1,7 +1,8 @@
-//! Nephthene example: a neutral scene (flat ground, sun, a mouse-driven look-around camera) under the weather system.
+//! Nephthene example: a neutral scene (flat ground, sun, a flying camera) under the weather system.
 //!
-//! Interactive (your terminal only): `cargo run --release --example sky`. Drag the left mouse button to look around, the wheel moves
-//! the camera forward and back, ` (Backquote) opens the weather panel (clock, coverage, wind, rain, map).
+//! Interactive (your terminal only): `cargo run --release --example sky`. Hold the left mouse button and move to look around.
+//! W/S move forward and back along the view, A/D strafe, E up, Q down, Left Shift is 5x, the wheel changes the base speed.
+//! ` (Backquote) opens the weather panel (clock, coverage, wind, rain, map); while it is open the mouse look and wheel are off.
 //! Headless (never opens a window; renders to an image): `cargo run --release --example sky -- --shot sky_west --out shots`.
 //!
 //! Shot options: `--shot <pose>` (examples/poses.json), `--out <dir>` (default shots), `--size WxH`, `--scale-factor f`,
@@ -91,7 +92,7 @@ fn main() {
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     match shot {
         Some(name) => { app.add_plugins(ShotPlugin { name, args }); }
-        None => { app.add_systems(Update, look_around); }
+        None => { app.add_systems(Update, fly); }
     }
     if let AppExit::Error(c) = app.run() { std::process::exit(c.get() as i32); }
 }
@@ -138,23 +139,40 @@ fn terrain_mesh(g: &nephthene::core::rain::HeightGrid) -> Mesh {
 
 // ---------------------------------------------------------------- interactive
 
-fn look_around(mut commands: Commands, cfg: Res<Cfg>, cams: Query<Entity, With<Cam>>, mut cam: Query<&mut Transform, With<Cam>>,
-    mouse: Res<ButtonInput<MouseButton>>, motion: Res<AccumulatedMouseMotion>, scroll: Res<AccumulatedMouseScroll>, panel: Option<Res<nephthene::Panel>>) {
+fn fly(mut commands: Commands, cfg: Res<Cfg>, cams: Query<Entity, With<Cam>>, mut cam: Query<&mut Transform, With<Cam>>,
+    mouse: Res<ButtonInput<MouseButton>>, keys: Res<ButtonInput<KeyCode>>, motion: Res<AccumulatedMouseMotion>, scroll: Res<AccumulatedMouseScroll>,
+    panel: Option<Res<nephthene::Panel>>, time: Res<Time>, mut speed: Local<Option<f32>>) {
     if cams.is_empty() {
         commands.spawn((camera_bundle(&cfg.0), Transform::from_xyz(0.0, 1.7, 0.0).looking_at(Vec3::new(0.0, 400.0, 1000.0), Vec3::Y)));
         return;
     }
     let Ok(mut t) = cam.single_mut() else { return };
-    if panel.is_some_and(|p| p.0.open) { return; } // the panel owns the mouse while open
-    if mouse.pressed(MouseButton::Left) {
-        let (mut yaw, mut pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
-        yaw -= motion.delta.x * 0.003;
-        pitch = (pitch - motion.delta.y * 0.003).clamp(-1.5, 1.5);
-        t.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+    // ponytail: base speed 20 m/s, 1.2x per wheel line, clamped to 1..2000 m/s; all untuned.
+    let base = speed.get_or_insert(20.0);
+    if !panel.is_some_and(|p| p.0.open) { // the panel owns the mouse while open
+        if mouse.pressed(MouseButton::Left) {
+            let (mut yaw, mut pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
+            yaw -= motion.delta.x * 0.003;
+            pitch = (pitch - motion.delta.y * 0.003).clamp(-1.5, 1.5);
+            t.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+        }
+        *base = (*base * 1.2f32.powf(scroll.delta.y)).clamp(1.0, 2000.0);
     }
-    // ponytail: wheel speed 5 m per line, untuned.
-    let f = t.forward() * scroll.delta.y * 5.0;
-    t.translation += f;
+    // Ctrl, Alt and Cmd chords (Cmd+Q, Cmd+W) must not also fly the camera.
+    let chord = [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight, KeyCode::SuperLeft, KeyCode::SuperRight].iter().any(|k| keys.pressed(*k));
+    if !chord {
+        let (f, r) = (*t.forward(), *t.right());
+        let mut d = Vec3::ZERO;
+        if keys.pressed(KeyCode::KeyW) { d += f; }
+        if keys.pressed(KeyCode::KeyS) { d -= f; }
+        if keys.pressed(KeyCode::KeyD) { d += r; }
+        if keys.pressed(KeyCode::KeyA) { d -= r; }
+        if keys.pressed(KeyCode::KeyE) { d += Vec3::Y; }
+        if keys.pressed(KeyCode::KeyQ) { d -= Vec3::Y; }
+        // ponytail: Left Shift is 5x, untuned.
+        let boost = if keys.pressed(KeyCode::ShiftLeft) { 5.0 } else { 1.0 };
+        t.translation += d.normalize_or_zero() * *base * boost * time.delta_secs();
+    }
 }
 
 // ---------------------------------------------------------------- headless shots

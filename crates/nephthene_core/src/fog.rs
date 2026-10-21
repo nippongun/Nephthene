@@ -225,7 +225,9 @@ pub fn density(c: &GroundFog, texel: [f32; 4], ground: f32, y: f32, sun_k: f32, 
     // ponytail: 0.2 is the noise band a wisp edge fades over; a knob when wisps are tuned.
     let thr = c.wisp_erode * (1.0 - ((top - y) / c.wisp_m.max(1e-3)).clamp(0.0, 1.0));
     let wisp = if c.wisp_m > 0.0 { smoothstep(thr, thr + 0.2, n) } else { 1.0 };
-    let pool = smoothstep(-0.5, 0.5, (top - y) / c.top_soft_m.max(1e-3)) * smoothstep(0.0, c.edge_m, top - ground) * smoothstep(0.0, 0.5, texel[3]) * wisp;
+    let tail = if c.top_fade_m > 0.0 { (-(y - top).max(0.0) / c.top_fade_m).exp() } else { 0.0 };
+    let vert = smoothstep(-0.5, 0.5, (top - y) / c.top_soft_m.max(1e-3)).max(tail);
+    let pool = vert * smoothstep(0.0, c.edge_m, top - ground) * smoothstep(0.0, 0.5, texel[3]) * wisp;
     let mist = texel[1] * (-h / c.shallow_e_m.max(1e-3)).exp();
     let lift = lift_m(c, sun_k, lit(c, texel[0].max(ground), texel[2]), texel[3]);
     let base = if lift > 0.0 { smoothstep(lift, lift + c.lift_soft_m, h) } else { 1.0 };
@@ -318,7 +320,9 @@ mod tests {
         assert!(near_ground(&c, &m, &g, 4000.0, 0.0) < ss * c.flat_share, "ridge keeps only the open-ground mist");
         assert!(near_ground(&c, &m, &g, -3500.0, 2500.0) > 0.8 * sp, "the closed basin pools too");
         let floor = g.height(0.0, 0.0);
-        assert!(density(&c, m.at(0.0, 0.0), floor, tops[4] + 2.0 * c.top_soft_m, 0.0, 0.0, 0.5, sigma(&c)) < 1e-4, "above the top");
+        let above = |c: &GroundFog, dy: f32| density(c, m.at(0.0, 0.0), floor, tops[4] + dy, 0.0, 0.0, 0.95, sigma(c));
+        assert!(above(&c, 3.0 * c.top_fade_m) < 0.1 * above(&c, -c.wisp_m), "haze above the top fades");
+        assert!(above(&GroundFog { top_fade_m: 0.0, wisp_m: 0.0, ..c.clone() }, 2.0 * c.top_soft_m) < 1e-4, "hard top: nothing above");
         // Red arm: a blanket that follows each column's own ground fogs the ridge as much as the floor.
         let blanket = GroundFog { ignore_terrain: true, ..c.clone() };
         assert!(near_ground(&blanket, &full(&blanket, &g, Vec3::Y), &g, 4000.0, 0.0) > 0.5 * sp, "ignore_terrain fogs the ridge");

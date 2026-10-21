@@ -156,6 +156,9 @@ fn drive(
     (g.top_soft, g.edge_m, g.top_wave, g.wave_tile, g.shallow_e, g.lift_soft) = (c.top_soft_m, c.edge_m, c.top_wave_m, c.wave_tile_m, c.shallow_e_m, c.lift_soft_m);
     (g.breakup, g.breakup_tile, g.breakup_y, g.wind) = (c.breakup, c.breakup_tile_m, c.breakup_y_m, *drift);
     (g.sun_soft, g.ambient_scale, g.ambient_od, g.ms_a, g.ms_b, g.ms_octaves, g.edge_fade) = (c.sun_soft_m, c.ambient_scale, c.ambient_od, c.ms_a, c.ms_b, c.ms_octaves, c.edge_fade);
+    // Cover the clouds draw: the panel / config override, else the map at the camera; none without clouds.
+    let cover = clouds.as_ref().map_or(0.0, |cp| if cp.gpu.coverage_override >= 0.0 { cp.gpu.coverage_override } else { wx.here.coverage });
+    (g.top_fade, g.cloud_diffuse, g.cloud_cover) = (c.top_fade_m, c.cloud_diffuse, if c.ignore_cloud_sky { 0.0 } else { cover });
     if let Some(cp) = clouds {
         let s = &cp.shadow_gpu;
         (g.sh_origin, g.sh_right, g.sh_up, g.sh_half, g.sh_on) = (s.origin, s.right, s.up, wx.cfg.clouds.shadow_half_m, 1.0);

@@ -65,6 +65,10 @@ struct Fog {
     occ_on: f32,
     occ_keep: f32,
     occ_steps: u32,
+    top_fade: f32,
+    // Cloud cover at the eye (0 = clear or no clouds) and the share of the sun's flux the cloud deck passes on diffusely.
+    cloud_cover: f32,
+    cloud_diffuse: f32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -148,7 +152,9 @@ fn fog_density(texel: vec4<f32>, g: f32, y: f32, wave: f32, n: f32) -> f32 {
     // ponytail: 0.2 is the noise band a wisp edge fades over (nephthene_core::fog::density).
     let thr = f.wisp_erode * (1.0 - clamp((top - y) / max(f.wisp_m, 1e-3), 0.0, 1.0));
     let wisp = select(1.0, smoothstep(thr, thr + 0.2, n), f.wisp_m > 0.0);
-    let pool = smoothstep(-0.5, 0.5, (top - y) / max(f.top_soft, 1e-3)) * smoothstep(0.0, f.edge_m, top - g) * smoothstep(0.0, 0.5, texel.w) * wisp;
+    let tail = select(0.0, exp(-max(y - top, 0.0) / max(f.top_fade, 1e-3)), f.top_fade > 0.0);
+    let vert = max(smoothstep(-0.5, 0.5, (top - y) / max(f.top_soft, 1e-3)), tail);
+    let pool = vert * smoothstep(0.0, f.edge_m, top - g) * smoothstep(0.0, 0.5, texel.w) * wisp;
     let mist = texel.y * exp(-h / max(f.shallow_e, 1e-3));
     let lift = f.lift_max * f.sun_k * lit(max(texel.x, g), texel.z) * (1.0 - clamp(texel.w, 0.0, 1.0));
     let base = select(1.0, smoothstep(lift, lift + f.lift_soft, h), lift > 0.0);
@@ -256,7 +262,11 @@ fn march(in: FullscreenVertexOutput, d: vec3<f32>, eye: vec3<f32>, t_scene: f32,
     let R = atmosphere.inner_radius;
     let ce = get_view_position();
     let re = length(ce);
-    let amb = sky_mean(re) * f.ambient_scale;
+    // Sky light: the clear-sky dome blended by cloud cover toward the sun's flux passed diffusely through the cloud deck (flux / pi,
+    // neutral). The sky-view LUT knows no clouds, so alone it lights fog under cloud with saturated clear-sky blue.
+    let mu_s = max(f.sun_dir.y, 0.0);
+    let overcast = f.sun_color * atmo_transmittance(re, f.sun_dir.y) * mu_s * f.cloud_diffuse / PI;
+    let amb = mix(sky_mean(re), overcast, f.cloud_cover) * f.ambient_scale;
     let cs = dot(d, f.sun_dir);
     let cm = dot(d, f.moon_dir);
     let half = 0.5 * f.map_cell * f32(f.map_n);
