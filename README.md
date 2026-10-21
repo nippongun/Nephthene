@@ -49,7 +49,7 @@ starting values and **untuned**. Sections:
 | `clouds` (+ `look`, `noise`) | layer heights, march steps, light, shoulder, render scale, update div, shadow cookie, towers, probe view, coverage override |
 | `resolve` | temporal resolve: reject gain, still box, fresh confidence, cut thresholds, jitter, the `wide_upsample` switch, and the test switches `no_reproject`, `light_jitter_shared`, `motion_half_px` |
 | `shafts` | rain-shaft pass |
-| `ground_fog` | terrain-following radiation fog: formation from night cooling, cloud cover, wind, wetness and dust; burn-off and base lift; valley pooling depth, shallow mist, optics, bake and march; test switches `ignore_terrain`, `ignore_shadow`; off by default via `enabled`. See `docs/fog.md` |
+| `ground_fog` | terrain-following radiation fog: formation from night cooling, cloud cover, wind, wetness and dust; burn-off and base lift; valley pooling depth, shallow mist, optics, bake and march (`render_scale`, half resolution by default, depth-aware composite); test switches `ignore_terrain`, `ignore_shadow`, `hash_noise`; off by default via `enabled` (the panel's Fog section switches it on at runtime). See `docs/fog.md` |
 | `rain` | streaks, splashes, drop kinematics, wetness, rain light, `force` |
 | `storms` (+ `render`, `fx`) | timetable, cell shape, shader constants, flashes, authored storms, `force` |
 | `audio` | wind/rain bed mapping (the plugin does not play sound; use `core::audio` from your audio code) |

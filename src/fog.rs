@@ -50,7 +50,7 @@ fn image(w: u32, h: u32, format: TextureFormat, data: Vec<u8>) -> Image {
     im
 }
 
-fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>, ground: Option<Res<crate::rain::Ground>>) {
+fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>, ground: Option<Res<crate::rain::Ground>>, wx: Res<Weather>) {
     let grid = crate::rain::ground_grid(ground.as_deref());
     commands.insert_resource(FogParams {
         gpu: FogGpu { g_min: Vec2::new(grid.min_x, grid.max_z), g_cell: grid.cell_m, g_w: grid.w, g_h: grid.h, map_n: 1, ..default() },
@@ -58,6 +58,10 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>, ground: Opti
         ground: images.add(crate::rain::ground_image(&grid)),
         // No clouds: a white cookie (sh_on stays 0 and the shader never reads it).
         cookie: images.add(image(1, 1, TextureFormat::R8Unorm, vec![255])),
+        // ponytail: 64^3 cells of noise lattice: tiles every 64 noise cells (16 km at the 250 m breakup cell), too far to see.
+        noise: images.add({ let mut im = image(64, 64, TextureFormat::R8Unorm, f::noise_lattice(64)); im.texture_descriptor.size.depth_or_array_layers = 64; im.texture_descriptor.dimension = TextureDimension::D3; im }),
+        render_scale: wx.cfg.ground_fog.render_scale,
+        timing: wx.cfg.clouds.pass_timing,
     });
     commands.insert_resource(Baker { grid: Arc::new(grid), terrain: ground.is_some(), field: None, m: vec![], alt: vec![], task: None, pending_h: 0.0, since: 0.0, key: None, cfg: None });
 }
@@ -106,7 +110,7 @@ fn bake(
         return;
     }
     let Some(at) = cam.iter().next().map(|g| g.translation().xz()) else { return };
-    let air = Air { coverage: wx.here.coverage, wind_mps: wx.cfg.wind.speed_mps, wetness: rain.map_or(0.0, |r| r.wetness), dust: wx.here.dust };
+    let air = Air { coverage: wx.here.coverage, wind_mps: wx.wind_mean_mps, wetness: rain.map_or(0.0, |r| r.wetness), dust: wx.here.dust };
     let frozen = wx.rate <= 0.0 || c.force.is_some();
     b.pending_h += time.delta_secs() * wx.rate;
     b.since += time.delta_secs();
@@ -144,6 +148,7 @@ fn drive(
     let c = &wx.cfg.ground_fog;
     if wx.rate > 0.0 { *drift += wx.wind.xz() * time.delta_secs(); }
     let body = |l: &DirectionalLight, t: &Transform| (t.back().as_vec3(), l.color.to_linear().to_vec3() * l.illuminance);
+    params.render_scale = c.render_scale;
     let g = &mut params.gpu;
     if let Some((l, t)) = sun.iter().next() { (g.sun_dir, g.sun_color) = body(l, t); }
     if let Some((l, t)) = moon.iter().next() { (g.moon_dir, g.moon_color) = body(l, t); }
@@ -160,6 +165,7 @@ fn drive(
     let cover = clouds.as_ref().map_or(0.0, |cp| if cp.gpu.coverage_override >= 0.0 { cp.gpu.coverage_override } else { wx.here.coverage });
     // ponytail: Rayleigh scattering at sea level, Bevy's Atmosphere::earth values (sky.rs keeps its Rayleigh); read the medium to upgrade.
     (g.top_billow, g.billow_tile, g.mie_g, g.mie_beta, g.ray_beta) = (c.top_billow_m, c.billow_tile_m, sky.mie_asymmetry, sky.mie_scattering, Vec3::new(5.802e-6, 13.558e-6, 33.1e-6));
+    g.hash_noise = c.hash_noise as u32 as f32;
     (g.top_fade, g.cloud_diffuse, g.cloud_cover) = (c.top_fade_m, c.cloud_diffuse, if c.ignore_cloud_sky { 0.0 } else { cover });
     if let Some(cp) = clouds {
         let s = &cp.shadow_gpu;

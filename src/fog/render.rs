@@ -1,7 +1,9 @@
-//! Ground fog, render world: `fog_pass` runs after the main pass (where Bevy's volumetric fog runs) and blends shaders/fog.wesl over
-//! the view target, reading the scene depth (sample 0 under MSAA) to stop the march at the first surface.
+//! Ground fog, render world: `fog_pass` runs after the main pass (where Bevy's volumetric fog runs): `march_low` marches at
+//! `ground_fog.render_scale` into a premultiplied fog target and a surface-distance target, reading the scene depth (sample 0 under MSAA)
+//! to stop at the first surface; `composite` blends it over the view target with a depth-aware upsample.
 use std::collections::HashMap;
 use bevy::{
+    camera::MainPassResolutionOverride,
     core_pipeline::{FullscreenShader, schedule::Core3d, Core3dSystems},
     pbr::{ExtractedAtmosphere, GpuAtmosphereSettings, resources::{AtmosphereSampler, AtmosphereTextures, AtmosphereTransform, AtmosphereTransforms, AtmosphereTransformsOffset, GpuAtmosphere}},
     prelude::*,
@@ -12,7 +14,7 @@ use bevy::{
         render_asset::RenderAssets,
         render_resource::{binding_types::{sampler, texture_2d, texture_3d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer}, *},
         renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
-        texture::GpuImage,
+        texture::{CachedTexture, GpuImage, TextureCache},
         view::{ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
     },
     shader::Shader,
@@ -55,30 +57,44 @@ pub struct FogGpu {
     pub top_billow: f32, pub billow_tile: f32,
     /// Air phase for the kept share of shadowed in-scatter: Mie asymmetry and scattering (config sky), Rayleigh scattering (per metre).
     pub mie_g: f32, pub mie_beta: f32, pub ray_beta: Vec3,
+    pub hash_noise: f32,
 }
 
 /// Main world -> render world, every frame: the uniform, the fog map (Rgba32Float), the ground heights (R32Float), the cloud cookie (R8).
 #[derive(Resource, Clone, ExtractResource)]
 #[extract_app(RenderApp)]
-pub struct FogParams { pub gpu: FogGpu, pub map: Handle<Image>, pub ground: Handle<Image>, pub cookie: Handle<Image> }
+pub struct FogParams { pub gpu: FogGpu, pub map: Handle<Image>, pub ground: Handle<Image>, pub cookie: Handle<Image>, pub noise: Handle<Image>, pub render_scale: f32, /// clouds.pass_timing: GPU timestamps for the two passes (see FogTiming).
+    pub timing: bool }
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(ExtractResourcePlugin::<FogParams>::default());
     let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
     render_app
         .add_systems(RenderStartup, init)
-        .add_systems(Render, prepare.in_set(RenderSystems::PrepareResources))
+        .add_systems(Render, (read_timing.in_set(RenderSystems::Cleanup), prepare.in_set(RenderSystems::PrepareResources)))
         .add_systems(Core3d, fog_pass.after(Core3dSystems::MainPass).before(Core3dSystems::EarlyPostProcess));
+}
+
+/// clouds.pass_timing: GPU timestamps for `ground_fog_march` and `ground_fog_composite`. Prints `FOGMS` every 60 frames (mean ms).
+/// Created in `prepare` (the switch arrives with FogParams, after startup). Off or no TIMESTAMP_QUERY: no query set, no readback.
+#[derive(Resource)]
+struct FogTiming {
+    qs: wgpu::QuerySet, resolve: wgpu::Buffer, read: wgpu::Buffer, sums: [f64; 2], n: u32,
+    /// Set by fog_pass when it resolved this frame's timestamps; read_timing reads only then.
+    recorded: bool,
 }
 
 #[derive(Resource)]
 struct FogRender {
-    atmo: BindGroupLayoutDescriptor, data: [BindGroupLayoutDescriptor; 2], shader: Handle<Shader>, fullscreen: FullscreenShader,
-    smp: Sampler, ubo: UniformBuffer<FogGpu>, pipelines: HashMap<(bool, TextureFormat), CachedRenderPipelineId>,
+    atmo: BindGroupLayoutDescriptor, data: [BindGroupLayoutDescriptor; 2], comp: BindGroupLayoutDescriptor, shader: Handle<Shader>, fullscreen: FullscreenShader,
+    smp: Sampler, repeat: Sampler, ubo: UniformBuffer<FogGpu>,
+    /// March pipeline per MSAA, composite pipeline per (MSAA, target format).
+    march: HashMap<bool, CachedRenderPipelineId>, composite: HashMap<(bool, TextureFormat), CachedRenderPipelineId>,
 }
 
+/// The view's pipelines and its half-resolution march targets (premultiplied fog, surface distance).
 #[derive(Component)]
-struct FogPipeline(CachedRenderPipelineId);
+struct FogView { march: CachedRenderPipelineId, composite: CachedRenderPipelineId, low: CachedTexture, t: CachedTexture }
 
 fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServer>, fullscreen: Res<FullscreenShader>) {
     use ShaderStages as S;
@@ -93,60 +109,83 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     let data = |ms: bool| BindGroupLayoutDescriptor::new("fog_data", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
         uniform_buffer::<FogGpu>(false), texture_2d(unfiltered), texture_2d(unfiltered), texture_2d(TextureSampleType::default()),
         sampler(SamplerBindingType::Filtering), if ms { texture_depth_2d_multisampled() } else { texture_depth_2d() },
+        texture_3d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
     )));
-    let smp = device.create_sampler(&SamplerDescriptor { mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default() });
+    let comp = BindGroupLayoutDescriptor::new("fog_composite", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (texture_2d(unfiltered), texture_2d(unfiltered))));
+    let sampler = |mode| device.create_sampler(&SamplerDescriptor { address_mode_u: mode, address_mode_v: mode, address_mode_w: mode, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default() });
     commands.insert_resource(FogRender {
-        atmo, data: [data(false), data(true)], shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp, ubo: UniformBuffer::default(), pipelines: HashMap::new(),
+        atmo, data: [data(false), data(true)], comp, shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp: sampler(AddressMode::ClampToEdge), repeat: sampler(AddressMode::Repeat),
+        ubo: UniformBuffer::default(), march: HashMap::new(), composite: HashMap::new(),
     });
 }
 
 fn prepare(
     mut commands: Commands, params: Option<Res<FogParams>>, render: Option<ResMut<FogRender>>, cache: Res<PipelineCache>, device: Res<RenderDevice>, queue: Res<RenderQueue>,
-    views: Query<(Entity, &Msaa, &ViewTarget), (With<ExtractedView>, With<ExtractedAtmosphere>)>,
+    mut textures: ResMut<TextureCache>, timing: Option<Res<FogTiming>>, views: Query<(Entity, &ExtractedView, &Msaa, &ViewTarget, Option<&MainPassResolutionOverride>), With<ExtractedAtmosphere>>,
 ) {
     let (Some(params), Some(mut render)) = (params, render) else { return };
+    if params.timing && timing.is_none() && device.features().contains(WgpuFeatures::TIMESTAMP_QUERY) {
+        let buf = |usage, label| device.wgpu_device().create_buffer(&BufferDescriptor { label: Some(label), size: 4 * 8, usage, mapped_at_creation: false });
+        commands.insert_resource(FogTiming {
+            qs: device.wgpu_device().create_query_set(&wgpu::QuerySetDescriptor { label: Some("fog_ts"), ty: wgpu::QueryType::Timestamp, count: 4 }),
+            resolve: buf(BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC, "fog_ts_resolve"), read: buf(BufferUsages::COPY_DST | BufferUsages::MAP_READ, "fog_ts_read"),
+            sums: [0.0; 2], n: 0, recorded: false,
+        });
+    }
     render.ubo.set(params.gpu);
     render.ubo.write_buffer(&device, &queue);
-    for (e, msaa, target) in &views {
-        let key = (*msaa != Msaa::Off, target.main_texture_format());
-        let id = match render.pipelines.get(&key) {
-            Some(p) => *p,
-            None => {
-                let p = cache.queue_render_pipeline(RenderPipelineDescriptor {
-                    label: Some("ground_fog".into()),
-                    layout: vec![render.atmo.clone(), render.data[key.0 as usize].clone()],
-                    vertex: render.fullscreen.to_vertex_state(),
-                    fragment: Some(FragmentState {
-                        shader: render.shader.clone(), entry_point: Some("main".into()),
-                        shader_defs: if key.0 { vec!["MULTISAMPLED".into()] } else { vec![] },
-                        // Premultiplied over the scene; the target's alpha is kept.
-                        targets: vec![Some(ColorTargetState { format: key.1, write_mask: ColorWrites::ALL, blend: Some(BlendState {
-                            color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::OneMinusSrcAlpha, operation: BlendOperation::Add },
-                            alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
-                        }) })],
-                        ..default()
-                    }),
-                    ..default()
-                });
-                render.pipelines.insert(key, p);
-                p
-            }
-        };
-        commands.entity(e).insert(FogPipeline(id));
+    let render = &mut *render;
+    for (e, view, msaa, target, over) in &views {
+        let (ms, format) = (*msaa != Msaa::Off, target.main_texture_format());
+        let defs = if ms { vec!["MULTISAMPLED".into()] } else { vec![] };
+        let march = *render.march.entry(ms).or_insert_with(|| cache.queue_render_pipeline(RenderPipelineDescriptor {
+            label: Some("ground_fog_march".into()),
+            layout: vec![render.atmo.clone(), render.data[ms as usize].clone()],
+            vertex: render.fullscreen.to_vertex_state(),
+            fragment: Some(FragmentState {
+                shader: render.shader.clone(), entry_point: Some("march_low".into()), shader_defs: defs.clone(),
+                targets: vec![Some(TextureFormat::Rgba16Float.into()), Some(TextureFormat::R32Float.into())], ..default()
+            }),
+            ..default()
+        }));
+        let composite = *render.composite.entry((ms, format)).or_insert_with(|| cache.queue_render_pipeline(RenderPipelineDescriptor {
+            label: Some("ground_fog_composite".into()),
+            layout: vec![render.atmo.clone(), render.data[ms as usize].clone(), render.comp.clone()],
+            vertex: render.fullscreen.to_vertex_state(),
+            fragment: Some(FragmentState {
+                shader: render.shader.clone(), entry_point: Some("composite".into()), shader_defs: defs,
+                // Premultiplied over the scene; the target's alpha is kept.
+                targets: vec![Some(ColorTargetState { format, write_mask: ColorWrites::ALL, blend: Some(BlendState {
+                    color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::OneMinusSrcAlpha, operation: BlendOperation::Add },
+                    alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+                }) })],
+                ..default()
+            }),
+            ..default()
+        }));
+        let full = over.map_or(view.viewport.zw(), |o| o.0);
+        let size = (full.as_vec2() * params.render_scale.clamp(0.1, 1.0)).ceil().as_uvec2().max(UVec2::ONE);
+        let mut tex = |label, format| textures.get(&device, TextureDescriptor {
+            label: Some(label), size: Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: TextureDimension::D2, format, usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        });
+        commands.entity(e).insert(FogView { march, composite, low: tex("fog_low", TextureFormat::Rgba16Float), t: tex("fog_low_t", TextureFormat::R32Float) });
     }
 }
 
 fn fog_pass(
-    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &Msaa, &FogPipeline, &AtmosphereTextures, &DynamicUniformIndex<GpuAtmosphere>, &DynamicUniformIndex<GpuAtmosphereSettings>, &AtmosphereTransformsOffset, &ViewUniformOffset)>,
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &Msaa, &FogView, &AtmosphereTextures, &DynamicUniformIndex<GpuAtmosphere>, &DynamicUniformIndex<GpuAtmosphereSettings>, &AtmosphereTransformsOffset, &ViewUniformOffset)>,
     render: Option<Res<FogRender>>, params: Option<Res<FogParams>>, images: Res<RenderAssets<GpuImage>>, cache: Res<PipelineCache>,
     atmo_sampler: Res<AtmosphereSampler>, view_uniforms: Res<ViewUniforms>, transforms: Res<AtmosphereTransforms>,
     atmo_uniforms: Res<ComponentUniforms<GpuAtmosphere>>, settings_uniforms: Res<ComponentUniforms<GpuAtmosphereSettings>>, mut ctx: RenderContext,
+    timing: Option<ResMut<FogTiming>>,
 ) {
     let (Some(render), Some(params)) = (render, params) else { return };
     if params.gpu.y_hi <= params.gpu.y_lo && params.gpu.occ_on <= 0.0 { return; }
-    let (target, depth, msaa, pipeline, atmo, atmo_i, settings_i, transforms_i, view_i) = view.into_inner();
-    let Some(pipeline) = cache.get_render_pipeline(pipeline.0) else { return };
-    let (Some(map), Some(ground), Some(cookie)) = (images.get(&params.map), images.get(&params.ground), images.get(&params.cookie)) else { return };
+    let mut timing = timing.filter(|_| params.timing);
+    let (target, depth, msaa, fv, atmo, atmo_i, settings_i, transforms_i, view_i) = view.into_inner();
+    let (Some(march), Some(composite)) = (cache.get_render_pipeline(fv.march), cache.get_render_pipeline(fv.composite)) else { return };
+    let (Some(map), Some(ground), Some(cookie), Some(noise)) = (images.get(&params.map), images.get(&params.ground), images.get(&params.cookie), images.get(&params.noise)) else { return };
     let (Some(a), Some(s), Some(t), Some(v), Some(u)) = (atmo_uniforms.binding(), settings_uniforms.binding(), transforms.uniforms().binding(), view_uniforms.uniforms.binding(), render.ubo.binding()) else { return };
     let Some(depth_view) = depth.attachment.depth_stencil_views().depth_only_view() else { return };
     let device = ctx.render_device().clone();
@@ -154,15 +193,55 @@ fn fog_pass(
         (0, a), (1, s), (2, t), (3, v), (8, &atmo.transmittance_lut.default_view), (10, &atmo.sky_view_lut.default_view), (11, &atmo.aerial_view_lut.default_view), (12, &**atmo_sampler),
     )));
     let data = device.create_bind_group("fog_data", &cache.get_bind_group_layout(&render.data[(*msaa != Msaa::Off) as usize]), &BindGroupEntries::sequential((
-        u, &map.texture_view, &ground.texture_view, &cookie.texture_view, &render.smp, depth_view,
+        u, &map.texture_view, &ground.texture_view, &cookie.texture_view, &render.smp, depth_view, &noise.texture_view, &render.repeat,
     )));
+    let comp = device.create_bind_group("fog_composite", &cache.get_bind_group_layout(&render.comp), &BindGroupEntries::sequential((&fv.low.default_view, &fv.t.default_view)));
+    let offsets = [atmo_i.index(), settings_i.index(), transforms_i.index(), view_i.offset];
+    fn attach(view: &TextureView) -> Option<RenderPassColorAttachment<'_>> { Some(RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } }) }
+    // Pass i (0 march, 1 composite) writes timestamps 2i (begin) and 2i + 1 (end).
+    let ts = |i: u32| timing.as_ref().map(|t| wgpu::RenderPassTimestampWrites { query_set: &t.qs, beginning_of_pass_write_index: Some(2 * i), end_of_pass_write_index: Some(2 * i + 1) });
     let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
-        label: Some("ground_fog"),
-        color_attachments: &[Some(RenderPassColorAttachment { view: target.main_texture_view(), depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } })],
-        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        label: Some("ground_fog_march"), color_attachments: &[attach(&fv.low.default_view), attach(&fv.t.default_view)],
+        depth_stencil_attachment: None, timestamp_writes: ts(0), occlusion_query_set: None, multiview_mask: None,
     });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, &atmo_bg, &[atmo_i.index(), settings_i.index(), transforms_i.index(), view_i.offset]);
+    pass.set_pipeline(march);
+    pass.set_bind_group(0, &atmo_bg, &offsets);
     pass.set_bind_group(1, &data, &[]);
     pass.draw(0..3, 0..1);
+    drop(pass);
+    let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
+        label: Some("ground_fog_composite"), color_attachments: &[attach(target.main_texture_view())],
+        depth_stencil_attachment: None, timestamp_writes: ts(1), occlusion_query_set: None, multiview_mask: None,
+    });
+    pass.set_pipeline(composite);
+    pass.set_bind_group(0, &atmo_bg, &offsets);
+    pass.set_bind_group(1, &data, &[]);
+    pass.set_bind_group(2, &comp, &[]);
+    pass.draw(0..3, 0..1);
+    drop(pass);
+    if let Some(t) = timing.as_mut() {
+        let e = ctx.command_encoder();
+        e.resolve_query_set(&t.qs, 0..4, &t.resolve, 0);
+        e.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, 32);
+        t.recorded = true;
+    }
+}
+
+/// Cleanup (after submit): map the resolved timestamps and print the running mean every 60 frames. Skipped on frames fog_pass did not record.
+fn read_timing(timing: Option<ResMut<FogTiming>>, device: Res<RenderDevice>, queue: Res<RenderQueue>) {
+    let Some(mut t) = timing else { return };
+    if !std::mem::take(&mut t.recorded) { return; }
+    let slice = t.read.slice(..);
+    slice.map_async(MapMode::Read, |_| {});
+    let _ = device.poll(PollType::wait_indefinitely());
+    let ts: Vec<u64> = slice.get_mapped_range().expect("timestamps").chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+    t.read.unmap();
+    let period = queue.get_timestamp_period() as f64 * 1e-6;
+    for i in 0..2 { if ts[2 * i + 1] >= ts[2 * i] && ts[2 * i] > 0 { t.sums[i] += (ts[2 * i + 1] - ts[2 * i]) as f64 * period; } }
+    t.n += 1;
+    if t.n == 60 {
+        let (march, composite) = (t.sums[0] / 60.0, t.sums[1] / 60.0);
+        println!("FOGMS march {march:.3} | composite {composite:.3} | total {:.3}", march + composite);
+        (t.sums, t.n) = ([0.0; 2], 0);
+    }
 }

@@ -75,6 +75,8 @@ struct Fog {
     mie_g: f32,
     mie_beta: f32,
     ray_beta: vec3<f32>,
+    // Test switch: 1 = the per-step hash value noise instead of the baked noise texture (the old cost; red arm of the cost gate).
+    hash_noise: f32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -86,6 +88,12 @@ struct Fog {
 @group(1) @binding(5) var depth: texture_depth_multisampled_2d;
 @if(!MULTISAMPLED)
 @group(1) @binding(5) var depth: texture_depth_2d;
+// Tiling 3D value-noise lattice (nephthene_core::fog::noise_lattice), sampled with repeat.
+@group(1) @binding(6) var noise_tex: texture_3d<f32>;
+@group(1) @binding(7) var noise_smp: sampler;
+// Composite pass: the half-resolution march (premultiplied fog, surface distance per texel).
+@group(2) @binding(0) var low_fog: texture_2d<f32>;
+@group(2) @binding(1) var low_t: texture_2d<f32>;
 
 const PI: f32 = 3.14159265;
 const F16_MAX: f32 = 60000.0;
@@ -105,6 +113,16 @@ fn pcg(v: u32) -> f32 {
 fn lattice(p: vec3<i32>) -> f32 {
     return pcg((u32(p.x) * 73856093u) ^ (u32(p.y) * 19349663u) ^ (u32(p.z) * 83492791u));
 }
+// Value noise from the baked lattice: one trilinear fetch at the smoothstep-warped coordinate gives the same smooth interpolation as
+// `vnoise`'s 8 hashed corners. Different lattice values, same character.
+fn noise(p: vec3<f32>) -> f32 {
+    if f.hash_noise > 0.0 { return vnoise(p); }
+    let i = floor(p);
+    let t = p - i;
+    let n = f32(textureDimensions(noise_tex).x);
+    return textureSampleLevel(noise_tex, noise_smp, (i + t * t * (3.0 - 2.0 * t) + 0.5) / n, 0.0).r;
+}
+
 fn vnoise(p: vec3<f32>) -> f32 {
     let i = vec3<i32>(floor(p));
     let t = fract(p);
@@ -216,9 +234,9 @@ fn ms(od: f32, c: f32) -> f32 {
 // Pool top offset (m) at xz: the small wave and the billows, drifting with the wind.
 fn top_off(xz: vec2<f32>) -> f32 {
     let q = xz - f.wind;
-    let wave = 2.0 * vnoise(vec3(q.x, 0.0, q.y) / f.wave_tile) - 1.0;
+    let wave = 2.0 * noise(vec3(q.x, 0.0, q.y) / f.wave_tile) - 1.0;
     let b = vec3(q.x, 0.0, q.y) / max(f.billow_tile, 1.0);
-    let billow = 2.0 * (0.7 * vnoise(b + vec3(41.0, 0.0, 7.0)) + 0.3 * vnoise(b * 2.3 + vec3(5.0, 0.0, 63.0))) - 1.0;
+    let billow = 2.0 * (0.7 * noise(b + vec3(41.0, 0.0, 7.0)) + 0.3 * noise(b * 2.3 + vec3(5.0, 0.0, 63.0))) - 1.0;
     return f.top_wave * wave + f.top_billow * billow;
 }
 
@@ -248,13 +266,20 @@ fn shadowed(eye: vec3<f32>, d: vec3<f32>, t_end: f32, jit: f32) -> f32 {
 // Fog over the scene, plus the terrain-occlusion correction of the aerial perspective drawn on geometry (render_sky): the shadowed share
 // of the ray to a surface loses that share of its aerial in-scatter (all but occ_keep). Returned premultiplied, so with the correction X
 // the target becomes (dst - X)(1 - a) + rgb; the view target is float, so the negative source term subtracts.
+struct Low {
+    @location(0) fog: vec4<f32>,
+    @location(1) t: f32,
+}
+
+// Half-resolution march (ground_fog.render_scale): the depth is read at the full-resolution pixel under this texel; the texel's surface
+// distance (-1 for sky) goes to the second target for the depth-aware upsample in `composite`.
 @fragment
-fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+fn march_low(in: FullscreenVertexOutput) -> Low {
     let occ = f.occ_on > 0.0 && f.sun_dir.y > -0.05;
-    if f.y_hi <= f.y_lo && !occ { return vec4(0.0); }
+    if f.y_hi <= f.y_lo && !occ { return Low(vec4(0.0), -1.0); }
     let d = uv_to_ray_direction(in.uv);
     let eye = view.world_position;
-    let z = textureLoad(depth, vec2<i32>(in.position.xy), 0);
+    let z = textureLoad(depth, vec2<i32>(in.uv * vec2<f32>(textureDimensions(depth))), 0);
     var t_scene = -1.0;
     if z > 0.0 {
         let v = view.view_from_clip * vec4(uv_to_ndc(in.uv), z, 1.0);
@@ -265,7 +290,37 @@ fn main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         x_ap = shadowed(eye, d, t_scene, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (vec3(1.0) - kept(dot(d, f.sun_dir))) * sample_aerial_view_lut(in.uv, t_scene) * view.exposure;
     }
     let fog = march(in, d, eye, t_scene, occ);
-    return vec4(fog.rgb - x_ap * (1.0 - fog.a), fog.a);
+    return Low(vec4(fog.rgb - x_ap * (1.0 - fog.a), fog.a), t_scene);
+}
+
+// Full-resolution composite of the half-resolution fog over the scene: the 4 texels around the pixel, weighted bilinearly and by how
+// close each texel's surface distance is to this pixel's (sky matches sky), so fog does not bleed across silhouettes.
+@fragment
+fn composite(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let z = textureLoad(depth, vec2<i32>(in.position.xy), 0);
+    var t = -1.0;
+    if z > 0.0 {
+        let v = view.view_from_clip * vec4(uv_to_ndc(in.uv), z, 1.0);
+        t = length(v.xyz / v.w);
+    }
+    let dim = vec2<i32>(textureDimensions(low_fog));
+    let q = in.uv * vec2<f32>(dim) - 0.5;
+    let i = vec2<i32>(floor(q));
+    let w = q - floor(q);
+    var sum = vec4(0.0);
+    var wsum = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let o = vec2(k & 1, k >> 1);
+        let p = clamp(i + o, vec2(0), dim - 1);
+        let tl = textureLoad(low_t, p, 0).r;
+        let bil = select(1.0 - w.x, w.x, o.x == 1) * select(1.0 - w.y, w.y, o.y == 1);
+        // ponytail: 0.05 relative depth and 1e-3 floor shape the edge weight; knobs if edges show halos.
+        let same = select(select(1e-3, 1.0 / (1.0 + abs(tl - t) / (0.05 * max(t, 1.0))), tl > 0.0), select(1e-3, 1.0, tl < 0.0), t < 0.0);
+        let wk = bil * same + 1e-6;
+        sum += wk * textureLoad(low_fog, p, 0);
+        wsum += wk;
+    }
+    return sum / wsum;
 }
 
 fn march(in: FullscreenVertexOutput, d: vec3<f32>, eye: vec3<f32>, t_scene: f32, occ: bool) -> vec4<f32> {
@@ -315,7 +370,7 @@ fn march(in: FullscreenVertexOutput, d: vec3<f32>, eye: vec3<f32>, t_scene: f32,
         let q = p - vec3(f.wind.x, 0.0, f.wind.y);
         let dtop = top_off(p.xz);
         let nq = q / vec3(f.breakup_tile, f.breakup_y, f.breakup_tile);
-        let n = 0.65 * vnoise(nq) + 0.35 * vnoise(nq * 2.7 + vec3(17.0, 3.0, 29.0));
+        let n = 0.65 * noise(nq) + 0.35 * noise(nq * 2.7 + vec3(17.0, 3.0, 29.0));
         var dens = fog_density(texel, g, p.y, dtop, n);
         if dens <= 0.0 { continue; }
         let rim = max(abs(p.x - centre.x), abs(p.z - centre.y)) / half;

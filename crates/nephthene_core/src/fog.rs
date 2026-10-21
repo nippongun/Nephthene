@@ -234,6 +234,12 @@ pub fn density(c: &GroundFog, texel: [f32; 4], ground: f32, y: f32, sun_k: f32, 
     (sig.0 * pool + sig.1 * mist) * base
 }
 
+/// Tiling value-noise lattice, `n`^3 bytes (x fastest), one random value per cell; the shader samples it with repeat and a
+/// smoothstep-warped coordinate, so one fetch gives smooth value noise.
+pub fn noise_lattice(n: u32) -> Vec<u8> {
+    (0..n * n * n).map(|k| { let mut h = k.wrapping_mul(747796405).wrapping_add(2891336453); h = ((h >> ((h >> 28) + 4)) ^ h).wrapping_mul(277803737); ((h >> 22) ^ h) as u8 }).collect()
+}
+
 /// A test valley (24 km square, 50 m cells): a north-south valley falling 10 m/km to the south between 260 m walls, a mountain ridge
 /// east of it (900 m above the wall, crest at x 2600: the morning sun reaches the floor ~20 deg up), rolling hills on the walls and a closed
 /// basin in the west hills (centre (-3500, 2500), 800 m radius, 140 m deep). The floor at (0, 0) is 0 m.
@@ -358,6 +364,15 @@ mod tests {
         assert!((red[floor] - open[o]).abs() < 0.05, "red arm (ignore_shadow) burns the floor like open ground: {} vs {}", red[floor], open[o]);
         let fm = map(&c, &f, &m, &sun_alt(&c, &g, &f, crate::dir(crate::sun(&k, h).0, crate::sun(&k, h).1)));
         assert_eq!(fm.at(0.0, 0.0)[3], m[floor], "the map carries the amount");
+    }
+
+    #[test]
+    fn noise_lattice_is_spread_and_deterministic() {
+        let (a, b) = (noise_lattice(16), noise_lattice(16));
+        assert_eq!((a.len(), &a), (4096, &b));
+        let mean = a.iter().map(|&v| v as f32).sum::<f32>() / a.len() as f32;
+        assert!((mean - 127.5).abs() < 8.0, "mean {mean}");
+        assert!(a.iter().any(|&v| v < 16) && a.iter().any(|&v| v > 240), "covers the range");
     }
 
     #[test]
