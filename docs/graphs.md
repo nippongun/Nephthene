@@ -14,6 +14,58 @@ Each executor scores out of 10, from the verifier's report and the planner's rea
 
 Tokens are input (with cache reads) / output.
 
+## 2026-10-22: orographic precipitation, slice 2 (branch `claude/orographic-clouds`)
+
+Goal: the cloud march, shadow and shafts read the orographic tile (a second texture, combined in `map_sample`), with a render gate.
+Four runs. The GPU path was right from run 1. Runs 2-4 were spent on what the render gate exposed, and each step taught something
+real.
+
+### Run 1 (`wf_13d71757-59e`): GPU path done; the gate went red over the whole sky
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| S1-bytes | orographic.rs | 0m26 | 5 | 126k / 4k | `Tile::rgba8` and its test | 10 |
+| S2-gpu | 4 shaders, render.rs, clouds.rs, src/orographic.rs | 5m28 | 32 | 2640k / 56k | bindings, uniform fields, `map_sample` combine, upload on a new tile; the layout pins pass, and both shots compile their shaders at run time with no error | 9 (lean 1) |
+| S3-gate | tests/orographic.rs, poses.json | 4m46 | 14 | 515k / 15k | an honest red (windward 11.8 vs lee 28.7) with a correct frame description: the whole sky went overcast | 10 |
+
+**What it exposed (a model flaw):** Smith & Barstad assume saturated air. In the afternoon air, about 9 K above its dew point, every
+45 m hill made cloud. The fix: lift the air from the tile's lowest ground, and let it condense only above its lifting condensation
+level (Espy, 125 m per K), with the terrain clipped there (`docs/decisions.md`).
+
+### Run 2 (`wf_fb1b24fa-d21`): the LCL clip passes its gate; the render scene is now cloud-free
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| R1-core | config.rs, orographic.rs | 1m10 | 18 | 803k / 34k | the LCL clip, `dew_c` on the tile, gate `cloud_needs_the_lifting_condensation_level` (dry 0.0000, saturated 0.277) | 10 |
+| R2-plugin-gate | src/orographic.rs, tests/orographic.rs | 5m01 | 15 | 511k / 12k | the air at the reference altitude passed in, the gate renamed to G31 (G28-G30 belong to another session); an honest red: at 14 h the air is 10 K above its dew point, so the ridge stays under its LCL (max cover 0.02) | 10 |
+
+### Run 3 (`wf_1df5688d-758`): a cap appears, but the frame-wide mean cannot see it
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| T1-gate | tests/orographic.rs, poses.json | 5m53 | 13 | 384k / 14k | at 10 h (5 K spread) a denser band appears toward the ridge, but the mean is 2.14 against the 5 borrowed from G22, and the downwind view changed too (1.66); an honest red with a pixel description | 10 |
+
+**What the planner then measured (scratch bake and renders):** the downwind change is real physics, not an artifact. Linear theory
+lifts the air in lee waves about 2 pi U / N_m (12.6 km) downwind, and the tile has cover 0.1 at x 14-17 km. (Subtracting the minimum
+instead of the mean in `compute`, tried as a fix, did not remove it and broke the slice-1 gate.) A camera at x 7 km sits between
+the cap and the wave. The metric became the share of pixels changed by 20+ levels: west 6.5 %, east 0.72 %.
+
+### Run 4 (`wf_2ca22ebc-ae8`): G31 passes; the verifier refuted two doc sentences
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| U1-gate | tests/orographic.rs | 5m08 | 8 | 223k / 11k | G31: west 6.52 % (min 1 %), east 0.72 % (west >= 1.5x east), red arm vs off 0.000 (budget 0.500) | 10 |
+| U2-docs | docs, handover, config reference | 5m31 | 15 | 583k / 60k | wrote the planner's text as specified | 10 |
+| Final verifier | (read-only) | 9m47 | 23 | 1513k / 23k | refuted 2 wordings of the planner's against its own CPU bake: the lee wave sits at x 14-17 km, which is 11-14 km past the ridge; at 14 h there is no cap, but a faint wave remains (0.05). Fixed by the planner (docs only). | - |
+
+**Planner lessons:** (1) Before writing a render gate, bake the scene's tile on the CPU and render one on/red pair in scratch. Run 4
+did this and passed first time; runs 1-3 each spent a run discovering the scene. (2) Do not borrow a budget from a gate whose
+change covers the whole frame (G22) for a change that covers part of it; measure the visible area instead. (3) Docs sentences with
+numbers come from a measurement, not from the shape of the result.
+
+**Executor average:** 9.9 / 10 over 8 scored nodes. Every red was reported honestly, with the numbers and a frame description,
+and no node touched a budget.
+
 ## 2026-10-22: orographic precipitation, slice 1 (branch `claude/orographic`)
 
 Goal: bake Smith & Barstad (2004) over `Ground` around the camera into a tile fixed to the terrain and fold it into `Weather.here`

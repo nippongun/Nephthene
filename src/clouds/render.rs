@@ -72,6 +72,8 @@ pub struct CloudGpu {
     pub s_shelf_ceil: f32,
     /// storms.fx.curtain_full and storms.couple (1 = rain shafts fall under storm cells).
     pub s_curtain_full: f32, pub s_couple: f32,
+    /// Orographic tile: world NW corner (m), side (m, 0 = none) and cover weight. See clouds_common.wesl `Clouds`.
+    pub oro_origin: Vec2, pub oro_size: f32, pub oro_weight: f32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.
@@ -106,6 +108,8 @@ impl Default for StormGpu { fn default() -> Self { Self { n: 0, pad0: 0, pad1: 0
 pub struct CloudParams {
     pub gpu: CloudGpu,
     pub base: Handle<Image>, pub detail: Handle<Image>, pub map: Handle<Image>,
+    /// The orographic tile (Rgba8: R cover, G precip), a 1x1 empty image until one bakes (`gpu.oro_size` 0).
+    pub oro: Handle<Image>,
     /// The map sampler repeats (config `map.wrap`) instead of clamping at the edge.
     pub map_wrap: bool,
     pub render_scale: f32, pub temporal_alpha: f32, pub update_div: u32,
@@ -188,7 +192,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     let cloud = BindGroupLayoutDescriptor::new("cloud_data", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
         uniform_buffer::<CloudGpu>(false), texture_3d(TextureSampleType::default()), texture_3d(TextureSampleType::default()),
         sampler(SamplerBindingType::Filtering), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
-        uniform_buffer::<StormGpu>(false),
+        uniform_buffer::<StormGpu>(false), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
     )));
     let composite = BindGroupLayoutDescriptor::new("cloud_composite", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
         texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
@@ -426,7 +430,7 @@ fn prepare_bind_groups(
     views: Query<(Entity, &AtmosphereTextures, &CloudTextures, &CloudResolveUbo), With<ExtractedAtmosphere>>,
 ) {
     let (Some(params), Some(render)) = (params, render) else { return };
-    let (Some(base), Some(detail), Some(map), Some(ground)) = (images.get(&params.base), images.get(&params.detail), images.get(&params.map), images.get(&params.ground)) else { return };
+    let (Some(base), Some(detail), Some(map), Some(ground), Some(oro)) = (images.get(&params.base), images.get(&params.detail), images.get(&params.map), images.get(&params.ground), images.get(&params.oro)) else { return };
     let (Some(a), Some(s), Some(t), Some(v), Some(u), Some(storms)) = (atmo_uniforms.binding(), settings_uniforms.binding(), transforms.uniforms().binding(), view_uniforms.uniforms.binding(), render.ubo.binding(), render.storm_ubo.binding()) else { return };
     for (e, atmo, tex, ubo) in &views {
         let atmo_bg = device.create_bind_group("cloud_atmosphere", &cache.get_bind_group_layout(&render.atmo), &BindGroupEntries::with_indices((
@@ -435,6 +439,7 @@ fn prepare_bind_groups(
         )));
         let cloud = device.create_bind_group("cloud_data", &cache.get_bind_group_layout(&render.cloud), &BindGroupEntries::sequential((
             u.clone(), &base.texture_view, &detail.texture_view, &render.repeat, &map.texture_view, if params.map_wrap { &render.repeat } else { &render.clamp }, storms.clone(),
+            &oro.texture_view, &render.clamp,
         )));
         let composite = device.create_bind_group("cloud_composite", &cache.get_bind_group_layout(&render.composite), &BindGroupEntries::sequential((
             &tex.write.default_view, &render.clamp,

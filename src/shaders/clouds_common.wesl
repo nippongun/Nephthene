@@ -77,6 +77,11 @@ struct Clouds {
     s_shelf_ceil: f32,
     s_curtain_full: f32,
     s_couple: f32,
+    // Orographic tile (nephthene_core::orographic, world frame, fixed to the terrain): NW corner (min_x, max_z) in world metres, side
+    // length in metres (0 = no tile), and the weight its cover adds to the map's (config orographic.cover_weight).
+    oro_origin: vec2<f32>,
+    oro_size: f32,
+    oro_weight: f32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).
@@ -150,13 +155,21 @@ fn base_shape_at(u: Clouds, base_tex: texture_3d<f32>, ns: sampler, p: vec3<f32>
     return select(2.0 * m * m, 1.0 - 2.0 * (1.0 - m) * (1.0 - m), m > 0.5);
 }
 
-fn map_sample(u: Clouds, map_tex: texture_2d<f32>, ms: sampler, xz: vec2<f32>) -> vec4<f32> {
+// The weather map at world xz (shifted by the world offset), with the orographic tile's share like nephthene_core::orographic::combine:
+// cover = min(1, map + oro_weight x tile cover), precip = max(map, tile). The tile is R cover, G precip, and adds nothing outside it.
+fn map_sample(u: Clouds, map_tex: texture_2d<f32>, ms: sampler, oro_tex: texture_2d<f32>, os: sampler, xz: vec2<f32>) -> vec4<f32> {
     let c = u.world_offset + xz;
     let uv = vec2((c.x - u.map_origin.x) / u.map_size.x, (u.map_origin.y - c.y) / u.map_size.y);
-    let m = textureSampleLevel(map_tex, ms, uv, 0.0);
-    if u.background.w <= 0.0 { return m; }
-    let out = max(max(-uv.x, uv.x - 1.0), max(-uv.y, uv.y - 1.0));
-    return vec4(mix(m.xyz, u.background.xyz, saturate(out / u.background_blend)), m.w);
+    var m = textureSampleLevel(map_tex, ms, uv, 0.0);
+    if u.background.w > 0.0 {
+        let out = max(max(-uv.x, uv.x - 1.0), max(-uv.y, uv.y - 1.0));
+        m = vec4(mix(m.xyz, u.background.xyz, saturate(out / u.background_blend)), m.w);
+    }
+    if u.oro_size <= 0.0 { return m; }
+    let ou = vec2(xz.x - u.oro_origin.x, u.oro_origin.y - xz.y) / u.oro_size;
+    if any(ou < vec2(0.0)) || any(ou > vec2(1.0)) { return m; }
+    let o = textureSampleLevel(oro_tex, os, ou, 0.0);
+    return vec4(min(m.r + u.oro_weight * o.r, 1.0), max(m.g, o.g), m.b, m.a);
 }
 
 // Tower depth (m) for cloud type `kind`: the piecewise-linear curve of the 4 stops (clamped outside).
@@ -171,8 +184,8 @@ fn tower_depth(u: Clouds, kind: f32) -> f32 {
 // Density 0..~2 at world xz, altitude `alt` above the ground and height fraction `h` in the layer. `detail` runs the detail erosion;
 // `mean_erode` (shadow pass, no detail lookup) erodes by the detail's mean (wisp ~0.5) so the shadow footprint matches what the march draws.
 fn density_at(u: Clouds, base_tex: texture_3d<f32>, detail_tex: texture_3d<f32>, ns: sampler, map_tex: texture_2d<f32>, ms: sampler,
-              xz: vec2<f32>, alt: f32, h_shell: f32, detail: bool, mean_erode: bool) -> f32 {
-    let m = map_sample(u, map_tex, ms, xz);
+              oro_tex: texture_2d<f32>, os: sampler, xz: vec2<f32>, alt: f32, h_shell: f32, detail: bool, mean_erode: bool) -> f32 {
+    let m = map_sample(u, map_tex, ms, oro_tex, os, xz);
     var cov = select(m.r, u.coverage_override, u.coverage_override >= 0.0);
     let p = vec3(xz.x + u.wind.x, alt, xz.y + u.wind.y);
     // Towers: the base shape sees a vertically squashed altitude (one coherent column per blob).

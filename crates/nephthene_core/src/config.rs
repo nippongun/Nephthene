@@ -537,6 +537,9 @@ pub struct OroCfg {
     pub n_moist: f32, pub h_w: f32, pub tau_c: f32, pub tau_f: f32,
     /// Precipitation rate (mm/h) that reads as the map's precip 1; the cloud source rate maps to cover the same way.
     pub full_mm_h: f32,
+    /// Lifting condensation level per K of dew point spread (m/K; Espy: 125): air lifted from the tile's lowest ground condenses only
+    /// above it, so lower terrain raises no cloud. Red arm (test): 0, saturated air everywhere.
+    pub lcl_m_per_k: f32,
     /// Weight of the tile's cover added to the map's coverage (at most 1).
     pub cover_weight: f32,
     /// The tile: cells per side and cell size (m), centred on the camera.
@@ -547,7 +550,7 @@ pub struct OroCfg {
 }
 impl Default for OroCfg {
     fn default() -> Self {
-        OroCfg { enabled: false, gain: 1.0, n_moist: 0.005, h_w: 2500.0, tau_c: 1000.0, tau_f: 1000.0, full_mm_h: 7.6, cover_weight: 1.0,
+        OroCfg { enabled: false, gain: 1.0, n_moist: 0.005, h_w: 2500.0, tau_c: 1000.0, tau_f: 1000.0, full_mm_h: 7.6, lcl_m_per_k: 125.0, cover_weight: 1.0,
             tile_px: 128, cell_m: 200.0, rebake_m: 3200.0, rebake_deg: 22.5, rebake_frac: 0.2, rebake_k: 2.0 }
     }
 }

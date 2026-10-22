@@ -90,6 +90,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
         detail: images.add(noise_3d(n.detail_res, &n.detail_freqs, None, n.worley_mix)),
         map: images.add(Image::new(Extent3d { width: map.width, height: map.height, depth_or_array_layers: 1 }, TextureDimension::D2,
             map.rgba.clone(), TextureFormat::Rgba8Unorm, RenderAssetUsages::RENDER_WORLD)),
+        oro: images.add(Image::new(Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, TextureDimension::D2, vec![0, 0, 0, 255], TextureFormat::Rgba8Unorm, RenderAssetUsages::RENDER_WORLD)),
     });
     println!("CLOUDS map {}x{} coverage {}", map.width, map.height, c.coverage_override.map_or("map".to_string(), |v| format!("override {v:.2}")));
 }
@@ -105,6 +106,7 @@ pub(crate) fn drive(
     time: Res<Time>, wx: Res<Weather>, params: Option<ResMut<CloudParams>>, mut drift: Local<Vec2>, mut slant: Local<Vec2>, mut origin: Local<Vec3>,
     frame: Res<bevy::diagnostic::FrameCount>, cam: Query<&GlobalTransform, With<bevy::pbr::AtmosphereSettings>>,
     mut sun: Query<(&DirectionalLight, &mut Transform), (With<NephtheneSun>, Without<Moon>)>, moon: Query<(&DirectionalLight, &Transform), With<Moon>>,
+    oro: Option<Res<crate::orographic::Orographic>>, mut images: ResMut<Assets<Image>>, mut shown: Local<u32>,
 ) {
     let Some(mut m) = params else { return };
     if wx.rate > 0.0 { *drift += wx.wind.xz() * wx.cfg.clouds.wind_scale * time.delta_secs(); }
@@ -136,6 +138,17 @@ pub(crate) fn drive(
     // Mean wind, slewed: gusts never lean the shafts (shafts.gust_lean is the test red arm).
     *slant = w::rain::shaft_slant_step(&wx.cfg.rain, &wx.cfg.shafts, &wx.cfg.wind, wx.wind, *slant, time.delta_secs());
     m.shaft.slant = *slant;
+    // The orographic tile (world frame): upload a newly landed one; without a tile the shader skips it (size 0).
+    match oro.as_ref().and_then(|o| o.tile.clone().map(|t| (t, o.bakes))) {
+        Some((t, bakes)) => {
+            if *shown != bakes {
+                let _ = images.insert(&m.oro, Image::new(Extent3d { width: t.n, height: t.n, depth_or_array_layers: 1 }, TextureDimension::D2, t.rgba8(), TextureFormat::Rgba8Unorm, RenderAssetUsages::RENDER_WORLD));
+                *shown = bakes;
+            }
+            (m.gpu.oro_origin, m.gpu.oro_size, m.gpu.oro_weight) = (Vec2::new(t.min_x, t.max_z), t.n as f32 * t.cell_m, wx.cfg.orographic.cover_weight);
+        }
+        None => m.gpu.oro_size = 0.0,
+    }
 }
 
 /// Tileable cloud noise, `n`^3 RGBA8 (Schneider 2015). With `perlin` = Some(f): R is the base shape, Perlin fbm at
