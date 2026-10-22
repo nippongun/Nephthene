@@ -408,7 +408,9 @@
       "light_at": 0.3,
       "max_live": 2,
       "jump_s": 5.0,
-      "force_age_s": null
+      "force_age_s": null,
+      "cloud_gain": 1.0,
+      "cloud_radius_m": 1500.0
     },
     "force": null,
     "scene": null,

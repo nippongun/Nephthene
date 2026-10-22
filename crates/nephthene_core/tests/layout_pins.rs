@@ -14,6 +14,8 @@ const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
 const RAIN_RS: &str = include_str!("../../../src/rain.rs");
 const LIGHTNING_RS: &str = include_str!("../../../src/lightning.rs");
 const LIGHTNING: &str = include_str!("../../../src/shaders/lightning.wesl");
+const MARCH: &str = include_str!("../../../src/shaders/clouds_march.wesl");
+const COMPOSITE: &str = include_str!("../../../src/shaders/clouds_composite.wesl");
 
 /// Text between the `{` after `head` and the first line that is just `}`, comments removed.
 fn body(src: &str, head: &str) -> String {
@@ -22,21 +24,42 @@ fn body(src: &str, head: &str) -> String {
     s.lines().map(|l| l.split("//").next().unwrap()).collect::<Vec<_>>().join(" ")
 }
 
-/// (name, type) pairs of a struct body, in order.
+/// Text between the `{` after `head` and the next `}`, for a struct written on one line.
+fn one_line(src: &str, head: &str) -> String {
+    let s = &src[src.find(head).unwrap_or_else(|| panic!("`{head}` not found")) + head.len()..];
+    s[..s.find('}').expect("struct end")].to_string()
+}
+
+/// (name, type) pairs of a struct body, in order. Commas inside `<...>`, `[...]` or `(...)` do not split fields.
 fn fields(body: &str) -> Vec<(String, String)> {
-    body.split(',').filter_map(|f| {
+    let (mut parts, mut depth, mut start) = (vec![], 0i32, 0);
+    for (i, ch) in body.char_indices() {
+        match ch {
+            '<' | '[' | '(' => depth += 1,
+            '>' | ']' | ')' => depth -= 1,
+            ',' if depth == 0 => { parts.push(&body[start..i]); start = i + 1; }
+            _ => {}
+        }
+    }
+    parts.push(&body[start..]);
+    parts.into_iter().filter_map(|f| {
         let (n, t) = f.split_once(':')?;
         Some((n.trim().trim_start_matches("pub ").trim().to_string(), t.trim().to_string()))
     }).collect()
 }
 
 fn rust_to_wgsl(t: &str) -> String {
-    match t { "Vec2" => "vec2<f32>", "Vec3" => "vec3<f32>", "Vec4" => "vec4<f32>", "Mat4" => "mat4x4<f32>", o => o }.to_string()
+    match t { "Vec2" => "vec2<f32>", "Vec3" => "vec3<f32>", "Vec4" => "vec4<f32>", "Mat4" => "mat4x4<f32>", "[Vec4; 4]" => "array<vec4<f32>, 4>", o => o }.to_string()
 }
 
 fn same_order(rust_src: &str, rust_head: &str, wgsl_src: &str, wgsl_head: &str) {
-    let rs: Vec<_> = fields(&body(rust_src, rust_head)).into_iter().map(|(n, t)| (n, rust_to_wgsl(&t))).collect();
-    let ws = fields(&body(wgsl_src, wgsl_head));
+    same_fields(&body(rust_src, rust_head), &body(wgsl_src, wgsl_head), rust_head, wgsl_head);
+}
+
+/// The comparison behind `same_order`, on the two struct bodies.
+fn same_fields(rust: &str, wgsl: &str, rust_head: &str, wgsl_head: &str) {
+    let rs: Vec<_> = fields(rust).into_iter().map(|(n, t)| (n, rust_to_wgsl(&t))).collect();
+    let ws = fields(wgsl);
     assert!(rs.len() >= 5, "{rust_head}: parsed only {} fields", rs.len());
     assert_eq!(rs, ws, "{rust_head} and WGSL `{wgsl_head}` drifted apart");
 }
@@ -108,4 +131,20 @@ fn shaft_shader_mirrors_rust() {
         "let xz0 = p.xz - sh.slant * (base_y - p.y);",
         "t_end = clamp((base_y - eye.y) / d.y, 0.0, sh.max_m)",
     ] { assert!(SHAFT.contains(line), "clouds_shaft.wesl lost `{line}`"); }
+}
+
+#[test]
+fn flash_uniform_matches_wgsl() {
+    same_fields(&one_line(RENDER, "pub struct FlashGpu {"), &one_line(MARCH, "struct Flashes {"), "pub struct FlashGpu {", "struct Flashes {");
+}
+
+/// The flash term keeps the Rust reference's form (cloud_flash_lux's divisor, the flash cap), the composite adds it, the history never sees it.
+#[test]
+fn march_flash_mirrors_rust() {
+    for line in ["s += flashes.l[i].rgb / (dot(dv, dv) + flashes.p[i].w * flashes.p[i].w);", "lum_f += tr * (sf - sf * ts);", "min(flashes.n, 4u)"] {
+        assert!(MARCH.contains(line), "clouds_march.wesl lost `{line}`");
+    }
+    assert_eq!(nephthene_core::lightning::MAX_CLOUD_FLASHES, 4, "clouds_march.wesl caps the flashes at 4");
+    assert!(COMPOSITE.contains("return vec4(c.rgb + f.rgb, c.a);"), "clouds_composite.wesl lost the additive flash");
+    assert!(!RESOLVE.contains("flash"), "clouds_resolve.wesl reads the flash: it would smear through the history");
 }

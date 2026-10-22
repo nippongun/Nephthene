@@ -320,9 +320,9 @@ receives events.
 - **Bolt render** (slice 1, in): emissive camera-facing ribbons, at least `min_px` wide with radiance scaled by width / drawn
   width, added over the scene; gate G23. Left for slice 2: HDR bloom, and whether 3-5 return strokes over ~0.5 s and channel
   afterglow read as one flash.
-- **Clouds lit from inside** (slice 2, touches `clouds_march.wesl`: ask first): one point-light term in the cloud march from the flash position with a cheap transmittance
+- **Clouds lit from inside** (slice 2, built on branch claude/flash-clouds: no occlusion yet, gate G30): one point-light term in the cloud march from the flash position with a cheap transmittance
   (distance and local density, no light march), evaluated only while a flash is live.
-- **Temporal resolves vs flashes** (slice 2): the cloud and fog resolves blend history at 0.1 per frame, so a one-frame flash would smear
+- **Temporal resolves vs flashes** (slice 2, built: the flash light is a third march target added by the composite, never resolved; recovery gate open): the cloud and fog resolves blend history at 0.1 per frame, so a one-frame flash would smear
   over ~10 frames and its rise would be clamped. Flash light needs its own unresolved term (or the history re-weighted on flash
   frames). Gate: luma at flash frame N, and back within budget of the pre-flash level by N+k.
 - **Scene light** (slice 1, in for the strike): one Bevy `PointLight` per live flash from a pool of `max_live`, no shadows,

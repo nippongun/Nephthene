@@ -100,6 +100,12 @@ pub struct ShaftGpu {
 pub struct StormGpu { pub n: u32, pub pad0: u32, pub pad1: u32, pub pad2: u32, pub cells: [Vec4; 64] }
 impl Default for StormGpu { fn default() -> Self { Self { n: 0, pad0: 0, pad1: 0, pad2: 0, cells: [Vec4::ZERO; 64] } } }
 
+/// Uniform at cloud bind group binding 7 (clouds_march.wesl `Flashes`): live flashes lighting the clouds, world frame. `p[i]` = position
+/// (xyz) and glow radius (w, m); `l[i]` = colour x `lightning::cloud_flash_scale` (rgb, lux m^2). Filled by src/lightning.rs.
+#[derive(Clone, Copy, ShaderType)]
+pub struct FlashGpu { pub n: u32, pub pad0: u32, pub pad1: u32, pub pad2: u32, pub p: [Vec4; 4], pub l: [Vec4; 4] }
+impl Default for FlashGpu { fn default() -> Self { Self { n: 0, pad0: 0, pad1: 0, pad2: 0, p: [Vec4::ZERO; 4], l: [Vec4::ZERO; 4] } } }
+
 /// Main world -> render world, every frame.
 #[derive(Resource, Clone, ExtractResource)]
 #[extract_app(RenderApp)]
@@ -117,6 +123,8 @@ pub struct CloudParams {
     pub shaft: ShaftGpu, pub ground: Handle<Image>,
     /// Selected storm cells (storms.rs).
     pub storm: StormGpu,
+    /// Live lightning flashes lighting the clouds (src/lightning.rs).
+    pub flash: FlashGpu,
     /// The resolve tuning and test switches (config resolve), and the pass-timing switch.
     pub resolve: nephthene_core::config::Resolve, pub pass_timing: bool,
 }
@@ -169,7 +177,7 @@ const PASSES: [&str; 6] = ["shadow", "march", "resolve", "shaft_march", "shaft_r
 #[derive(Resource)]
 struct CloudRender {
     atmo: BindGroupLayoutDescriptor, cloud: BindGroupLayoutDescriptor, composite: BindGroupLayoutDescriptor, resolve: BindGroupLayoutDescriptor,
-    march: CachedRenderPipelineId, shadow_layout: BindGroupLayoutDescriptor, shadow_pipeline: CachedRenderPipelineId, shadow_ubo: UniformBuffer<ShadowGpu>, storm_ubo: UniformBuffer<StormGpu>, resolve_pipeline: CachedRenderPipelineId, composite_shader: Handle<Shader>, fullscreen: FullscreenShader,
+    march: CachedRenderPipelineId, shadow_layout: BindGroupLayoutDescriptor, shadow_pipeline: CachedRenderPipelineId, shadow_ubo: UniformBuffer<ShadowGpu>, storm_ubo: UniformBuffer<StormGpu>, flash_ubo: UniformBuffer<FlashGpu>, resolve_pipeline: CachedRenderPipelineId, composite_shader: Handle<Shader>, fullscreen: FullscreenShader,
     repeat: Sampler, clamp: Sampler, ubo: UniformBuffer<CloudGpu>, renderer: Entity,
     composite_pipelines: HashMap<(u32, TextureFormat), CachedRenderPipelineId>,
     shaft_layout: BindGroupLayoutDescriptor, shaft_comp: BindGroupLayoutDescriptor, shaft_march: CachedRenderPipelineId, shaft_resolve: CachedRenderPipelineId, shaft_shader: Handle<Shader>, shaft_ubo: UniformBuffer<ShaftGpu>, shaft_renderer: Entity,
@@ -188,10 +196,10 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     let cloud = BindGroupLayoutDescriptor::new("cloud_data", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
         uniform_buffer::<CloudGpu>(false), texture_3d(TextureSampleType::default()), texture_3d(TextureSampleType::default()),
         sampler(SamplerBindingType::Filtering), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
-        uniform_buffer::<StormGpu>(false),
+        uniform_buffer::<StormGpu>(false), uniform_buffer::<FlashGpu>(false),
     )));
     let composite = BindGroupLayoutDescriptor::new("cloud_composite", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
-        texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
+        texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering), texture_2d(TextureSampleType::default()),
     )));
     let resolve = BindGroupLayoutDescriptor::new("cloud_resolve", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
         uniform_buffer::<ResolveGpu>(false), texture_2d(TextureSampleType::default()),
@@ -219,7 +227,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
         vertex: fullscreen.to_vertex_state(),
         fragment: Some(FragmentState {
             shader: assets.load(MARCH), entry_point: Some("march".into()),
-            targets: vec![target(TextureFormat::Rgba16Float), target(TextureFormat::R32Float)], ..default()
+            targets: vec![target(TextureFormat::Rgba16Float), target(TextureFormat::R32Float), target(TextureFormat::Rgba16Float)], ..default()
         }),
         ..default()
     });
@@ -260,7 +268,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     let renderer = commands.spawn(Name::new("CloudRenderer")).id();
     let shaft_renderer = commands.spawn(Name::new("CloudShaftRenderer")).id();
     commands.insert_resource(CloudRender {
-        atmo, cloud, composite, resolve, march, shadow_layout, shadow_pipeline, shadow_ubo: UniformBuffer::default(), storm_ubo: UniformBuffer::default(), resolve_pipeline, composite_shader: assets.load(COMPOSITE), fullscreen: fullscreen.clone(),
+        atmo, cloud, composite, resolve, march, shadow_layout, shadow_pipeline, shadow_ubo: UniformBuffer::default(), storm_ubo: UniformBuffer::default(), flash_ubo: UniformBuffer::default(), resolve_pipeline, composite_shader: assets.load(COMPOSITE), fullscreen: fullscreen.clone(),
         repeat: sampler(AddressMode::Repeat), clamp: sampler(AddressMode::ClampToEdge), ubo: UniformBuffer::default(), renderer,
         composite_pipelines: HashMap::new(),
         shaft_layout, shaft_comp, shaft_march, shaft_resolve, shaft_shader: assets.load(SHAFT_COMP), shaft_ubo: UniformBuffer::default(), shaft_renderer, shaft_pipelines: HashMap::new(),
@@ -268,9 +276,10 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
 }
 
 /// `cur`: premultiplied exposed cloud colour and opacity. `t`: cloud depth in metres (0 = no cloud), for the W2 resolve.
+/// `flash`: the march's flash light, low res, read only by the composite.
 /// `read`/`write`: the resolved history pair, swapped every frame; the composite shows `write`.
 #[derive(Component)]
-struct CloudTextures { cur: CachedTexture, t: CachedTexture, read: CachedTexture, write: CachedTexture, scur: CachedTexture, st: CachedTexture, sread: CachedTexture, swrite: CachedTexture, cread: CachedTexture, cwrite: CachedTexture }
+struct CloudTextures { cur: CachedTexture, t: CachedTexture, flash: CachedTexture, read: CachedTexture, write: CachedTexture, scur: CachedTexture, st: CachedTexture, sread: CachedTexture, swrite: CachedTexture, cread: CachedTexture, cwrite: CachedTexture }
 
 /// Last frame's view, kept on the render-world view entity. A size change or a skipped frame resets the history.
 #[derive(Component)]
@@ -291,6 +300,8 @@ fn prepare_textures_and_uniform(
     render.shadow_ubo.write_buffer(&device, &queue);
     render.storm_ubo.set(params.storm);
     render.storm_ubo.write_buffer(&device, &queue);
+    render.flash_ubo.set(params.flash);
+    render.flash_ubo.write_buffer(&device, &queue);
     render.shaft_ubo.set(params.shaft);
     render.shaft_ubo.write_buffer(&device, &queue);
     // HZD update division from config clouds.update_div (default 4: unmarched pixels keep reprojected history, marched pixel is a running mean); 1 marches every pixel every frame (reference arm).
@@ -326,7 +337,7 @@ fn prepare_textures_and_uniform(
         });
         ubo.write_buffer(&device, &queue);
         commands.entity(e).insert((
-            CloudTextures { cur: tex("cloud_cur", TextureFormat::Rgba16Float, low), t: tex("cloud_t", TextureFormat::R32Float, low), read, write,
+            CloudTextures { cur: tex("cloud_cur", TextureFormat::Rgba16Float, low), t: tex("cloud_t", TextureFormat::R32Float, low), flash: tex("cloud_flash", TextureFormat::Rgba16Float, low), read, write,
                 scur: tex("shaft_cur", TextureFormat::Rgba16Float, size), st: tex("shaft_t", TextureFormat::R32Float, size), sread, swrite, cread, cwrite },
             CloudHistory { clip_from_view: view.clip_from_view, rot_inv: rot.transpose(), cam, size, frame: frame.0, since: if reset { 0 } else { hist.map_or(0, |h| h.since + 1) } }, CloudResolveUbo(ubo),
         ));
@@ -427,17 +438,17 @@ fn prepare_bind_groups(
 ) {
     let (Some(params), Some(render)) = (params, render) else { return };
     let (Some(base), Some(detail), Some(map), Some(ground)) = (images.get(&params.base), images.get(&params.detail), images.get(&params.map), images.get(&params.ground)) else { return };
-    let (Some(a), Some(s), Some(t), Some(v), Some(u), Some(storms)) = (atmo_uniforms.binding(), settings_uniforms.binding(), transforms.uniforms().binding(), view_uniforms.uniforms.binding(), render.ubo.binding(), render.storm_ubo.binding()) else { return };
+    let (Some(a), Some(s), Some(t), Some(v), Some(u), Some(storms), Some(flash)) = (atmo_uniforms.binding(), settings_uniforms.binding(), transforms.uniforms().binding(), view_uniforms.uniforms.binding(), render.ubo.binding(), render.storm_ubo.binding(), render.flash_ubo.binding()) else { return };
     for (e, atmo, tex, ubo) in &views {
         let atmo_bg = device.create_bind_group("cloud_atmosphere", &cache.get_bind_group_layout(&render.atmo), &BindGroupEntries::with_indices((
             (0, a.clone()), (1, s.clone()), (2, t.clone()), (3, v.clone()),
             (8, &atmo.transmittance_lut.default_view), (10, &atmo.sky_view_lut.default_view), (12, &**atmo_sampler),
         )));
         let cloud = device.create_bind_group("cloud_data", &cache.get_bind_group_layout(&render.cloud), &BindGroupEntries::sequential((
-            u.clone(), &base.texture_view, &detail.texture_view, &render.repeat, &map.texture_view, if params.map_wrap { &render.repeat } else { &render.clamp }, storms.clone(),
+            u.clone(), &base.texture_view, &detail.texture_view, &render.repeat, &map.texture_view, if params.map_wrap { &render.repeat } else { &render.clamp }, storms.clone(), flash.clone(),
         )));
         let composite = device.create_bind_group("cloud_composite", &cache.get_bind_group_layout(&render.composite), &BindGroupEntries::sequential((
-            &tex.write.default_view, &render.clamp,
+            &tex.write.default_view, &render.clamp, &tex.flash.default_view,
         )));
         let Some(ru) = ubo.0.binding() else { continue };
         let resolve = device.create_bind_group("cloud_resolve", &cache.get_bind_group_layout(&render.resolve), &BindGroupEntries::sequential((
@@ -514,7 +525,7 @@ fn clouds_march(
     if skipped("march") { return; }
     if let Some(t) = &timing { t.ran.fetch_or(1 << 1, std::sync::atomic::Ordering::Relaxed); }
     let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
-        label: Some("cloud_march"), color_attachments: &[attachment(&tex.cur), attachment(&tex.t)],
+        label: Some("cloud_march"), color_attachments: &[attachment(&tex.cur), attachment(&tex.t), attachment(&tex.flash)],
         depth_stencil_attachment: None, timestamp_writes: ts(1), occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(pipeline);

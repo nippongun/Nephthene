@@ -5,8 +5,8 @@
 //! starts and [`Thunder`] when its sound reaches the camera. Prints `LIGHTNING cg=<b> d=<m> energy=<e>` per flash and
 //! `THUNDER d=<m> energy=<e>` when its thunder arrives.
 //! Config: `storms.lightning` (on by default); `force_age_s` holds a flash for frozen-clock shots.
-//! ponytail: in-cloud flashes light nothing inside the cloud and the channel is not hidden by nearer clouds; the cloud flash term
-//! (roadmap Phase 6) is the upgrade.
+//! ponytail: the clouds are lit by each live flash with no occlusion toward it (clouds_march.wesl `flash_light`), and the channel is
+//! not hidden by nearer clouds; a short storm_od toward each flash is the upgrade.
 use bevy::{
     asset::embedded_asset,
     camera::visibility::NoFrustumCulling,
@@ -29,7 +29,7 @@ impl Plugin for LightningPlugin {
             .add_message::<LightningStrike>().add_message::<Thunder>()
             .init_resource::<Flashes>()
             .add_systems(PostStartup, spawn)
-            .add_systems(Update, (flash, drive).chain().after(crate::storms::select_storms).before(crate::NephtheneSet::Drive));
+            .add_systems(Update, (flash, drive, cloud_flashes).chain().after(crate::storms::select_storms).before(crate::NephtheneSet::Drive));
     }
 }
 
@@ -178,4 +178,19 @@ fn drive(
             (mat.segs.s[2 * i], mat.segs.s[2 * i + 1]) = (s.a.extend(s.bright), s.b.extend(0.0));
         }
     }
+}
+
+/// Live flashes into the cloud march's flash uniform (`CloudParams.flash`): each at its point light's place, glow radius
+/// `cloud_radius_m`, colour x `lightning::cloud_flash_scale` (the clouds light up the same frame; nothing goes through the history).
+fn cloud_flashes(fl: Res<Flashes>, st: Res<Storms>, params: Option<ResMut<crate::clouds::CloudParams>>) {
+    let Some(mut params) = params else { return };
+    let c = &st.cfg.lightning;
+    let mut g = crate::clouds::render::FlashGpu::default();
+    for l in fl.live.iter().filter(|l| l.light > 0.0).take(lt::MAX_CLOUD_FLASHES) {
+        let i = g.n as usize;
+        g.p[i] = l.strike.end.lerp(l.strike.top, c.light_at).extend(c.cloud_radius_m);
+        g.l[i] = (Vec3::from(c.color) * lt::cloud_flash_scale(c, l.light)).extend(0.0);
+        g.n += 1;
+    }
+    params.flash = g;
 }
