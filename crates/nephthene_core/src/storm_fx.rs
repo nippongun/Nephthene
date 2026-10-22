@@ -4,6 +4,7 @@ use glam::{Vec2, Vec3};
 use crate::rain::{hash01, pcg, smoothstep};
 use crate::storm::{now, profile, Now, Stage, Storm, StormCfg};
 
+
 fn nearest(a: Vec2, b: Vec2, p: Vec2) -> Vec2 {
     let ab = b - a; let l2 = ab.length_squared();
     if l2 < 1e-6 { return a; }
@@ -79,6 +80,23 @@ pub fn column_od(c: &StormCfg, n: &Now, p: Vec3) -> f32 { od_along(c, n, p, Vec3
 /// Open sky gives 1; a point under a cell is shadowed by its column.
 pub fn ground_light(c: &StormCfg, n: &Now, p: Vec3, sun: Vec3) -> f32 {
     (-sun_od(c, n, p, sun)).exp() * (-c.fx.amb_k * column_od(c, n, p)).exp()
+}
+
+/// What the storms do at one ground point: their rain (curtain), the cloud cover over it, the gust-front wind (m/s, x z) and the
+/// sky light left under their columns (1 = open sky). The weather here takes the wetter, cloudier of the map and this.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StormLocal { pub precip: f32, pub cover: f32, pub outflow: Vec2, pub ambient: f32 }
+impl Default for StormLocal { fn default() -> Self { Self { precip: 0.0, cover: 0.0, outflow: Vec2::ZERO, ambient: 1.0 } } }
+
+/// [`StormLocal`] at p from the selected storms: rain and cover are the strongest storm's, gusts add, sky light multiplies.
+/// Nothing when `couple` is off.
+pub fn local(c: &StormCfg, sel: &[(Storm, Now)], p: Vec3) -> StormLocal {
+    if !c.couple { return StormLocal::default(); }
+    sel.iter().fold(StormLocal::default(), |l, (_, n)| {
+        let od = column_od(c, n, p);
+        StormLocal { precip: l.precip.max(precip_at(c, n, p)), cover: l.cover.max(1.0 - (-c.fx.cover_k * od).exp()),
+                     outflow: l.outflow + outflow_at(c, n, p), ambient: l.ambient * (-c.fx.amb_k * od).exp() }
+    })
 }
 
 #[cfg(test)]
@@ -158,6 +176,24 @@ mod tests {
         let n = a.len() as f64;
         assert!((n - lambda).abs() <= 3.0 * sigma, "count {n} vs expected {lambda} (3 sigma = {})", 3.0 * sigma);
         for f in &a { assert!(f.t_s >= 0.3 * life as f64 && f.t_s < 0.7 * life as f64, "flash outside mature at {}", f.t_s); }
+    }
+
+    #[test]
+    fn local_weather_under_a_storm() {
+        let s = cell(100_000.0);
+        let n = mature(6000.0, 20000.0, 0.8, 20.0);
+        let sel = vec![(s, n.clone())];
+        let at = |c: &StormCfg, x: f32| local(c, &sel, Vec3::new(x, 0.0, 0.0));
+        let under = at(&tcfg(), 0.0);
+        assert!((under.precip - n.precip).abs() < 1e-6, "rain under the core {} vs the cell's {}", under.precip, n.precip);
+        assert!(under.cover > 0.9, "cover under the core {}", under.cover);
+        assert!(under.ambient < 0.6, "sky light under the core {}", under.ambient);
+        let front = at(&tcfg(), 15000.0);
+        assert_eq!(front.precip, 0.0, "rain outside the core");
+        assert!(front.outflow.x > 1.0, "no gust behind the front: {:?}", front.outflow);
+        assert_eq!(at(&tcfg(), 60000.0), StormLocal::default(), "far from the storm");
+        // Red arm: decoupled storms leave the weather here alone.
+        assert_eq!(at(&StormCfg { couple: false, ..tcfg() }, 0.0), StormLocal::default());
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! the rain quad scheme), each live flash lights the scene with a point light, and the host gets [`LightningStrike`] when a flash
 //! starts and [`Thunder`] when its sound reaches the camera. Prints `LIGHTNING cg=<b> d=<m> energy=<e>` per flash and
 //! `THUNDER d=<m> energy=<e>` when its thunder arrives.
-//! Config: `storms.lightning` (off by default); `force_age_s` holds a flash for frozen-clock shots.
+//! Config: `storms.lightning` (on by default); `force_age_s` holds a flash for frozen-clock shots.
 //! ponytail: in-cloud flashes light nothing inside the cloud and the channel is not hidden by nearer clouds; the cloud flash term
 //! (roadmap Phase 6) is the upgrade.
 use bevy::{

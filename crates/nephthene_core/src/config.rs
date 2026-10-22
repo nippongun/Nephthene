@@ -66,6 +66,39 @@ impl Config {
         Self::from_json(&s).map_err(|e| format!("{}: {e}", path.display()))
     }
     pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).expect("config serialises") }
+
+    /// Set one leaf by dotted path (`clouds.steps`) to a JSON value. On `Err` the config is unchanged.
+    pub fn set_path(&mut self, path: &str, json: &str) -> Result<(), String> {
+        let val: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("{path}: value {json} is not JSON: {e}"))?;
+        let mut v = serde_json::to_value(&*self).map_err(|e| format!("{path}: {e}"))?;
+        let mut cur = &mut v;
+        for k in path.split('.') {
+            cur = cur.get_mut(k).ok_or_else(|| format!("{path}: no such key {k}"))?;
+        }
+        *cur = val;
+        *self = serde_json::from_value(v).map_err(|e| format!("{path}: {json} does not fit this field: {e}"))?;
+        Ok(())
+    }
+
+    /// Every settable leaf of a default config as (dotted path, default value as JSON), sorted by path. Objects recurse; anything
+    /// else (numbers, bools, strings, nulls, arrays) is a leaf.
+    pub fn paths() -> Vec<(String, String)> {
+        fn walk(prefix: &str, v: &serde_json::Value, out: &mut Vec<(String, String)>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    for (k, c) in m {
+                        let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                        walk(&p, c, out);
+                    }
+                }
+                leaf => out.push((prefix.to_string(), leaf.to_string())),
+            }
+        }
+        let mut out = Vec::new();
+        walk("", &serde_json::to_value(Config::default()).expect("config serialises"), &mut out);
+        out.sort();
+        out
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -167,12 +200,15 @@ pub struct MapCfg {
     pub default_px: u32, pub default_extent_m: f32,
     /// Built-in map values: mean coverage and its swing, precip blob strength, cloud type, dust.
     pub default_coverage: f32, pub default_coverage_swing: f32, pub default_precip: f32, pub default_type: f32, pub default_dust: f32,
+    /// Built-in map shape: the coverage swell is sin(2 pi cycles.x u + phase.x) sin(2 pi cycles.y v + phase.y) over the map (u, v in
+    /// 0..1); whole cycles make the map tile (needed by `wrap`). The rain blob: centre (u, v) and radius (fraction of the map).
+    pub default_cycles: [f32; 2], pub default_phase: [f32; 2], pub default_blob: [f32; 3],
     /// Advection: the map moves downwind at `advect` x the mean wind (gusts never move it), on the game clock (frozen when the
     /// clock is). 0 = the map stays put: the weather is fixed to the ground and only the cloud noise drifts through it (the old
     /// behaviour); 1 = the weather rides the wind. Untuned.
     pub advect: f32,
     /// Repeat the map past its edges instead of holding the edge texels (an advected map otherwise runs out of weather). Wants a
-    /// tileable map: the built-in procedural one is not, so a wrapped default map shows a seam. Excludes `clouds.background`.
+    /// tileable map: the built-in one tiles while `default_cycles` are whole numbers. Excludes `clouds.background`.
     pub wrap: bool,
     /// How far the weather has moved downwind at start (m, world XZ); a host restoring a saved game sets it. Map coordinates =
     /// world + `world_offset_m` - shift.
@@ -183,7 +219,8 @@ pub struct MapCfg {
 impl Default for MapCfg {
     fn default() -> Self {
         MapCfg { world_offset_m: [0.0, 0.0], default_px: 64, default_extent_m: 200_000.0, default_coverage: 0.45, default_coverage_swing: 0.2,
-                 default_precip: 0.0, default_type: 0.6, default_dust: 0.1, advect: 0.0, wrap: false, start_shift_m: [0.0, 0.0], static_gpu: false }
+                 default_precip: 0.0, default_type: 0.6, default_dust: 0.1, default_cycles: [1.0, 1.0], default_phase: [0.4, 1.1],
+                 default_blob: [0.7, 0.3, 0.25], advect: 1.0, wrap: true, start_shift_m: [0.0, 0.0], static_gpu: false }
     }
 }
 
@@ -235,7 +272,7 @@ impl Default for Clouds {
             base_tile2_m: 4300.0, coverage_var: 0.5, curl_m: 120.0, extinction: 0.04, ambient_scale: 1.0, steps: 72,
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
-            shadow_step_m: 120.0, shadow_samples_max: 48, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 0.0,
+            shadow_step_m: 120.0, shadow_samples_max: 48, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
             enabled: true, coverage_override: None, debug_view: 0, pass_timing: false,
             look: CloudLook::default(), noise: CloudNoise::default(),
         }
@@ -351,6 +388,9 @@ impl Default for Shafts {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct RainCfg {
+    /// Host off switch: false spawns no streak or splash quads, accumulates no wetness and adds no rain systems, so off costs nothing.
+    /// Unlike `force`, which overrides the intensity while rain is on.
+    pub enabled: bool,
     /// Camera-following drop volume: half-width (m) in x and z, height (m) above the ground.
     pub half_m: f32, pub height_m: f32,
     /// Streak and splash quads in the mesh; intensity activates the fraction `intensity` of them.
@@ -387,7 +427,7 @@ pub struct RainCfg {
 impl Default for RainCfg {
     fn default() -> Self {
         RainCfg {
-            half_m: 40.0, height_m: 30.0, max_streaks: 24000, max_splashes: 6000, splash_life_s: 0.45, streak_width_m: 0.012, streak_alpha: 0.55, splash_alpha: 0.5,
+            enabled: true, half_m: 40.0, height_m: 30.0, max_streaks: 24000, max_splashes: 6000, splash_life_s: 0.45, streak_width_m: 0.012, streak_alpha: 0.55, splash_alpha: 0.5,
             shutter_s: 1.0 / 20.0, wind_drift: 0.8, wind_drift_max: 12.0, fall_min_mps: 5.0, fall_gain_mps: 4.0,
             precip_lo: 0.1, precip_hi: 0.9, cover_lo: 0.3, cover_hi: 0.6, min_intensity: 0.02,
             wet_up_per_s: 1.0 / 40.0, dry_per_s: 1.0 / 240.0, wet_threshold: 0.05, wet_darken: 0.35, wet_roughness: 0.35, wet_reflectance: 0.5,
@@ -470,7 +510,7 @@ impl Default for ClimateCfg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct GroundFog {
-    /// Off by default: the shipped look has no ground fog.
+    /// On by default (owner, 2026-10-22: every feature on); off is the frame-time baseline.
     pub enabled: bool,
     /// Amount 0..1 used instead of the formation model; None = the model.
     pub force: Option<f32>,
@@ -552,7 +592,7 @@ pub struct GroundFog {
 impl Default for GroundFog {
     fn default() -> Self {
         GroundFog {
-            enabled: false, force: None, ignore_terrain: false, ignore_shadow: false, private_cooling: false,
+            enabled: true, force: None, ignore_terrain: false, ignore_shadow: false, private_cooling: false,
             form_per_h: 0.5, burn_per_h: 1.2, mix_per_h: 2.0, night_lo_deg: -4.0, night_hi_deg: 4.0, burn_full_deg: 20.0,
             cover_block: 0.8, cover_shade: 0.6, wind_lo_mps: 2.5, wind_hi_mps: 6.0, moisture_base: 0.55, wet_gain: 0.45, dust_dry: 1.0, spread_full_c: 0.5, spread_none_c: 2.5, spin_up_h: 24.0,
             depth_flat_m: 25.0, depth_max_m: 160.0, relief_m: 120.0, pool_radius_m: 2500.0,
@@ -589,5 +629,52 @@ mod tests {
         let p = Config::from_json(r#"{"clouds": {"steps": 99}, "wind": {"speed_mps": 3.0}}"#).unwrap();
         assert_eq!((p.clouds.steps, p.wind.speed_mps, p.clouds.bottom_m), (99, 3.0, 1500.0));
         assert!(Config::from_json(r#"{"clouds": {"stepz": 1}}"#).is_ok(), "unknown keys are ignored (serde default)");
+    }
+    #[test]
+    fn set_path_sets_float_bool_int_nested_array_and_option() {
+        let mut c = Config::default();
+        c.set_path("wind.speed_mps", "3.5").unwrap();
+        assert_eq!(c.wind.speed_mps, 3.5);
+        c.set_path("sky.msaa_fix", "false").unwrap();
+        assert!(!c.sky.msaa_fix);
+        c.set_path("clouds.steps", "99").unwrap();
+        assert_eq!(c.clouds.steps, 99);
+        c.set_path("clouds.look.cov_boost", "2.0").unwrap();
+        assert_eq!(c.clouds.look.cov_boost, 2.0);
+        c.set_path("fog.color", "[0.1,0.2,0.3]").unwrap();
+        assert_eq!(c.fog.color, [0.1, 0.2, 0.3]);
+        c.set_path("rain.force", "0.5").unwrap();
+        assert_eq!(c.rain.force, Some(0.5));
+        c.set_path("rain.force", "null").unwrap();
+        assert_eq!(c.rain.force, None);
+    }
+    #[test]
+    fn set_path_unknown_segment_is_err_and_unchanged() {
+        let mut c = Config::default();
+        let before = c.clone();
+        let e = c.set_path("clouds.stepz", "1").unwrap_err();
+        assert!(e.contains("stepz"), "{e}");
+        assert_eq!(c, before);
+    }
+    #[test]
+    fn set_path_wrong_type_or_bad_json_is_err_and_unchanged() {
+        let mut c = Config::default();
+        let before = c.clone();
+        let e = c.set_path("clouds.steps", "\"many\"").unwrap_err();
+        assert!(e.contains("clouds.steps"), "{e}");
+        assert_eq!(c, before);
+        let e = c.set_path("clouds.steps", "not json").unwrap_err();
+        assert!(e.contains("clouds.steps"), "{e}");
+        assert_eq!(c, before);
+    }
+    #[test]
+    fn every_path_sets_back_to_its_default() {
+        let paths = Config::paths();
+        assert!(paths.len() > 200, "only {} leaves", paths.len());
+        for (path, default) in &paths {
+            let mut c = Config::default();
+            c.set_path(path, default).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(c, Config::default(), "{path} = {default}");
+        }
     }
 }

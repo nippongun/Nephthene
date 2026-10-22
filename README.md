@@ -32,6 +32,7 @@ The scene provides a camera with `AtmosphereSettings` (add `Exposure` / `Distanc
 ## Tests (all headless)
 
 - `cargo test --release` runs: core unit and integration tests, the golden still gate (`tests/golden.rs`, goldens in `tests/golden/`, Apple Silicon/Metal), the metric self-test.
+- Manual storm gates G25-G26 (a storm overhead rains on the camera, rain shafts under a storm): `cargo test --release --test storms -- --ignored --nocapture --test-threads=1`.
 - Manual lightning gates G23-G24 (channel reads as a line, flash lights the ground): `cargo test --release --test lightning -- --ignored --nocapture --test-threads=1`.
 - Manual fog gates G15-G16 (terrain, mountain shadow): `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`.
 - Manual cloud gates G7-G14 (a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
@@ -47,15 +48,15 @@ starting values and **untuned**. Sections:
 |---|---|
 | `clock`, `exposure`, `daylight_ev100`, `ambient_day_brightness`, `fog_brightness` | time of day, latitude, exposure curve, ambient |
 | `fog`, `moon`, `stars`, `sky`, `wind` | dust fog, moon, star field, Mie dust medium, `sky.msaa_fix`, wind and gusts |
-| `map` | world offset of the weather map, built-in procedural map values; advection with the wind (`advect`, off by default), `wrap`, `start_shift_m`, test switch `static_gpu`. See `docs/weather_map.md` |
+| `map` | world offset of the weather map, built-in procedural map values (tileable: `default_cycles`, `default_phase`, `default_blob`); advection with the wind (`advect`, on by default), `wrap` (on), `start_shift_m`, test switch `static_gpu`. See `docs/weather_map.md` |
 | `air` | the temperature field over the weather map (force-restore per cell on the clock: sun, season, latitude, the cell's cloud cover; moves with the map), dew point and humidity, lapse rates, freezing level, snow line, precipitation type (`snow_c`..`rain_c`); `Weather.air` is the air at the ground under the camera, `Weather.air_field` the field. See `docs/air.md` |
 | `climate` | what a place is like: a second map fixed to the world (`climate_map.png`; R temperature offset, G humidity, B ground snow, A ground wetness) or `uniform` without one; it sets each place's restore target, dew point and snow albedo for the air; test switch `ignore`. See `docs/climate.md` |
 | `clouds` (+ `look`, `noise`) | layer heights, march steps, light, shoulder, render scale, update div, shadow cookie, towers, probe view, coverage override |
 | `resolve` | temporal resolve: reject gain, still box, fresh confidence, cut thresholds, jitter, the `wide_upsample` switch, and the test switches `no_reproject`, `light_jitter_shared`, `motion_half_px` |
 | `shafts` | rain-shaft pass |
-| `ground_fog` | terrain-following radiation fog: formation from the air's dew point spread (`air`) and wind; burn-off and base lift; valley pooling depth, shallow mist, optics, bake and march (`render_scale`, half resolution by default, depth-aware composite); test switches `ignore_terrain`, `ignore_shadow`, `private_cooling`, `hash_noise`; off by default via `enabled` (the panel's Fog section switches it on at runtime). See `docs/fog.md` |
+| `ground_fog` | terrain-following radiation fog: formation from the air's dew point spread (`air`) and wind; burn-off and base lift; valley pooling depth, shallow mist, optics, bake and march (`render_scale`, half resolution by default, depth-aware composite); test switches `ignore_terrain`, `ignore_shadow`, `private_cooling`, `hash_noise`; on by default (`enabled`; the panel's Fog section switches it at runtime). See `docs/fog.md` |
 | `rain` | streaks, splashes, drop kinematics, wetness, rain light, `force` |
-| `storms` (+ `render`, `fx`, `lightning`) | timetable, cell shape, shader constants, flash schedule, authored storms, `force`; `lightning`: strike, channel shape, return strokes, channel look, flash light, `force_age_s` (off by default via `enabled`) |
+| `storms` (+ `render`, `fx`, `lightning`) | on by default: timetable (`rate_per_km2_hr`: storms form occasionally), cell shape, shader constants, flash schedule, authored storms, `force`; `couple` (storms bring rain, cover, gust front and darker sky light to the camera, and rain shafts); `summon_*` ("Storm now": a mature cell upwind that drifts over you; `summon_at_start` for shots); `lightning` (on): strike, channel shape, return strokes, channel look, flash light, `force_age_s` |
 | `audio` | wind/rain bed mapping (the plugin does not play sound; use `core::audio` from your audio code) |
 | `sim` | smoothing, `panel_open` |
 

@@ -120,6 +120,22 @@ impl Ctl {
     pub fn shadow_strength(&self, json: f32) -> f32 { if self.shadows { json } else { 0.0 } }
 }
 
+/// The weather at one moment, as the panel and the shader read it. Plain values, no GPU.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct State { pub hour: f32, pub day: u32, pub coverage: f32, pub precip: f32, pub dust: f32, pub wind_from_deg: f32, pub wind_mps: f32, pub map_shift_m: [f32; 2] }
+
+/// One line of the weather with fixed decimals, so two lines diff cleanly. The shift field is left out while the map is not advecting.
+pub fn describe(s: &State) -> String {
+    // ponytail: f32 14.2 is 14.19999981, so hour * 60 lands at 11.9999 and a bare floor would print :11. The 1e-3 min nudge absorbs that representation error; upgrade to a rounded clock if sub-minute display is ever needed.
+    let mins = (s.hour.rem_euclid(24.0) * 60.0 + 1e-3).floor() as u32 % 1440;
+    let deg = (wrap_deg(s.wind_from_deg).round() as i32).rem_euclid(360);
+    // Kilometres to one decimal; `+ 0.0` turns a rounded -0.0 into 0.0 so it reads as no shift.
+    let km = s.map_shift_m.map(|m| (m / 1000.0 * 10.0).round() / 10.0 + 0.0);
+    let shift = if km == [0.0, 0.0] { String::new() } else { format!("  shift {:.1},{:.1} km", km[0], km[1]) };
+    format!("day {} {:02}:{:02}  cover {:.2}  rain {:.2}  dust {:.2}  wind {:.1} m/s from {} deg{}",
+        s.day, mins / 60, mins % 60, s.coverage, s.precip, s.dust, s.wind_mps, deg, shift)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +226,27 @@ mod tests {
         assert!(effective_rgba(&m, &c).chunks_exact(4).all(|p| p == [255, 255, 255, 255]));
         c.rain = false;
         assert_eq!(effective_rgba(&m, &c), rain_before);
+    }
+    #[test]
+    fn describe_reads_the_state_in_one_line() {
+        let s = State { hour: 14.2, day: 3, coverage: 0.82, precip: 0.31, dust: 0.10, wind_from_deg: 240.0, wind_mps: 6.0, map_shift_m: [1200.0, -400.0] };
+        assert_eq!(describe(&s), "day 3 14:12  cover 0.82  rain 0.31  dust 0.10  wind 6.0 m/s from 240 deg  shift 1.2,-0.4 km");
+    }
+    #[test]
+    fn describe_hour_floors_and_wraps_at_24() {
+        assert_eq!(describe(&State { hour: 0.0, ..State::default() }), "day 0 00:00  cover 0.00  rain 0.00  dust 0.00  wind 0.0 m/s from 0 deg");
+        assert_eq!(describe(&State { hour: 23.999, ..State::default() }), "day 0 23:59  cover 0.00  rain 0.00  dust 0.00  wind 0.0 m/s from 0 deg");
+    }
+    #[test]
+    fn describe_drops_a_zero_shift() {
+        // 40 m is 0.04 km, which rounds to 0.0 on both axes, negative zero included.
+        for shift in [[0.0, 0.0], [40.0, -40.0]] {
+            assert_eq!(describe(&State { map_shift_m: shift, ..State::default() }), "day 0 00:00  cover 0.00  rain 0.00  dust 0.00  wind 0.0 m/s from 0 deg");
+        }
+    }
+    #[test]
+    fn describe_wind_direction_is_a_wrapped_whole_degree() {
+        assert_eq!(describe(&State { wind_from_deg: -10.0, ..State::default() }), "day 0 00:00  cover 0.00  rain 0.00  dust 0.00  wind 0.0 m/s from 350 deg");
+        assert_eq!(describe(&State { wind_from_deg: 360.0, ..State::default() }), "day 0 00:00  cover 0.00  rain 0.00  dust 0.00  wind 0.0 m/s from 0 deg");
     }
 }

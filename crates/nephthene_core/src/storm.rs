@@ -62,11 +62,18 @@ pub struct StormCfg {
     pub genesis_type: [f32; 2], pub genesis_floor: f32, pub rebuild_s: f64, pub rebuild_m: f32,
     pub render: StormRender,
     pub fx: StormFx,
-    /// Lightning: strike, channel, strokes, light (off by default).
+    /// Lightning: strike, channel, strokes, light (on by default).
     pub lightning: crate::lightning::Lightning,
     /// Force this authored storm (by name) alone, timetable off. And a scene tag: authored storms with that `scene` join the timetable.
     pub force: Option<String>, pub scene: Option<String>,
     pub enabled: bool, pub sky_scale: f32, pub clock_scale: f32,
+    /// Storms drive the weather at the camera (rain, cover, gust front, sky light) and the rain shafts. False: test red arm, the
+    /// old storms that only draw clouds.
+    pub couple: bool,
+    /// "Storm now" (panel button, `summon_at_start`): a mature cell this far upwind of the camera (m), drifting over it, summoned
+    /// at this fraction of its life (`dev_end` < it < `diss_start`: mature, raining); `summon_at_start` summons one on the first frame
+    /// (demo and test switch).
+    pub summon_dist_m: f32, pub summon_age: f32, pub summon_at_start: bool,
     pub bin_m: f32, pub bin_min: f32, pub window_m: f32, pub rate_per_km2_hr: f32,
     pub diurnal_peak_hour: f32, pub diurnal_amp: f32, pub line_frac: f32,
     pub tropopause_m: f32, pub base_m: [f32; 2], pub top_frac: [f32; 2], pub core_r_m: [f32; 2], pub anvil_r_m: [f32; 2],
@@ -79,8 +86,8 @@ impl Default for StormCfg {
     fn default() -> Self {
         Self { seed: "nephthene".into(), dev_end: 0.3, diss_start: 0.7, edge: 0.05, core_flare: 0.8, anvil_wide: 0.55, anvil_p: 0.85, shelf_ceil: 1.0,
                select_hysteresis: 0.8, genesis_type: [0.4, 0.9], genesis_floor: 0.3, rebuild_s: 60.0, rebuild_m: 2000.0, render: StormRender::default(), fx: StormFx::default(), lightning: Default::default(), force: None, scene: None,
-               enabled: false, sky_scale: 1.0, clock_scale: 0.25, bin_m: 20000.0, bin_min: 30.0, window_m: 120000.0,
-               rate_per_km2_hr: 4.0e-5, diurnal_peak_hour: 16.0, diurnal_amp: 0.9, line_frac: 0.1,
+               enabled: true, sky_scale: 1.0, clock_scale: 0.25, couple: true, summon_dist_m: 5000.0, summon_age: 0.45, summon_at_start: false, bin_m: 20000.0, bin_min: 30.0, window_m: 120000.0,
+               rate_per_km2_hr: 1.0e-3, diurnal_peak_hour: 16.0, diurnal_amp: 0.9, line_frac: 0.1,
                tropopause_m: 13000.0, base_m: [2400.0, 3200.0], top_frac: [0.75, 1.0], core_r_m: [3000.0, 8000.0],
                anvil_r_m: [30000.0, 90000.0], line_len_m: [60000.0, 300000.0], line_half_width_m: [7500.0, 15000.0],
                cell_life_min: [30.0, 60.0], line_life_min: [180.0, 540.0], speed_mps: [6.0, 15.0], steer_deg: 45.0,
@@ -128,11 +135,13 @@ pub struct StormFx {
     pub flash_rate_per_s: f64, pub flash_dt_s: f64, pub cg_frac: f32, pub flash_salt: u32,
     /// Sky ambient attenuation per unit column optical depth; height of the column searched (m).
     pub amb_k: f32, pub column_m: f32,
+    /// Cloud cover overhead per unit column optical depth: cover = 1 - exp(-cover_k x od).
+    pub cover_k: f32,
 }
 impl Default for StormFx {
     fn default() -> Self {
         StormFx { curtain_full: 0.6, sound_mps: 343.0, od_ext_per_m: 1.0 / 8000.0, od_step_m: 250.0, sun_path_m: 20000.0, flash_rate_per_s: 1.0 / 30.0,
-                  flash_dt_s: 0.5, cg_frac: 0.25, flash_salt: 0x0F1A_5C0D, amb_k: 0.5, column_m: 20000.0 }
+                  flash_dt_s: 0.5, cg_frac: 0.25, flash_salt: 0x0F1A_5C0D, amb_k: 0.5, column_m: 20000.0, cover_k: 3.0 }
     }
 }
 
@@ -192,6 +201,7 @@ fn births_in_bin(c: &StormCfg, seed: &str, g: f32, ix: i32, iz: i32, tb: i64) ->
             (r.range(c.line_life_min), r.range(c.line_half_width_m) * sc, dir.perp() * len * 0.5)
         } else { (r.range(c.cell_life_min), r.range(c.core_r_m) * sc, Vec2::ZERO) };
         let base = r.range(c.base_m) * sc;
+        // ponytail: a cell is at least 1 km deep (also `summon`, and the developing depth in `now`); a knob when storm shapes are tuned (Phase 3).
         let top = (c.tropopause_m * r.range(c.top_frac) * sc).max(base + 1000.0 * sc);
         let anvil_r = r.range(c.anvil_r_m) * sc;
         let intensity = r.range(c.intensity);
@@ -240,6 +250,23 @@ pub fn authored(c: &StormCfg, t0: f64, centre: Vec2) -> Vec<Storm> {
                 origin, vel, half_axis: if line { dir.perp() * a.half_len_m * sc } else { Vec2::ZERO },
                 core_r: a.core_r_m * sc, base: a.base_m * sc, top: a.top_m * sc, anvil_r: a.anvil_r_m * sc, intensity: a.intensity }
     }).collect()
+}
+
+/// A mature cell `summon_dist_m` from `cam` toward `from` (map frame; `from` is the direction the wind comes from, any length,
+/// +x if zero), moving back over `cam` at the middle of `speed_mps`, `summon_age` through its life. Sizes are the middles of their
+/// ranges (x `sky_scale`), intensity the top of `intensity`, life the middle of `cell_life_min`.
+pub fn summon(c: &StormCfg, id: u64, t: f64, cam: Vec2, from: Vec2) -> Storm {
+    let d = from.normalize_or(Vec2::X);
+    let mid = |r: [f32; 2]| 0.5 * (r[0] + r[1]);
+    let sc = c.sky_scale;
+    let life_s = mid(c.cell_life_min) * 60.0;
+    let base = mid(c.base_m) * sc;
+    let vel = -d * mid(c.speed_mps);
+    let age = c.summon_age * life_s;
+    Storm { id, kind: Kind::Cell, born_s: t - age as f64, life_s, origin: cam + d * c.summon_dist_m - vel * age, vel,
+            // ponytail: the 1 km minimum depth of `births_in_bin`.
+            half_axis: Vec2::ZERO, core_r: mid(c.core_r_m) * sc, base, top: (c.tropopause_m * mid(c.top_frac) * sc).max(base + 1000.0 * sc),
+            anvil_r: mid(c.anvil_r_m) * sc, intensity: c.intensity[1] }
 }
 
 /// Anvil shear direction: the storm's heading turned by `shear_deg` (upper wind is not the steering wind). `Now::anvil_shift` is this x 0.5 anvil_r.
@@ -524,5 +551,28 @@ mod tests {
         assert_eq!(a.iter().map(|x| x.0.id).collect::<Vec<_>>(), vec![1, 2, 3]);
         let b = select(&all, t, Vec2::ZERO, 3, &[3], &c); // 3 was in prev: kept over the near-tie 6
         assert!(b.iter().any(|x| x.0.id == 3));
+    }
+
+    // The panel's Storm now must bring rain to the player before the cell dissipates.
+    #[test]
+    fn summoned_storm_rains_on_the_camera() {
+        let c = StormCfg { enabled: true, ..StormCfg::default() };
+        let cam = Vec2::new(300.0, -200.0);
+        let s = summon(&c, 7, 1000.0, cam, Vec2::new(0.0, 5.0));
+        let n = now(&s, 1000.0, &c).unwrap();
+        assert_eq!(n.stage, Stage::Mature);
+        assert!((n.a - (cam + Vec2::new(0.0, 1.0) * c.summon_dist_m)).length() < 1.0, "summoned at {:?}", n.a);
+        let end = s.born_s + s.life_s as f64;
+        let mut rained = false;
+        let mut t = 1000.0;
+        while t <= end {
+            let Some(n) = now(&s, t, &c) else { break };
+            if n.stage == Stage::Mature && crate::storm_fx::precip_at(&c, &n, Vec3::new(cam.x, 0.0, cam.y)) >= 0.5 * s.intensity {
+                rained = true;
+                break;
+            }
+            t += 10.0;
+        }
+        assert!(rained, "no rain over the camera while mature");
     }
 }

@@ -2,6 +2,7 @@
 // as a Transparent3d item. Its fragment depth is the first shaft sample along the ray, so nearer terrain/objects occlude it and farther
 // ones are dimmed and greyed by it (the depth test replaces the cloud composite's sky-only rule). Maths: nephthene_core::rain (shaft_*).
 // The cloud presence under a column is the march's own base density (kept in sync with clouds_march.wesl `density`, no detail pass).
+// Storm cells add their rain curtain (storm_fx::precip_at) where it is wetter than the map, fed by the storm's own cloud.
 // Column: rain at (xz, y) left the base upwind by the lean (`column_origin`); gated by the map's precip and that cloud, streaked by the
 // base noise stretched vertically, thinner toward the ground, lit by the sun through the atmosphere and the cloud above. All untuned.
 import bevy_pbr::atmosphere::{
@@ -10,7 +11,7 @@ import bevy_pbr::atmosphere::{
     functions::{sample_transmittance_lut, sample_sky_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, get_view_position},
 };
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
-import super::clouds_common::{Clouds, Storms, F16_MAX, PI, hg, phase, pcg, atmo_transmittance, map_sample, density_at};
+import super::clouds_common::{Clouds, Storms, F16_MAX, PI, hg, phase, pcg, atmo_transmittance, map_sample, density_at, storm_unpack, storm_precip};
 
 struct Shaft {
     slant: vec2<f32>,   // horizontal m per vertical m the rain drifts
@@ -113,9 +114,16 @@ fn main(in: FullscreenVertexOutput) -> Out {
         let hf = (p.y - g) / max(base_y - g, 1.0);
         let xz0 = p.xz - sh.slant * (base_y - p.y);
         // Rain at the point is what the map says it is here (the ground precip); the cloud that feeds it is upwind at the base.
-        let precip = select(map_at(p.xz).g, u.precip_override, u.precip_override >= 0.0);
+        var storm = 0.0;
+        if (u.s_couple > 0.5) {
+            for (var k = 0u; k < storms.n; k++) {
+                let c = storm_unpack(storms.cells[4u * k], storms.cells[4u * k + 1u], storms.cells[4u * k + 2u], storms.cells[4u * k + 3u]);
+                storm = max(storm, storm_precip(u, c, p.xz, p.y));
+            }
+        }
+        let precip = max(select(map_at(p.xz).g, u.precip_override, u.precip_override >= 0.0), storm);
         if precip <= sh.precip_lo { continue; }
-        let cloud = saturate(density(xz0, base_y + 0.08 * thick, 0.08));
+        let cloud = select(saturate(density(xz0, base_y + 0.08 * thick, 0.08)), 1.0, storm > sh.precip_lo);
         let streak = textureSampleLevel(base_tex, noise_sampler, vec3(xz0.x + u.wind.x, p.y, xz0.y + u.wind.y) / vec3(sh.xz_m, sh.y_m, sh.xz_m), 0.0).r;
         let dens = shaft_density(precip, cloud, streak, hf) * smoothstep(sh.near_m, sh.fade_m, t);
         if dens <= 0.0 { continue; }
