@@ -164,3 +164,28 @@ fn cost_rain() {
     if red <= RAIN_BUDGET_MS { f.push(format!("red arm {red:.3} not above budget: the gate cannot fail, delete it and log it (roadmap rule)")); }
     finish("COST rain FX", f);
 }
+
+// ---------------------------------------------------------------- rain off switch
+
+/// Noise band 0.05 ms (one sixth of the rain FX budget): the smallest rain cost this 60-frame mean is meant to resolve. A switched-off
+/// rain must read within it of the scene with no rain; the forced-on arm must read beyond it. Untuned: the run-to-run spread on Apple
+/// Silicon has not been measured yet.
+const RAIN_OFF_BAND_MS: f64 = 0.05;
+
+/// Off-switch gate, 1080p: `rain.enabled` false with `rain.force` 1 must cost the transparent span of the same scene with no rain at all
+/// (`rain.enabled` false alone), within RAIN_OFF_BAND_MS. Red arm: `rain.enabled` true with the same force must read above the band.
+#[test]
+#[ignore = "manual gate"]
+fn cost_rain_off_switch() {
+    if software() && std::env::var("NEPHTHENE_COST_ON_CPU").is_err() { println!("COST skipped: software renderer"); return; }
+    let transparent = |m: &HashMap<String, f64>| m["transparent"];
+    let none = transparent(&run("cost_rain_switch_none", &["rain.enabled=false"], false));
+    let off = transparent(&run("cost_rain_switch_off", &["rain.force=1.0", "rain.enabled=false"], false)) - none;
+    let red = transparent(&run("cost_rain_switch_red", &["rain.force=1.0", "rain.enabled=true"], false)) - none;
+    println!("COST rain off switch: forced off {off:.3} ms over no rain (band {RAIN_OFF_BAND_MS}); red arm forced on {red:.3}");
+    if software() { return; }
+    let mut f = vec![];
+    if off > RAIN_OFF_BAND_MS { f.push(format!("forced rain with rain.enabled=false costs {off:.3} ms over no rain > {RAIN_OFF_BAND_MS}")); }
+    if red <= RAIN_OFF_BAND_MS { f.push(format!("red arm {red:.3} not above band: the gate cannot fail, delete it and log it (roadmap rule)")); }
+    finish("COST rain off switch", f);
+}

@@ -11,6 +11,7 @@
 //! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (drive the panel with synthetic pointer input).
 //! `--terrain`: the test valley (nephthene_core::fog::test_valley) as the ground mesh and the plugin's `Ground`, instead of the flat plane.
 //! `--print-config` prints the effective config as JSON and exits (the reference file).
+//! `--describe` (shots): after the settle frames, prints one `DESCRIBE` line: the weather at the camera (`nephthene_core::dash::describe`).
 //! Exit codes: 0 ok, 3 timeout, 4 bad argument.
 use bevy::{
     core_pipeline::tonemapping::Tonemapping,
@@ -25,7 +26,7 @@ use bevy::{
     window::ExitCondition,
     winit::WinitPlugin,
 };
-use nephthene::{Config, NephtheneSun, NephthenePlugin, WetGround};
+use nephthene::{Config, NephtheneSun, NephthenePlugin, Weather, WetGround};
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone)]
@@ -50,14 +51,12 @@ fn config(a: &Args, shot: bool) -> Config {
     }
     if let Some(h) = a.num::<f32>("--hour") { v["clock"]["start_hour"] = h.into(); }
     if shot && !a.has("--live") { v["clock"]["minutes_per_second"] = 0.0.into(); }
+    let mut cfg: Config = serde_json::from_value(v).unwrap_or_else(|e| die(&format!("config: {e}")));
     for kv in a.all("--set") {
         let (path, val) = kv.split_once('=').unwrap_or_else(|| die(&format!("--set {kv}: want path=json")));
-        let val = serde_json::from_str(val).unwrap_or_else(|_| serde_json::Value::String(val.into()));
-        let mut cur = &mut v;
-        for k in path.split('.') { cur = cur.get_mut(k).unwrap_or_else(|| die(&format!("--set {path}: no such key {k}"))); }
-        *cur = val;
+        cfg.set_path(path, val).unwrap_or_else(|e| die(&e));
     }
-    serde_json::from_value(v).unwrap_or_else(|e| die(&format!("config: {e}")))
+    cfg
 }
 fn fn_merge(a: &mut serde_json::Value, b: serde_json::Value) {
     match (a, b) {
@@ -201,7 +200,7 @@ impl Plugin for ShotPlugin {
         for i in 0..seq.as_ref().map_or(0, |s| s.0) { let _ = std::fs::remove_file(format!("{out}/{}_{i:02}.png", p.name)); }
         let turn = a.get("--turn").map(|v| { let (d, n) = v.split_once(',').unwrap_or_else(|| die("--turn deg,frames")); (d.trim().parse::<f32>().unwrap_or(0.0), n.trim().parse::<f32>().unwrap_or(1.0)) });
         app.insert_resource(Shot { pose: p, out, frames: 0, fired: false, taken: 0, seq, sf: a.num("--scale-factor").unwrap_or(1.0), sway: a.num("--sway"), turn,
-                settle: a.num("--settle").unwrap_or(SETTLE_FRAMES), timeout: a.num("--timeout").unwrap_or(240.0), panel_test: a.has("--panel-test") })
+                settle: a.num("--settle").unwrap_or(SETTLE_FRAMES), timeout: a.num("--timeout").unwrap_or(240.0), panel_test: a.has("--panel-test"), describe: a.has("--describe") })
             // Deterministic frames: 60 Hz of simulated time per update, whatever the wall clock does.
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_micros(16_667)))
             .add_systems(Startup, spawn_cam)
@@ -215,7 +214,7 @@ impl Plugin for ShotPlugin {
 struct Target(Handle<Image>);
 
 #[derive(Resource)]
-struct Shot { pose: Pose, out: String, frames: u32, fired: bool, taken: u32, seq: Option<(u32, u32, Option<Vec<u32>>)>, sf: f32, sway: Option<f32>, turn: Option<(f32, f32)>, settle: u32, timeout: f32, panel_test: bool }
+struct Shot { pose: Pose, out: String, frames: u32, fired: bool, taken: u32, seq: Option<(u32, u32, Option<Vec<u32>>)>, sf: f32, sway: Option<f32>, turn: Option<(f32, f32)>, settle: u32, timeout: f32, panel_test: bool, describe: bool }
 
 fn spawn_cam(mut commands: Commands, shot: Res<Shot>, cfg: Res<Cfg>, mut images: ResMut<Assets<Image>>) {
     let p = &shot.pose;
@@ -246,7 +245,7 @@ fn cam_motion(mut cams: Query<&mut Transform, With<Cam>>, shot: Res<Shot>, mut b
     }
 }
 
-fn drive(mut commands: Commands, mut shot: ResMut<Shot>, target: Res<Target>, mut exit: MessageWriter<AppExit>, mut started: Local<Option<std::time::Instant>>, mut ready_frames: Local<u32>) {
+fn drive(mut commands: Commands, mut shot: ResMut<Shot>, target: Res<Target>, wx: Res<Weather>, mut exit: MessageWriter<AppExit>, mut started: Local<Option<std::time::Instant>>, mut ready_frames: Local<u32>) {
     let (out, name) = (shot.out.clone(), shot.pose.name.clone());
     let path = format!("{out}/{name}.png");
     let screenshot = |commands: &mut Commands, to: String, sf: f32| { commands.spawn(Screenshot(RenderTarget::Image(ImageRenderTarget { handle: target.0.clone(), scale_factor: sf }))).observe(save_to_disk(to)); };
@@ -270,6 +269,11 @@ fn drive(mut commands: Commands, mut shot: ResMut<Shot>, target: Res<Target>, mu
             if shot.seq.is_some() { screenshot(&mut commands, format!("{out}/{name}_00.png"), shot.sf); shot.taken = 1; } else { screenshot(&mut commands, path, shot.sf); }
             shot.fired = true;
             shot.frames = 0;
+            if shot.describe {
+                let s = nephthene::core::dash::State { hour: wx.hour, day: wx.day, coverage: wx.here.coverage, precip: wx.here.precip, dust: wx.here.dust,
+                    wind_from_deg: nephthene::core::dash::heading_deg([-wx.wind_local.x, 0.0, -wx.wind_local.z]), wind_mps: wx.wind_mean_mps, map_shift_m: [wx.map_shift.x, wx.map_shift.y] };
+                println!("DESCRIBE {}", nephthene::core::dash::describe(&s));
+            }
         }
     }
     // OS wall clock: the simulated clock is manual.
