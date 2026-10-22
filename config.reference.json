@@ -532,6 +532,22 @@
     "snow_albedo": 0.7,
     "ignore": false
   },
+  "orographic": {
+    "enabled": false,
+    "gain": 1.0,
+    "n_moist": 0.005,
+    "h_w": 2500.0,
+    "tau_c": 1000.0,
+    "tau_f": 1000.0,
+    "full_mm_h": 7.6,
+    "cover_weight": 1.0,
+    "tile_px": 128,
+    "cell_m": 200.0,
+    "rebake_m": 3200.0,
+    "rebake_deg": 22.5,
+    "rebake_frac": 0.2,
+    "rebake_k": 2.0
+  },
   "ground_fog": {
     "enabled": true,
     "force": null,

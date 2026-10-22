@@ -229,6 +229,10 @@ a state by name. This phase is C5.
      static and terrain-locked; the sampler combines them (proposed: a `max` for precip, a weighted add for coverage).
   4. Gate: windward-to-lee precipitation ratio across a ridge, with `oro.gain = 0` as the red arm; plus a render showing cap cloud
      on the crest and a dry lee.
+  Slice 1 done (CPU, off by default): a camera-local tile fixed to the terrain, baked in the background and rebaked when stale,
+  combined into `Weather.here` (precip max, cover weighted add); Cw from the air; gate `rain_condenses_upwind_and_drifts_downwind`, red
+  arm `orographic.gain` 0 (`docs/orographic.md`). Open (slice 2): the cloud shader, shadow and shafts read the tile (the cap-cloud
+  render, a GPU handover), then on by default; a cache per (tile, wind octant).
 - **Weather field advects with the wind**. Step 1 done: under one global wind the field is translated, not resampled
   (`map.advect`, on by default; `map.wrap`; `map.start_shift_m` for save/restore; gates `map_tests` and G22;
   `docs/weather_map.md`). Step 2, with the wind field below: a non-uniform wind cannot be a translation, so the field becomes a
