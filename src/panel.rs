@@ -31,7 +31,7 @@ pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, R
 #[derive(Component)]
 struct SelShown(usize);
 #[derive(Component, Clone, Copy, Default)]
-enum Txt { #[default] Time, Play, Here, Rain, Sun, Frame, Hover, Pin, Fog, Storm }
+enum Txt { #[default] Time, Play, Here, Air, Rain, Sun, Frame, Hover, Pin, Fog, Storm }
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Mark { Cam, Heading, Pin, Storm(usize) }
 
@@ -219,6 +219,7 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
     // readout
     heading(cm, root, "Here");
     cm.spawn_scene(label(String::new())).insert((Txt::Here, ChildOf(root)));
+    cm.spawn_scene(label(String::new())).insert((Txt::Air, ChildOf(root)));
     cm.spawn_scene(label_dim(String::new())).insert((Txt::Rain, ChildOf(root)));
     cm.spawn_scene(label(String::new())).insert((Txt::Sun, ChildOf(root)));
     cm.spawn_scene(label_dim(String::new())).insert((Txt::Frame, ChildOf(root)));
@@ -423,6 +424,7 @@ fn refresh_ui(
             Txt::Time => format!("{}   ({:.2} h)", c::hhmm(wx.hour), wx.hour),
             Txt::Play => (if wx.rate > 0.0 { "Pause" } else { "Play" }).to_string(),
                         Txt::Here => format!("coverage {:.2}   rain {:.2}   dust {:.2}", wx.here.coverage, wx.here.precip, wx.here.dust),
+            Txt::Air => { let a = &wx.air; format!("air {:.1} C   dew {:.1} C   rh {:.2}   freezing {:.0} m   {}", a.temp_c, a.dew_c, a.rh, a.freezing_m, c::precip_word(a.precip_kind)) }
             Txt::Rain => format!("rain: intensity {:.2}   wetness {:.2}   fall {:.1} m/s   slant {:.0} deg   source {}", rain.intensity, rain.wetness, -rain.vel.y, rain.slant_deg(), rain.source()),
             Txt::Sun => format!("sun elevation {el:.1} deg   azimuth {az:.1} deg   heading {:.0}", c::heading_deg(fwd.to_array())),
             Txt::Frame => format!("frame {:.1} ms ({:.0} fps)", *ms, 1000.0 / ms.max(0.1)),

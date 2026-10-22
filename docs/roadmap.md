@@ -131,8 +131,8 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 | 12 | Storm cells with a lifecycle | partial | analytic capsules, read as lenses |
 | 13 | Weather field authoring (paint a region) | have | `WeatherMap::load`, panel map |
 | 14 | Wind field driving clouds, rain, fog, foliage | none | one global vector; Phase 2 |
-| 15 | Air state: temperature, humidity, freezing level | none | Phase 2 |
-| 16 | Climate and altitude drive the weather | none | Phase 2 (C5) |
+| 15 | Air state: temperature, humidity, freezing level | partial | `air::Field`, core gates; climate field open |
+| 16 | Climate and altitude drive the weather | partial | altitude: gate C5-place (core); climate field open (C5) |
 | 17 | Director: requested states and transitions | none | Phase 2/3 (C5) |
 | 18 | Dust and sandstorm | none | Phase 5 |
 | 19 | Blowing snow and whiteout | none | Phase 5/7 |
@@ -197,16 +197,22 @@ a state by name. This phase is C5.
 
 - **Air state in core**. Done: `nephthene_core::air` (force-restore surface temperature from clock, season, latitude and cloud
   cover; dew point, humidity, lapse rate, freezing level, snow line) exposed as `Weather.air`; fog formation reads the dew point
-  spread (red arm `ground_fog.private_cooling`); `docs/air.md`. Open: the climate offset (climate field below), sampling at the
-  camera's terrain height (next bullet), and the air is camera-local, not a field.
-- **Altitude is an input, not an afterthought.** The air state is sampled at the camera's terrain height from `Ground`, so the
-  same map texel is rain in the valley and snow on the ridge. Gate C5-place above; red arm, lapse rate 0.
+  spread (red arm `ground_fog.private_cooling`); `docs/air.md`. Done: the air is a temperature field (`air::Field`, owner's call:
+  a full field from the start), a grid over the weather map in the map's frame, so it moves with the weather; each cell under its
+  own cover (gate `the_field_follows_the_cover_under_it`, red arm `cloud_shade` and `cloud_block` 0). Open: the climate field sets
+  each cell's restore target and dew point (below); a non-uniform wind advects it with the weather field (step 2 below).
+- **Altitude is an input, not an afterthought.** Done: cells hold the temperature reduced to `ref_alt_m`; `Weather.air` is read at
+  the `Ground` height under the camera through the lapse rates (dew point 1.8 K/km), so the same map texel is rain in the valley
+  and snow on the ridge. Gate C5-place `rain_in_the_valley_snow_on_the_ridge`; red arm, lapse rate 0. Open: fog formation still
+  reads the air at `ref_alt_m` (its spin-ups integrate there); the pool floor's altitude is the upgrade.
 - **Climate field** (new, the second map the old roadmap reserved): climate class or biome, mean temperature offset, humidity,
   ground snow and ground wetness. This is how a designer makes a region a desert, a tundra or a rainforest with one paint pass,
   and it is what makes the weather field's coverage and precip *local* rather than global. The weather field's RGBA8 is full
   (coverage, precip, type, dust), so this is a second image with the same extent and sampling path.
 - **Precipitation type from the air state**: rain, snow, sleet, hail (`precip_kind` 0..1 blends, not a switch, so a front turns
-  rain to snow over minutes). Exposed on `Weather` for the host and in `describe()`.
+  rain to snow over minutes). Done: `precip_kind` (0 rain, 1 snow, sleet between) from the temperature at the ground
+  (`air.snow_c`..`air.rain_c`, Jennings et al. 2018), on `Weather.air` and in the panel. Open: hail (convective, with the storm
+  fields in Phase 3); `describe()` (Phase 1 agent surface); rain particles reading it (Phase 4).
 - **Orographic precipitation, wired** (scoreboard rows 15/16, C5). `crates/nephthene_core/src/orographic.rs` already implements
   Smith & Barstad (2004) linear orographic precipitation in one FFT pass, pure and unit-gated (windward > 1.5x lee, flips with the
   wind sign, flat terrain gives zero), and nothing calls it. Wire it:
@@ -215,9 +221,8 @@ a state by name. This phase is C5.
      padded square, so it is a bake, never a frame cost (C2).
   2. Resolve the resolution mismatch: `HeightGrid.cell_m` is metres, a default weather texel is ~3.1 km. Either raise the field
      resolution or keep the orographic contribution as a separate finer field combined at sample time.
-  3. **Decide the frame conflict first** (`docs/decisions.md`): orographic precipitation is locked to the ground, the weather
-     field advects with the wind. One texture cannot be both. Proposed: the synoptic field advects, the orographic field is static
-     and terrain-locked, and the sampler combines them (a `max` for precip, a weighted add for coverage). Owner's call.
+  3. **Frame conflict, decided** (owner, `docs/decisions.md`): two fields. The synoptic field advects; the orographic field is
+     static and terrain-locked; the sampler combines them (proposed: a `max` for precip, a weighted add for coverage).
   4. Gate: windward-to-lee precipitation ratio across a ridge, with `oro.gain = 0` as the red arm; plus a render showing cap cloud
      on the crest and a dry lee.
 - **Weather field advects with the wind**. Step 1 done: under one global wind the field is translated, not resampled
@@ -455,12 +460,11 @@ Phase 1. After Phase 2, phases run in parallel sessions, one owner per file.
 
 1. **Tier walls**: accept 1.2 / 3.0 / 3.5 / 6.0 ms, and in particular `ultra` at 36% of a 60 fps frame? Or cap `ultra` at 4.5 ms
    and spend the headroom on resolution instead of steps?
-2. **The orographic frame conflict** (Phase 2): synoptic field advects while the orographic field stays terrain-locked and is
-   combined at sample time (proposed), or one field that does not advect where terrain forces it?
+2. ~~**The orographic frame conflict**~~ Answered 2026-10-22: two fields. The weather field moves with the wind; the orographic
+   field stays fixed to the terrain; they are combined at sample time (`docs/decisions.md`).
 3. **Upscaler**: is DLSS and TAA integration Phase 1 (proposed, because a 5070 Ti user runs one) or deferred until the tiers are
    measured?
-4. **Air state**: global surface temperature plus lapse rate plus a climate field (proposed, cheap) or a full temperature field
-   from the start?
+4. ~~**Air state**~~ Answered 2026-10-22: a full temperature field from the start (`air::Field`, `docs/decisions.md`).
 5. **Dust and blowing snow** inside the fog march (proposed) or a separate pass?
 6. **Surfaces**: ship an `ExtendedMaterial` the host opts into (proposed), or keep editing the host's `StandardMaterial`?
 7. **`shader-f16`** behind a feature check with an f32 fallback - measure on both reference GPUs first, or skip it?

@@ -402,7 +402,8 @@ impl Default for RainCfg {
 /// Air at the surface (nephthene_core::air): temperature by a force-restore model on the clock (sun heating, radiative loss, restore
 /// toward the season's daily mean; clouds shade the sun and block the loss), the air mass's dew point, and temperature with altitude.
 /// Defaults follow published ranges (clear-sky land diurnal range 8-15 K, overcast a third to a half of it; standard lapse rate
-/// 6.5 K/km; snow reaches about 300 m below the freezing level) but every default is UNTUNED.
+/// 6.5 K/km; dew point lapse 1.8 K/km; snow reaches about 300 m below the freezing level; rain and snow equally likely near 1 C at
+/// the ground) but every default is UNTUNED.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct AirCfg {
@@ -421,12 +422,20 @@ pub struct AirCfg {
     pub ref_alt_m: f32, pub lapse_k_per_km: f32, pub melt_m: f32,
     /// Hours integrated before the start hour (and while the clock is frozen) to reach the state the weather implies.
     pub spin_up_h: f32,
+    /// Dew point lapse rate (K per km): the dew point falls more slowly with height than the temperature, so the air dries upward.
+    pub dew_lapse_k_per_km: f32,
+    /// Precipitation type at the ground: all snow at or below `snow_c`, all rain at or above `rain_c` (deg C, the air at the ground),
+    /// sleet between.
+    pub snow_c: f32, pub rain_c: f32,
+    /// Cells per side of the temperature field (`air::Field`) over the weather map's extent.
+    pub field_px: u32,
 }
 impl Default for AirCfg {
     fn default() -> Self {
         AirCfg {
             mean_c: 15.0, season_c: 10.0, lag_days: 30.0, heat_k_per_h: 4.0, cool_k_per_h: 1.5, restore_per_h: 0.25, cloud_shade: 0.7, cloud_block: 0.8,
             dew_below_c: 4.0, wet_gain_c: 3.0, dust_dry_c: 6.0, ref_alt_m: 0.0, lapse_k_per_km: 6.5, melt_m: 300.0, spin_up_h: 48.0,
+            dew_lapse_k_per_km: 1.8, snow_c: -0.5, rain_c: 2.5, field_px: 32,
         }
     }
 }

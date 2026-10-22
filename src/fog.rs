@@ -115,7 +115,12 @@ fn bake(
         return;
     }
     let Some(at) = cam.iter().next().map(|g| g.translation().xz()) else { return };
-    let air = Air { coverage: wx.here.coverage, wind_mps: wx.wind_mean_mps, wetness: rain.map_or(0.0, |r| r.wetness), dust: wx.here.dust, spread_c: wx.air.temp_c - wx.air.dew_c };
+    // Formation reads the air field at the camera at `ref_alt_m`, the altitude its spin-ups integrate. ponytail: the pool floor's
+    // altitude is the upgrade (the spread widens with height: the dew point lapses slower than the temperature).
+    let wet = rain.map_or(0.0, |r| r.wetness);
+    let [mx, mz] = w::map_xz(&wx.cfg.map, wx.map_shift, at.x, at.y);
+    let a0 = w::air::state(&wx.cfg.air, &wx.cfg.clock, wx.air_field.temp_at(mx, mz), wet, wx.here.dust);
+    let air = Air { coverage: wx.here.coverage, wind_mps: wx.wind_mean_mps, wetness: wet, dust: wx.here.dust, spread_c: a0.temp_c - a0.dew_c };
     let frozen = wx.rate <= 0.0 || c.force.is_some();
     b.pending_h += time.delta_secs() * wx.rate;
     b.since += time.delta_secs();
