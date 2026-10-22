@@ -72,20 +72,8 @@ impl WeatherMap {
 
     /// Bilinear RGBA in 0..1 at map (x, z), clamped at the edges (wrapped when `wrap`).
     pub fn rgba(&self, x: f32, z: f32) -> [f32; 4] {
-        // Per axis: the two texels to blend and the weight of the second; held at the edge, or wrapped across it.
-        let axis = |f: f32, n: u32| -> (u32, u32, f32) {
-            if self.wrap {
-                let f0 = f.floor();
-                let i = (f0 as i64).rem_euclid(n as i64) as u32;
-                (i, (i + 1) % n, f - f0)
-            } else {
-                let f = f.clamp(0.0, (n - 1) as f32);
-                let i = f as u32;
-                (i, (i + 1).min(n - 1), f - i as f32)
-            }
-        };
-        let (x0, x1, tx) = axis((x - self.min_x) / self.size_x * self.width as f32 - 0.5, self.width);
-        let (z0, z1, tz) = axis((self.max_z - z) / self.size_z * self.height as f32 - 0.5, self.height);
+        let (x0, x1, tx) = texel_axis((x - self.min_x) / self.size_x * self.width as f32 - 0.5, self.width, self.wrap);
+        let (z0, z1, tz) = texel_axis((self.max_z - z) / self.size_z * self.height as f32 - 0.5, self.height, self.wrap);
         let px = |x: u32, z: u32, c: usize| self.rgba[((z * self.width + x) * 4) as usize + c] as f32 / 255.0;
         std::array::from_fn(|c| {
             let a = px(x0, z0, c) + (px(x1, z0, c) - px(x0, z0, c)) * tx;
@@ -98,6 +86,20 @@ impl WeatherMap {
     pub fn sample(&self, x: f32, z: f32) -> Local {
         let [coverage, precip, _, dust] = self.rgba(x, z);
         Local { coverage, precip, dust }
+    }
+}
+
+/// One axis of a bilinear read at texel coordinate `f` (texel centres at whole numbers) of `n` texels: the two texels to blend and the
+/// weight of the second; held at the edge, or wrapped across it.
+pub(crate) fn texel_axis(f: f32, n: u32, wrap: bool) -> (u32, u32, f32) {
+    if wrap {
+        let f0 = f.floor();
+        let i = (f0 as i64).rem_euclid(n as i64) as u32;
+        (i, (i + 1) % n, f - f0)
+    } else {
+        let f = f.clamp(0.0, (n - 1) as f32);
+        let i = f as u32;
+        (i, (i + 1).min(n - 1), f - i as f32)
     }
 }
 
