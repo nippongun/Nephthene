@@ -36,6 +36,8 @@ pub struct Config {
     pub audio: audio::Cfg,
     /// Air at the surface: temperature, dew point, humidity, freezing level and snow line (ground fog forms on it).
     pub air: AirCfg,
+    /// Climate: what a place is like (temperature offset, humidity, ground snow and wetness), a second map fixed to the world.
+    pub climate: ClimateCfg,
     /// Terrain-following radiation fog: valley pools under a flat top and shallow mist in hollows (`fog` above is the distance haze).
     pub ground_fog: GroundFog,
     /// Tuning of the ticking systems (smoothing, rebuild thresholds).
@@ -52,7 +54,7 @@ impl Default for Config {
             fog_brightness: vec![[-14.0, 0.01], [-4.0, 0.05], [0.0, 0.35], [10.0, 0.9], [20.0, 1.0]],
             fog: Fog::default(), moon: Moon::default(), stars: Stars::default(), sky: Sky::default(), wind: Wind::default(),
             map: MapCfg::default(), clouds: Clouds::default(), resolve: Resolve::default(), shafts: Shafts::default(),
-            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), air: AirCfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
+            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), air: AirCfg::default(), climate: ClimateCfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
         }
     }
 }
@@ -465,14 +467,42 @@ pub struct AirCfg {
     pub snow_c: f32, pub rain_c: f32,
     /// Cells per side of the temperature field (`air::Field`) over the weather map's extent.
     pub field_px: u32,
+    /// Game hours gathered before the live field takes one step (one step of a 32 x 32 field costs about 50-80 us of CPU, so stepping
+    /// every frame is waste). Keep it at or under 0.25 h, the spin-up step, for explicit Euler to stay accurate.
+    pub step_h: f32,
 }
 impl Default for AirCfg {
     fn default() -> Self {
         AirCfg {
             mean_c: 15.0, season_c: 10.0, lag_days: 30.0, heat_k_per_h: 4.0, cool_k_per_h: 1.5, restore_per_h: 0.25, cloud_shade: 0.7, cloud_block: 0.8,
             dew_below_c: 4.0, wet_gain_c: 3.0, dust_dry_c: 6.0, ref_alt_m: 0.0, lapse_k_per_km: 6.5, melt_m: 300.0, spin_up_h: 48.0,
-            dew_lapse_k_per_km: 1.8, snow_c: -0.5, rain_c: 2.5, field_px: 32,
+            dew_lapse_k_per_km: 1.8, snow_c: -0.5, rain_c: 2.5, field_px: 32, step_h: 1.0 / 60.0,
         }
+    }
+}
+
+/// Climate (nephthene_core::climate): what a place is like, painted as a second map (`climate_map.png`, RGBA8, the weather map's
+/// format and extent, but fixed to the world: `map.advect` does not move it). R mean temperature offset and G humidity (signed: byte
+/// 128 is neutral), B ground snow and A ground wetness (0..1). Without a map every place is `uniform`. Ranges follow observed climates
+/// (docs/climate.md) but every default is UNTUNED.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct ClimateCfg {
+    /// The climate everywhere when no climate map is given: [temperature offset K, humidity -1..1, ground snow 0..1, ground wetness 0..1].
+    pub uniform: [f32; 4],
+    /// Mean temperature offset (K) at R = 0 (minus) and R = 255 (plus), added to `air.mean_c`: the target each place restores to.
+    pub temp_range_k: f32,
+    /// Air mass dew point depression (K under the season's mean) at full dryness (humidity -1) and full humidity (+1); humidity 0
+    /// keeps `air.dew_below_c`.
+    pub dry_dew_below_c: f32, pub wet_dew_below_c: f32,
+    /// Albedo of snow-free ground and of snow cover: snow scales the sun's heating by (1 - albedo) / (1 - bare_albedo).
+    pub bare_albedo: f32, pub snow_albedo: f32,
+    /// Test switch (red arm): every place reads the neutral climate (offset 0, humidity 0, no snow, dry ground), map or not.
+    pub ignore: bool,
+}
+impl Default for ClimateCfg {
+    fn default() -> Self {
+        ClimateCfg { uniform: [0.0; 4], temp_range_k: 25.0, dry_dew_below_c: 20.0, wet_dew_below_c: 3.5, bare_albedo: 0.2, snow_albedo: 0.7, ignore: false }
     }
 }
 

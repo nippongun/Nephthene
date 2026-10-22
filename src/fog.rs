@@ -38,7 +38,7 @@ impl Plugin for FogPlugin {
 type Baked = (Arc<Field>, Vec<f32>, FogMap);
 
 /// What a frozen clock's spin-up was computed for (hour, weather, field origin); a change re-spins.
-type Key = [f32; 7];
+type Key = [f32; 10];
 
 /// Fog state around the camera and the bake in flight.
 #[derive(Resource)]
@@ -117,22 +117,24 @@ fn bake(
     let Some(at) = cam.iter().next().map(|g| g.translation().xz()) else { return };
     // Formation reads the air field at the camera at `ref_alt_m`, the altitude its spin-ups integrate. ponytail: the pool floor's
     // altitude is the upgrade (the spread widens with height: the dew point lapses slower than the temperature).
-    let wet = rain.map_or(0.0, |r| r.wetness);
+    // The camera's climate localises the air config (and the ground wetness) for the spread and for the bake's spin-ups.
+    let ac = w::climate::air(&wx.cfg.air, &wx.cfg.climate, &wx.climate_here);
+    let wet = w::climate::wetness(&wx.climate_here, rain.map_or(0.0, |r| r.wetness));
     let [mx, mz] = w::map_xz(&wx.cfg.map, wx.map_shift, at.x, at.y);
-    let a0 = w::air::state(&wx.cfg.air, &wx.cfg.clock, wx.air_field.temp_at(mx, mz), wet, wx.here.dust);
+    let a0 = w::air::state(&ac, &wx.cfg.clock, wx.air_field.temp_at(mx, mz), wet, wx.here.dust);
     let air = Air { coverage: wx.here.coverage, wind_mps: wx.wind_mean_mps, wetness: wet, dust: wx.here.dust, spread_c: a0.temp_c - a0.dew_c };
     let frozen = wx.rate <= 0.0 || c.force.is_some();
     b.pending_h += time.delta_secs() * wx.rate;
     b.since += time.delta_secs();
     let moved = b.field.as_ref().is_none_or(|o| at.distance(Vec2::new(o.min_x, o.max_z) + Vec2::new(0.5, -0.5) * c.extent_m) > c.rebake_m);
     let origin = b.field.as_ref().map_or([f32::NAN; 2], |o| [o.min_x, o.max_z]);
-    let key = [wx.hour, air.coverage, air.wind_mps, air.wetness, air.dust, origin[0], origin[1]];
+    let key = [wx.hour, air.coverage, air.wind_mps, air.wetness, air.dust, origin[0], origin[1], ac.mean_c, ac.dew_below_c, ac.heat_k_per_h];
     let changed = b.cfg.as_ref() != Some(c);
     let due = changed || if frozen { moved || b.key.is_none_or(|k| k.iter().zip(&key).any(|(a, b)| (a - b).abs() > 1e-3) || k[5].is_nan()) } else { moved || b.since > c.rebake_s };
     if b.task.is_none() && due {
         let spin = frozen || b.field.is_none() || changed;
         let old = b.field.clone().map(|o| (o, b.m.clone()));
-        let (cfg, ac, grid, clock, hour, dt_h) = (c.clone(), wx.cfg.air.clone(), b.grid.clone(), wx.cfg.clock.clone(), wx.hour, b.pending_h);
+        let (cfg, ac, grid, clock, hour, dt_h) = (c.clone(), ac.clone(), b.grid.clone(), wx.cfg.clock.clone(), wx.hour, b.pending_h);
         if b.field.is_none() {
             let r = job(&cfg, &ac, &grid, &clock, hour, air, at, old, spin, dt_h);
             done(r, &mut b, &mut params);

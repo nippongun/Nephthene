@@ -132,7 +132,7 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 | 13 | Weather field authoring (paint a region) | have | `WeatherMap::load`, panel map |
 | 14 | Wind field driving clouds, rain, fog, foliage | none | one global vector; Phase 2 |
 | 15 | Air state: temperature, humidity, freezing level | partial | `air::Field`, core gates; climate field open |
-| 16 | Climate and altitude drive the weather | partial | altitude: gate C5-place (core); climate field open (C5) |
+| 16 | Climate and altitude drive the weather | partial | altitude (gate C5-place) and climate (`climate.rs`) drive the air; the weather map's coverage and precip do not read the climate yet |
 | 17 | Director: requested states and transitions | none | Phase 2/3 (C5) |
 | 18 | Dust and sandstorm | none | Phase 5 |
 | 19 | Blowing snow and whiteout | none | Phase 5/7 |
@@ -199,8 +199,8 @@ a state by name. This phase is C5.
   cover; dew point, humidity, lapse rate, freezing level, snow line) exposed as `Weather.air`; fog formation reads the dew point
   spread (red arm `ground_fog.private_cooling`); `docs/air.md`. Done: the air is a temperature field (`air::Field`, owner's call:
   a full field from the start), a grid over the weather map in the map's frame, so it moves with the weather; each cell under its
-  own cover (gate `the_field_follows_the_cover_under_it`, red arm `cloud_shade` and `cloud_block` 0). Open: the climate field sets
-  each cell's restore target and dew point (below); a non-uniform wind advects it with the weather field (step 2 below).
+  own cover (gate `the_field_follows_the_cover_under_it`, red arm `cloud_shade` and `cloud_block` 0) and restores to the climate under
+  it (below). Open: a non-uniform wind advects it with the weather field (step 2 below).
 - **Altitude is an input, not an afterthought.** Done: cells hold the temperature reduced to `ref_alt_m`; `Weather.air` is read at
   the `Ground` height under the camera through the lapse rates (dew point 1.8 K/km), so the same map texel is rain in the valley
   and snow on the ridge. Gate C5-place `rain_in_the_valley_snow_on_the_ridge`; red arm, lapse rate 0. Open: fog formation still
@@ -209,6 +209,10 @@ a state by name. This phase is C5.
   ground snow and ground wetness. This is how a designer makes a region a desert, a tundra or a rainforest with one paint pass,
   and it is what makes the weather field's coverage and precip *local* rather than global. The weather field's RGBA8 is full
   (coverage, precip, type, dust), so this is a second image with the same extent and sampling path.
+  Done: R mean temperature offset, G humidity (signed, 128 neutral), B ground snow, A ground wetness, fixed to the world; it
+  localises the air config per place (`climate.rs`, `docs/climate.md`; gates `a_painted_cold_place_is_colder`,
+  `desert_air_is_dry_in_the_afternoon`, `snow_cover_cuts_the_days_warming`, red arm `climate.ignore`). Open: climate class or
+  biome (a second image or presets), the climate shaping the weather field's coverage and precip, and the season's swing per place.
 - **Precipitation type from the air state**: rain, snow, sleet, hail (`precip_kind` 0..1 blends, not a switch, so a front turns
   rain to snow over minutes). Done: `precip_kind` (0 rain, 1 snow, sleet between) from the temperature at the ground
   (`air.snow_c`..`air.rain_c`, Jennings et al. 2018), on `Weather.air` and in the panel. Open: hail (convective, with the storm

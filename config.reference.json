@@ -261,6 +261,7 @@
     "gust_lean": false
   },
   "rain": {
+    "enabled": true,
     "half_m": 40.0,
     "height_m": 30.0,
     "max_streaks": 24000,
@@ -501,7 +502,22 @@
     "dew_lapse_k_per_km": 1.8,
     "snow_c": -0.5,
     "rain_c": 2.5,
-    "field_px": 32
+    "field_px": 32,
+    "step_h": 0.016666668
+  },
+  "climate": {
+    "uniform": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "temp_range_k": 25.0,
+    "dry_dew_below_c": 20.0,
+    "wet_dew_below_c": 3.5,
+    "bare_albedo": 0.2,
+    "snow_albedo": 0.7,
+    "ignore": false
   },
   "ground_fog": {
     "enabled": true,
