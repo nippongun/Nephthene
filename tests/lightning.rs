@@ -4,6 +4,7 @@
 //! at 5 ms age (`storms.lightning.force_age_s`, frozen clock) and strikes on the storm axis (`strike_r_frac` 0), so the channel
 //! spans the cloud base (2800 m at 8 km: 19 deg, about 23% of the 540 rows at 75 deg fov) down to the horizon.
 //! Reference frame: the same scene with `storms.lightning.enabled` false.
+//! G30: the flash lights its cloud (cloud light on vs `cloud_gain` 0).
 mod common;
 use common::*;
 use image::RgbImage;
@@ -70,4 +71,32 @@ fn g24_flash_lights_the_ground() {
     if score < GROUND_LEVELS { f.push(format!("{score:.2} < {GROUND_LEVELS}: the flash does not light the ground")); }
     if red_score >= GROUND_LEVELS { f.push(format!("red arm {red_score:.2} >= {GROUND_LEVELS}: the ground brightens without the light")); }
     finish("G24", f);
+}
+
+/// Share of pixels in the top half of the image (the sky and the storm cloud) brighter in `a` than in `b` by more than `levels`.
+fn sky_lit(a: &RgbImage, b: &RgbImage, levels: f32) -> f32 {
+    let rows = a.height() / 2;
+    let hit = (0..rows).flat_map(|y| (0..a.width()).map(move |x| (x, y))).filter(|&(x, y)| luma(a.get_pixel(x, y)) - luma(b.get_pixel(x, y)) > levels).count();
+    hit as f32 / (rows * a.width()) as f32
+}
+
+/// G30: the flash lights its cloud. Against the same flash with the cloud light off (`cloud_gain` 0: channel and ground light are in
+/// both arms), at least 10% of the top half brightens by more than 10 levels (G24's visibility). The cell's base spans 19 deg at 8 km
+/// and its tower rises above the frame, so its lit body fills far more than a tenth of the sky rows. Red arm: `cloud_gain` 0 against
+/// itself on a second run (run-to-run noise) must stay under it.
+const CLOUD_LEVELS: f32 = 10.0;
+const CLOUD_SHARE: f32 = 0.1;
+
+#[test]
+#[ignore = "manual gate"]
+fn g30_flash_lights_the_cloud() {
+    let (on, _) = frame("g30_on", &[]);
+    let (off, _) = frame("g30_off", &["storms.lightning.cloud_gain=0.0"]);
+    let (off2, _) = frame("g30_off2", &["storms.lightning.cloud_gain=0.0"]);
+    let (score, noise) = (sky_lit(&on, &off, CLOUD_LEVELS), sky_lit(&off2, &off, CLOUD_LEVELS));
+    println!("G30 sky share lit by the flash (> {CLOUD_LEVELS} levels): {score:.4} (budget >= {CLOUD_SHARE}); red arm (cloud_gain 0, second run) {noise:.4} (must be < {CLOUD_SHARE})");
+    let mut f = vec![];
+    if score < CLOUD_SHARE { f.push(format!("{score:.4} < {CLOUD_SHARE}: the flash does not light its cloud")); }
+    if noise >= CLOUD_SHARE { f.push(format!("red arm {noise:.4} >= {CLOUD_SHARE}: the metric passes without cloud light")); }
+    finish("G30", f);
 }
