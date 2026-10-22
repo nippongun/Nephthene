@@ -27,13 +27,18 @@ Smith & Barstad (2004), per wavenumber (k, l) with sigma = U k + V l:
 
 - Cw = rho_s Gamma_m / gamma (`uplift_sensitivity`): the saturation vapour density of the air at the camera times the moist
   adiabatic lapse rate over the environmental one (`air.lapse_k_per_km`), times `gain`. Warm air rains more over the same ridge.
-- The theory assumes saturated air. The bake lifts the air from the tile's lowest ground, which condenses only above its lifting
-  condensation level, `lcl_m_per_k` (125 m) x the dew point spread there, so the terrain is clipped at that height before the FFT
-  and Cw is the base air's. The air comes from `Weather.air_field` at `air.ref_alt_m` over the camera, lapsed to the base (dew
-  point at `air.dew_lapse_k_per_km`). Humid air clouds the hills; dry air clouds only the high ridges, or nothing: at 14 h in the
-  test valley the air is 10 K above its dew point and the ridge raises no cap cloud (only a faint lee wave, cover 0.05 at most).
+- The theory assumes saturated air. The bake lifts each cell's air from the lowest ground upwind of it, within `fetch_m` (25.6 km)
+  along the mean wind, and the air condenses only above its lifting condensation level, `lcl_m_per_k` (125 m) x the dew point
+  spread at that base, so the terrain is clipped at that height per cell before the FFT. Cw is the air's at the tile's lowest
+  ground. The air comes from `Weather.air_field` at `air.ref_alt_m` over the camera, lapsed to each base (dew point at
+  `air.dew_lapse_k_per_km`). Humid air clouds the hills; dry air clouds only the high ridges, or nothing: at 14 h in the test
+  valley the air is 10 K above its dew point and the ridge raises no cap cloud (only a faint lee wave, cover 0.05 at most; measured
+  with the tile-wide base, before the upwind one).
+- The base is upwind because the air that reaches a ridge rose from the ground it crossed: a valley downwind, or off to the side,
+  never lifted it. A shorter `fetch_m` lifts the base along a lee slope and steepens the clipped terrain's descent: at 10 km the 1 km
+  test ridge's rain 4.5 km downwind fell from 0.156 to 0.100 with saturated air; at 25.6 km the gates read as with the tile-wide base.
 - Lee waves: the theory also lifts the air in waves downwind of a ridge, about 2 pi U / N_m apart (12.6 km at 10 m/s), so faint wave
-  cloud can form well downwind of the cap (cover about 0.1 at x 14-17 km, 11-14 km past the test valley's ridge, at 10 h).
+  cloud can form well downwind of the cap (cover about 0.1 at x 14-17 km, 11-14 km past the test valley's ridge, at 10 h; measured with the tile-wide base).
 - The output is kg/m^2/s; x 3600 it is mm/h, and `full_mm_h` maps it to the map's 0..1. The cloud field is the condensation source
   before fallout, mapped the same way.
 - The tile's grid runs east (+x) by south (-z), so the wind's (u, v) is (x, -z).
@@ -67,20 +72,26 @@ Core tests (run by `cargo test --release`). Budgets are in the test comments.
 - `orographic::tests::cloud_needs_the_lifting_condensation_level`: air with a 10 K spread (LCL 1250 m) over the 1 km ridge adds no
   cloud and no rain; saturated air rains 3 km upwind. Red arm `lcl_m_per_k` 0. Measured: dry air (10 K spread) max cover or precip
   0.0000, saturated air 3 km upwind precip 0.277 (budget dry <= 0.001, saturated >= 0.1).
+- `orographic::tests::cloud_lifts_from_the_upwind_ground`: a 1000 m plateau upwind of an 1800 m crest, with a lee valley at 0 m.
+  Air 8 K above its dew point over the plateau (LCL 2000 m) adds no cloud and no rain; lifted from the lee valley (the tile's lowest
+  ground) its LCL would be about 1590 m and the crest would cloud. Air 4 K above its dew point there (LCL 1500 m) clouds the ridge.
+  Westerly and southerly (a march downwind instead of upwind fails). Red arm `tile_base`. Measured: dry 0.0000, red arm 0.3433,
+  humid max cover 0.506 (budget dry <= 0.001, red arm > 0.001, humid >= 0.1).
 - G31 (`tests/orographic.rs`, manual): poses `oro_west` and `oro_east` 4.4 km on the lee side of the test valley's ridge (between its
   cap and its lee wave), 10 h (air about 5 K above its dew point: the LCL is under the crest and above the hills), a clear map and
   a 10 m/s westerly. With the tile on, at least 1 % of the view toward the ridge changes by 20+ levels against the red arm, and at
   least 1.5x the share of the downwind view (a cap on the wrong side fails); the red arm (`gain` 0) renders like orographic off
-  within run-to-run noise + 0.5. Lavapipe: west 6.52 % (min 1 %), east 0.72 % (west >= 1.5x east); red arm vs off 0.000 (noise
-  0.000, budget 0.500).
+  within run-to-run noise + 0.5. Lavapipe: west 5.91 % (min 1 %), east 0.50 % (west >= 1.5x east); red arm vs off 0.000 (noise
+  0.000, budget 0.500) (6.52 % and 0.72 % with the tile-wide base).
 
 ## Limits
 
 - Off by default until the owner checks the look on the GPU (docs/handover.md). The cap cloud lives in the cloud layer (from
   clouds.bottom_m), not on the terrain.
-- One lifting base for the whole tile (its lowest ground); a per-cell upwind base is the upgrade.
-- One tile around the camera, rebaked when stale: no cache per (tile, wind octant). A rebake is one FFT of a 256 x 256 padded square
-  (twice the tile) in the background.
+- The upwind base is sampled every cell along one mean wind; a curving wind (the wind field, roadmap Phase 2) would follow its streamlines.
+- One tile around the camera, rebaked when stale, with no cache per (tile, wind octant) (docs/decisions.md). A rebake is one FFT of a
+  256 x 256 padded square (twice the tile) and the upwind march, about 48 ms on the cloud CPU (12 ms without the march), in the
+  background; the first bake (at start or when `enabled` turns on) runs on the main thread.
 - Cw comes from the camera's air for the whole tile; one moist stability and one moist layer depth.
 - Precipitation drifts downwind by about U x (tau_c + tau_f), 20 km at 10 m/s. A ridge a few km wide therefore spills most of its rain
   past the crest (the lee half of the 1 km test ridge gets 1.5x the windward half), as the theory says; only ranges wider than the

@@ -232,8 +232,9 @@ a state by name. This phase is C5.
   Slice 1 done (CPU, off by default): a camera-local tile fixed to the terrain, baked in the background and rebaked when stale,
   combined into `Weather.here` (precip max, cover weighted add); Cw from the air; gate `rain_condenses_upwind_and_drifts_downwind`, red
   arm `orographic.gain` 0 (`docs/orographic.md`). Slice 2 done: the cloud march, shadow and shafts read the tile, and the air
-  must reach its lifting condensation level (gates G31 and cloud_needs_the_lifting_condensation_level). Open: on by default after
-  the owner's look check (docs/handover.md); a cache per (tile, wind octant).
+  must reach its lifting condensation level (gates G31 and cloud_needs_the_lifting_condensation_level). Each cell's air is lifted from its
+  upwind ground (gate cloud_lifts_from_the_upwind_ground); no tile cache (docs/decisions.md). Open: on by default after the owner's
+  look check (docs/handover.md).
 - **Weather field advects with the wind**. Step 1 done: under one global wind the field is translated, not resampled
   (`map.advect`, on by default; `map.wrap`; `map.start_shift_m` for save/restore; gates `map_tests` and G22;
   `docs/weather_map.md`). Step 2, with the wind field below: a non-uniform wind cannot be a translation, so the field becomes a
