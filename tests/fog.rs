@@ -83,7 +83,8 @@ fn shot(p: &Pose, label: &str, hour: &str, sets: &[&str], extra: &[&str]) -> Rgb
 fn g15_fog_follows_terrain() {
     let c = GroundFog { enabled: true, force: Some(0.9), ..GroundFog::default() };
     let g = fog::test_valley();
-    let off = shot(&FOG_VALLEY, "g15_off", "5.6", &[], &[]);
+    // Fog is on by default: the reference turns it off.
+    let off = shot(&FOG_VALLEY, "g15_off", "5.6", &["ground_fog.enabled=false"], &[]);
     let (w, h) = off.dimensions();
     let px = classes(&FOG_VALLEY, &c, &g, &vec![0.9; (c.bake_px * c.bake_px) as usize], 5.6, w, h);
     let arm = |label: &str, extra: &[&str]| {
@@ -116,7 +117,7 @@ fn g16_mountain_shadow_holds_fog() {
     let c = GroundFog { enabled: true, ..GroundFog::default() };
     let g = fog::test_valley();
     let hour = "6.5";
-    let off = shot(&FOG_VALLEY, "g16_off", hour, &[], &[]);
+    let off = shot(&FOG_VALLEY, "g16_off", hour, &["ground_fog.enabled=false"], &[]);
     let (w, h) = off.dimensions();
     let px = classes(&FOG_VALLEY, &c, &g, &vec![1.0; (c.bake_px * c.bake_px) as usize], 6.5, w, h);
     let floor = |p: &(u32, u32, Option<Vec3>, f32)| p.2.is_some_and(|q| q.x.abs() < 700.0 && q.y < 50.0);

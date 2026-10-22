@@ -70,7 +70,8 @@ const STORM_CELL: &str = r#"[{"name":"scene_cell","kind":"cell","bearing_deg":27
 #[ignore = "manual gate"]
 fn storm_scene() {
     let cell = format!("storms.authored={STORM_CELL}");
-    let (reference, _) = frame("storm_ref", "storm_west", "14.0", &[]);
+    // The reference has no storms (storms are on by default).
+    let (reference, _) = frame("storm_ref", "storm_west", "14.0", &["storms.enabled=false"]);
     let (storm, log) = frame("storm_on", "storm_west", "14.0", &[&cell, "storms.force=\"scene_cell\""]);
     let (red, _) = frame("storm_red", "storm_west", "14.0", &[&cell, "storms.force=\"scene_cell\"", "storms.sky_scale=0.1"]);
     let (score, red_score) = (share(&storm, &reference, 50, 4.0), share(&red, &reference, 50, 4.0));

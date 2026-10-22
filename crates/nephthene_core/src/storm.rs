@@ -201,6 +201,7 @@ fn births_in_bin(c: &StormCfg, seed: &str, g: f32, ix: i32, iz: i32, tb: i64) ->
             (r.range(c.line_life_min), r.range(c.line_half_width_m) * sc, dir.perp() * len * 0.5)
         } else { (r.range(c.cell_life_min), r.range(c.core_r_m) * sc, Vec2::ZERO) };
         let base = r.range(c.base_m) * sc;
+        // ponytail: a cell is at least 1 km deep (also `summon`, and the developing depth in `now`); a knob when storm shapes are tuned (Phase 3).
         let top = (c.tropopause_m * r.range(c.top_frac) * sc).max(base + 1000.0 * sc);
         let anvil_r = r.range(c.anvil_r_m) * sc;
         let intensity = r.range(c.intensity);
@@ -263,6 +264,7 @@ pub fn summon(c: &StormCfg, id: u64, t: f64, cam: Vec2, from: Vec2) -> Storm {
     let vel = -d * mid(c.speed_mps);
     let age = c.summon_age * life_s;
     Storm { id, kind: Kind::Cell, born_s: t - age as f64, life_s, origin: cam + d * c.summon_dist_m - vel * age, vel,
+            // ponytail: the 1 km minimum depth of `births_in_bin`.
             half_axis: Vec2::ZERO, core_r: mid(c.core_r_m) * sc, base, top: (c.tropopause_m * mid(c.top_frac) * sc).max(base + 1000.0 * sc),
             anvil_r: mid(c.anvil_r_m) * sc, intensity: c.intensity[1] }
 }

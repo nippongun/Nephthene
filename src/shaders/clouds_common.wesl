@@ -222,7 +222,6 @@ fn storm_nearest(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> vec2<f32> {
     return a + ab * clamp(dot(p - a, ab) / l2, 0.0, 1.0);
 }
 
-// Metres from the cell's axis midpoint beyond which the profile is zero (bounding circle for culling).
 // nephthene_core::storm_fx::precip_at: the rain curtain under a cell, full inside s_curtain_full x core_r, from the base down.
 fn storm_precip(cl: Clouds, c: StormCell, g: vec2<f32>, y: f32) -> f32 {
     if (c.precip <= 0.0 || c.core_r < 1.0 || y < 0.0 || y > c.base) { return 0.0; }
@@ -230,6 +229,7 @@ fn storm_precip(cl: Clouds, c: StormCell, g: vec2<f32>, y: f32) -> f32 {
     return c.precip * (1.0 - smoothstep(cl.s_curtain_full * c.core_r, c.core_r, d));
 }
 
+// Metres from the cell's axis midpoint beyond which the profile is zero (bounding circle for culling).
 fn storm_reach(c: StormCell) -> f32 {
     return 0.5 * length(c.b - c.a) + max(c.core_r * 1.5, max(c.anvil_r, c.gust_r));
 }
