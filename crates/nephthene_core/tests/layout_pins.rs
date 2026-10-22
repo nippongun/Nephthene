@@ -11,6 +11,7 @@ const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
 const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
+const SURFACE: &str = include_str!("../../../src/shaders/surface.wesl");
 const RAIN_RS: &str = include_str!("../../../src/rain.rs");
 const LIGHTNING_RS: &str = include_str!("../../../src/lightning.rs");
 const LIGHTNING: &str = include_str!("../../../src/shaders/lightning.wesl");
@@ -53,6 +54,14 @@ fn fog_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogGpu {", FO
 fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogResolveGpu {", FOG, "struct FogResolve {"); }
 #[test]
 fn rain_uniform_matches_wgsl() { same_order(RAIN_RS, "struct RainGpu {", RAIN, "struct Rain {"); }
+#[test]
+fn surface_uniform_matches_wgsl() { same_order(RAIN_RS, "struct SurfaceGpu {", SURFACE, "struct Surface {"); }
+#[test]
+fn surface_shader_mirrors_snow_mask() {
+    for line in ["s.snow * smoothstep(s.slope_lo, s.slope_hi, pbr_input.world_normal.y)", "mix(pbr_input.material.perceptual_roughness, s.wet_roughness, wet)"] {
+        assert!(SURFACE.contains(line), "surface.wesl lost `{line}`");
+    }
+}
 #[test]
 fn bolt_uniform_matches_wgsl() {
     same_order(LIGHTNING_RS, "struct BoltGpu {", LIGHTNING, "struct Bolt {");

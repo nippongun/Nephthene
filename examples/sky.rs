@@ -27,7 +27,7 @@ use bevy::{
     window::ExitCondition,
     winit::WinitPlugin,
 };
-use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, Weather, WetGround};
+use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, SurfaceMaterial, Weather, WeatherSurface};
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone)]
@@ -118,12 +118,12 @@ fn camera_bundle(cfg: &Config) -> impl Bundle {
 }
 
 /// Flat ground (or the `--terrain` mesh over a lowered plane) and the sun; the camera is spawned by the mode (look-around or shot).
-fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>, roof: Option<Res<Roof>>) {
-    let mat = mats.add(StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() });
+fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, mut surf: ResMut<Assets<SurfaceMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>, roof: Option<Res<Roof>>) {
+    let ground = surf.add(SurfaceMaterial { base: StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() }, extension: WeatherSurface::default() });
     // Under the terrain the plane sits just below its lowest point, so it shows only past the terrain's edge.
     let below = terrain.as_ref().map_or(0.0, |t| t.0.y.iter().cloned().fold(f32::MAX, f32::min) - 10.0);
-    commands.spawn((Name::new("Ground"), WetGround, Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))), MeshMaterial3d(mat.clone()), Transform::from_xyz(0.0, below, 0.0)));
-    if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), WetGround, Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(mat))); }
+    commands.spawn((Name::new("Ground"), Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))), MeshMaterial3d(ground.clone()), Transform::from_xyz(0.0, below, 0.0)));
+    if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(ground))); }
     commands.spawn((
         NephtheneSun, DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },
         CascadeShadowConfigBuilder { maximum_distance: 250.0, first_cascade_far_bound: 8.0, ..default() }.build(), Transform::default(),
