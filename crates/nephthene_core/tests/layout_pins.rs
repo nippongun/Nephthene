@@ -90,10 +90,11 @@ fn rain_shader_mirrors_rust_hash() {
     // The same expressions, token for token.
     for line in [
         "let s = v * PCG_MUL + PCG_ADD;", "let w = ((s >> ((s >> 28u) + 4u)) ^ s) * PCG_OUT;", "return (w >> 22u) ^ w;",
-        "f32(pcg(v) >> 8u) / 16777216.0", "hash01(q * 4u + 3u) >= u.intensity", "cam.x - u.half + rem(",
-        "let c = q * 7919u + u32(k);", "hash01(c * 4u + 3u) >= u.intensity", "let tt = u.time / u.life + hash01(q * 4u);",
+        "f32(pcg(v) >> 8u) / 16777216.0", "f32(q) >= u.intensity * f32(u.count)", "cam.x - u.half + rem(",
+        "let c = q * 7919u + u32(k);", "let tt = u.time / u.life + hash01(q * 4u);",
         "let fq = q ^ FLAKE_SALT;", "hash01(fq * 4u) < u.kind", "hash01(fq * 4u + 1u)",
     ] { assert!(RAIN.contains(line), "rain.wesl lost `{line}`"); }
+    assert_eq!(RAIN.matches("f32(q) >= u.intensity * f32(u.count)").count(), 2, "streaks and splashes both use the prefix rule");
     assert_eq!((r::pcg(0), r::pcg(1), r::pcg(12345)), (129708002, 2831084092, 4099845390));
 }
 

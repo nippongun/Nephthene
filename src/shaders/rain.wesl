@@ -2,6 +2,7 @@
 // Mesh vertex = (corner.x, corner.y, quad id). The hash and the drop/splash maths mirror crates/nephthene_core/src/rain.rs line for line
 // (that file is the reference; tests/rain.rs asserts the constants and the unit tests pin the values). All numbers untuned.
 // Flakes (snow, and the snow share of sleet) mirror nephthene_core::rain::{is_flake, flake_pos}.
+// Falling quads are the prefix q < intensity x count (nephthene_core::rain::active); the plugin draws a prefix mesh that holds them.
 import bevy_render::view::View;
 
 struct Rain {
@@ -86,7 +87,7 @@ fn vertex(@location(0) v: vec3<f32>) -> VOut {
     o.uv = corner;
     if (u.mode == 0u) {
         // Streak: head at the drop, tail up along the velocity; a camera-facing ribbon of at least one pixel.
-        if (hash01(q * 4u + 3u) >= u.intensity) { return hidden(); }
+        if (f32(q) >= u.intensity * f32(u.count)) { return hidden(); }
         let b0 = hash01(q * 4u);
         let b1 = hash01(q * 4u + 1u);
         let b2 = hash01(q * 4u + 2u);
@@ -140,7 +141,7 @@ fn vertex(@location(0) v: vec3<f32>) -> VOut {
         let k = floor(tt);
         let age = tt - k;
         let c = q * 7919u + u32(k);
-        if (hash01(c * 4u + 3u) >= u.intensity) { return hidden(); }
+        if (f32(q) >= u.intensity * f32(u.count)) { return hidden(); }
         let px0 = cam.x - u.half + rem(hash01(c * 4u + 1u) * s - cam.x, s);
         let pz0 = cam.z - u.half + rem(hash01(c * 4u + 2u) * s - cam.z, s);
         let pos = vec3<f32>(px0, ground_h(vec2<f32>(px0, pz0)) + u.ground_y + 0.01, pz0);
