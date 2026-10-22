@@ -104,6 +104,11 @@ pub fn map_xz(m: &config::MapCfg, shift: Vec2, x: f32, z: f32) -> [f32; 2] {
     [x + m.world_offset_m[0] - shift.x, z + m.world_offset_m[1] - shift.y]
 }
 
+/// The wind the weather map rides (m/s, world XZ): the direction of the live wind `now` (gusts scale its speed, never turn it) at
+/// the mean speed `mean_mps` (no gusts). ponytail: a gust factor below zero (`wind.gust` x the gust weights > 1) would flip it;
+/// take the direction from the config once the wind is a field (Phase 2).
+pub fn map_wind(now: Vec3, mean_mps: f32) -> Vec2 { Vec2::new(now.x, now.z).normalize_or_zero() * mean_mps }
+
 /// One step of weather map advection: the map moves `map.advect` x `wind` (m/s, world XZ; the mean wind, never the gusts) for
 /// `dt_s` game seconds. A uniform wind advects a field by pure translation, so the map is shifted, not resampled. A wrapped map
 /// keeps the shift within one period (the same weather, and f32 keeps its precision over long sessions).
@@ -251,6 +256,7 @@ mod map_tests {
 
     // Where the weather has got to after 10 game minutes of steady wind must be within 1 m of where the wind carried it: far under one
     // texel of any practical map (the built-in one's is 3.1 km), so the clouds and the weather here cannot visibly part.
+    // The loop takes the plugin's path (map_wind of the gusting wind), so a sign flip or a gust leak there fails it too.
     const DRIFT_BUDGET_M: f32 = 1.0;
 
     #[test]
@@ -264,7 +270,8 @@ mod map_tests {
         let drift_error = |m: &MapCfg| {
             let map = WeatherMap::procedural(m);
             let mut s = Vec2::from(m.start_shift_m);
-            for _ in 0..frames { s = advect(m, &map, s, v, dt); }
+            // As the plugin does: the gusting wind of each frame (60 fps real time), at the mean speed.
+            for i in 0..frames { s = advect(m, &map, s, map_wind(wind(&w, i as f32 / 60.0), w.speed_mps), dt); }
             // The weather seen at world w0 at the start is now seen downwind, at w0 + travel.
             for w0 in [Vec2::new(0.0, 0.0), Vec2::new(-4000.0, 2500.0), Vec2::new(12000.0, -7000.0)] {
                 let [ax, az] = map_xz(m, Vec2::from(m.start_shift_m), w0.x, w0.y);

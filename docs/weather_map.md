@@ -25,7 +25,7 @@ sampler `src/clouds/render.rs`, panel marker `src/panel.rs` + `dash::map_uv`, ga
 |---|---|---|
 | Weather systems are carried by the wind | the map moves at `map.advect` x the mean wind | Nubis 2015 prototype; Schneider 2022 scrolls the cloud field along a 2D wind direction (`scroll_direction_2D * dt`) |
 | A uniform wind moves a field without changing its shape | translation, not resampling: `shift += advect x wind x dt` (`core::advect`) | Advection equation with constant velocity: the exact solution is a translation |
-| Gusts do not move weather systems | the shift follows the mean wind: the gusting wind's direction (gusts only scale its speed) at `Weather.wind_mean_mps`, so the panel's wind override counts | Same rule as the rain shafts (`shafts.gust_lean` gate) |
+| Gusts do not move weather systems | the shift follows the mean wind (`core::map_wind`): the gusting wind's direction (gusts only scale its speed while `wind.gust` x the gust weights stays under 1) at `Weather.wind_mean_mps`, so the panel's wind override counts | Same rule as the rain shafts (`shafts.gust_lean` gate) |
 | Weather moves on the weather clock | game seconds (`dt x clock rate x 3600`), so a front crosses the map in game hours whatever the time-lapse; a paused clock (headless shots) freezes it. The cloud *noise* drift stays on real time, so detail motion reads as wind on screen. | Storms already run on game time (`storms.clock_scale`) |
 | Art-directed skies want fixed weather | `map.advect` 0 (the default): only the noise drifts through a fixed coverage | Schneider 2017: "while the noise in the density model is animated, the coverage signal is not ... we only want them to appear to be changing without altering the larger structure of the cloudscape" |
 
@@ -35,11 +35,11 @@ for a faster sky. The value is the owner's call (look and feel); the default kee
 ## Edges and wrap
 
 An advected map runs out: after `size / (advect x wind)` game seconds the camera sees the upwind edge texels held forever (default
-map 200 km at 6 m/s: about 9 game hours to cross from the centre). `map.wrap` repeats the map instead. Frostbite works this way:
+map 200 km at 6 m/s: the edge reaches a camera at the centre after about 4.6 game hours). `map.wrap` repeats the map instead. Frostbite works this way:
 "That texture is scaled and repeated all over the world if necessary" (Hillaire 2016). With wrap:
 
-- The CPU bilinear read (`WeatherMap::rgba`) and the GPU sampler (`AddressMode::Repeat`) both wrap, so `here` and the clouds agree
-  at the seam.
+- The CPU bilinear read (`WeatherMap::rgba`) and the GPU sampler (`AddressMode::Repeat`) both wrap. The CPU wrap is unit-gated;
+  CPU/GPU agreement at the seam is built, not render-gated (G22 runs unwrapped).
 - The shift is kept within one map period (`core::advect`), so f32 keeps its precision over long sessions.
 - `clouds.background` (the weather outside the map) never applies, so the plugin refuses the pair at start.
 - The map must tile. The built-in procedural map (`map.default_*`, a product of two sines) does not, so a wrapped default map shows a
@@ -50,7 +50,7 @@ map 200 km at 6 m/s: about 9 game hours to cross from the centre). `map.wrap` re
 
 | Gate | Claim | Red arm | Budget |
 |---|---|---|---|
-| `map_tests::map_rides_the_mean_wind` (core, automatic) | After 600 game seconds of steady wind the weather seen at a point is seen where the wind carried it | `map.advect` 0 | 1 m (one texel of the built-in map is 3.1 km) |
+| `map_tests::map_rides_the_mean_wind` (core, automatic) | After 600 game seconds of gusting wind, taken through the plugin's own path (`map_wind`), the weather seen at a point is seen where the mean wind carried it (a sign flip in `map_wind` fails it) | `map.advect` 0 | 1 m (one texel of the built-in map is 3.1 km) |
 | `map_tests::wrap_tiles_the_map` (core, automatic) | One period away reads the same weather; the seam reads the mean of the edge texels; a wrapped shift stays in one period | `map.wrap` false | 1e-4 (f32 rounding) |
 | G22 (`tests/weather.rs`, manual render gate) | The clouds and the weather here ride the same shifted map: shifting the map by S renders the same sky as moving the world offset by -S, and both differ from the unshifted sky | `map.static_gpu` (the clouds keep the unshifted map) | shift vs offset <= run-to-run noise + 0.5 levels; shift vs unshifted >= 5 levels (a visible cover change); CPU coverage equal within print rounding |
 

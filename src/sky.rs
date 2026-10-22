@@ -85,9 +85,8 @@ pub(crate) fn tick(
     let h = wx.hour + dt * wx.rate;
     if h >= 24.0 { wx.day += 1; }
     wx.hour = h.rem_euclid(24.0);
-    // The map rides last frame's mean wind (the gusting wind's direction, which gusts never turn, at the mean speed, panel override
-    // included), on the game clock: frozen when the clock is.
-    let mean = Vec2::new(wx.wind.x, wx.wind.z).normalize_or_zero() * wx.wind_mean_mps;
+    // The map rides last frame's mean wind (panel override included) on the game clock: frozen when the clock is.
+    let mean = w::map_wind(wx.wind, wx.wind_mean_mps);
     let shift = w::advect(&wx.cfg.map, &wx.map, wx.map_shift, mean, dt * wx.rate * 3600.0);
     wx.map_shift = shift;
     wx.wind = w::wind(&wx.cfg.wind, time.elapsed_secs());
