@@ -5,7 +5,7 @@
 //! (m imaginary when sigma^2 > N^2). Precip is the real part of the inverse transform, clipped at 0.
 //! All constants in `OroParams::default()` are untuned.
 
-use crate::{Local, air::vapour_hpa, config::OroCfg, rain::Ground, texel_axis};
+use crate::{Local, air::vapour_hpa, config::{AirCfg, OroCfg}, rain::Ground, texel_axis};
 
 #[derive(Clone, Copy, Debug)]
 pub struct OroParams {
@@ -134,27 +134,36 @@ pub fn uplift_sensitivity(temp_c: f32, lapse_k_per_km: f32) -> f32 {
 }
 
 /// A baked orographic tile, fixed to the terrain: `n` x `n` cells of `cell_m` from (`min_x`, `max_z`) (rows north to south, cell
-/// centres like the weather map's texels) with precipitation and cover 0..1, and the camera centre, mean wind and air temperature it
-/// was baked for.
+/// centres like the weather map's texels) with precipitation and cover 0..1, and the camera centre, mean wind and air (temperature and dew
+/// point at `air.ref_alt_m`) it was baked for.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Tile { pub min_x: f32, pub max_z: f32, pub cell_m: f32, pub n: u32, pub precip: Vec<f32>, pub cover: Vec<f32>, pub centre: [f32; 2], pub wind: [f32; 2], pub temp_c: f32 }
+pub struct Tile { pub min_x: f32, pub max_z: f32, pub cell_m: f32, pub n: u32, pub precip: Vec<f32>, pub cover: Vec<f32>, pub centre: [f32; 2], pub wind: [f32; 2], pub temp_c: f32, pub dew_c: f32 }
 
 /// Bake the tile centred on world `centre` (snapped to whole cells) over ground `g`, for the mean wind `wind_xz` (m/s, world XZ, the
-/// direction the air moves) and surface air at `temp_c`. Precipitation (kg/m^2/s x 3600 = mm/h) and the cloud source rate map to 0..1
-/// by `full_mm_h`.
-pub fn bake<G: Ground + ?Sized>(c: &OroCfg, lapse_k_per_km: f32, g: &G, centre: [f32; 2], wind_xz: [f32; 2], temp_c: f32) -> Tile {
+/// direction the air moves) and the air at `air.ref_alt_m` (temperature `temp_c`, dew point `dew_c`). The air is lifted from the tile's
+/// lowest ground and condenses only above its lifting condensation level, `lcl_m_per_k` x the dew point spread there (Espy), so the
+/// terrain is clipped at that height; Cw is the base air's. Precipitation (kg/m^2/s x 3600 = mm/h) and the cloud source rate map to
+/// 0..1 by `full_mm_h`. ponytail: one base for the whole tile (its lowest ground); the upwind ground of each cell is the upgrade.
+pub fn bake<G: Ground + ?Sized>(c: &OroCfg, air: &AirCfg, g: &G, centre: [f32; 2], wind_xz: [f32; 2], temp_c: f32, dew_c: f32) -> Tile {
     let n = c.tile_px.max(2);
     let snap = |v: f32| (v / c.cell_m).round() * c.cell_m;
     let half = 0.5 * n as f32 * c.cell_m;
     let (min_x, max_z) = (snap(centre[0]) - half, snap(centre[1]) + half);
     let h: Vec<f32> = (0..n * n).map(|k| g.height(min_x + ((k % n) as f32 + 0.5) * c.cell_m, max_z - ((k / n) as f32 + 0.5) * c.cell_m)).collect();
+    // The air at the tile's lowest ground: temperature and dew point lapse from the reference altitude.
+    let base = h.iter().cloned().fold(f32::INFINITY, f32::min);
+    let dz = (base - air.ref_alt_m) / 1000.0;
+    let t_base = temp_c - air.lapse_k_per_km * dz;
+    let spread = (temp_c - dew_c - (air.lapse_k_per_km - air.dew_lapse_k_per_km) * dz).max(0.0);
+    let lcl = base + c.lcl_m_per_k * spread;
+    let lifted: Vec<f32> = h.iter().map(|&y| (y - lcl).max(0.0)).collect();
     // Grid axes: columns run east (+x), rows run south (-z), so the wind's (u, v) is (x, -z).
-    let p = OroParams { cell_m: c.cell_m, wind: [wind_xz[0], -wind_xz[1]], gain: c.gain * uplift_sensitivity(temp_c, lapse_k_per_km),
+    let p = OroParams { cell_m: c.cell_m, wind: [wind_xz[0], -wind_xz[1]], gain: c.gain * uplift_sensitivity(t_base, air.lapse_k_per_km),
         n_moist: c.n_moist, h_w: c.h_w, tau_c: c.tau_c, tau_f: c.tau_f };
-    let out = compute(&h, n as usize, n as usize, &p);
+    let out = compute(&lifted, n as usize, n as usize, &p);
     // ponytail: the floor only guards a zero `full_mm_h`.
     let unit = |v: &f32| (v * 3600.0 / c.full_mm_h.max(1e-6)).min(1.0);
-    Tile { min_x, max_z, cell_m: c.cell_m, n, precip: out.precip.iter().map(unit).collect(), cover: out.cloud.iter().map(unit).collect(), centre, wind: wind_xz, temp_c }
+    Tile { min_x, max_z, cell_m: c.cell_m, n, precip: out.precip.iter().map(unit).collect(), cover: out.cloud.iter().map(unit).collect(), centre, wind: wind_xz, temp_c, dew_c }
 }
 
 impl Tile {
@@ -173,13 +182,20 @@ impl Tile {
     }
 
     /// Whether the tile no longer fits: the camera `centre` is over `rebake_m` from the tile's, the mean wind has turned over
-    /// `rebake_deg` or changed speed by over `rebake_frac`, or the air has changed over `rebake_k`.
-    pub fn stale(&self, c: &OroCfg, centre: [f32; 2], wind_xz: [f32; 2], temp_c: f32) -> bool {
+    /// `rebake_deg` or changed speed by over `rebake_frac`, or the air's temperature or dew point has changed over `rebake_k`.
+    pub fn stale(&self, c: &OroCfg, centre: [f32; 2], wind_xz: [f32; 2], temp_c: f32, dew_c: f32) -> bool {
         let (a, b) = (glam::Vec2::from(self.wind), glam::Vec2::from(wind_xz));
         // ponytail: 0.1 m/s counts as calm for the turn test and floors the speed ratio.
         let turned = a.length() > 0.1 && b.length() > 0.1 && a.angle_to(b).abs().to_degrees() > c.rebake_deg;
         glam::Vec2::from(self.centre).distance(glam::Vec2::from(centre)) > c.rebake_m || turned
             || (b.length() - a.length()).abs() > c.rebake_frac * a.length().max(0.1) || (temp_c - self.temp_c).abs() > c.rebake_k
+            || (dew_c - self.dew_c).abs() > c.rebake_k
+    }
+
+    /// The tile as RGBA8, rows north to south (R cover, G precip, B 0, A 255): the layout the cloud shader reads (`map_sample`).
+    pub fn rgba8(&self) -> Vec<u8> {
+        let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        self.cover.iter().zip(&self.precip).flat_map(|(&c, &p)| [b(c), b(p), 0, 255]).collect()
     }
 }
 
@@ -266,7 +282,7 @@ mod tests {
         let lo = crate::config::RainCfg::default().precip_lo;
         // The weather `k` metres along the wind from the crest (negative = upwind).
         let profile = |c: &OroCfg, ew: bool| {
-            let t = bake(c, 6.5, &ridge_grid(ew), [0.0, 0.0], if ew { [0.0, 10.0] } else { [10.0, 0.0] }, 10.0);
+            let t = bake(c, &AirCfg::default(), &ridge_grid(ew), [0.0, 0.0], if ew { [0.0, 10.0] } else { [10.0, 0.0] }, 10.0, 10.0);
             let at = |k: f32| { let [x, z] = if ew { [0.0, k] } else { [k, 0.0] }; combine(c, map, t.sample(x, z)) };
             (at(-3000.0), at(3000.0), at(-4500.0), at(4500.0))
         };
@@ -286,16 +302,43 @@ mod tests {
     #[test]
     fn tiles_combine_sample_and_go_stale() {
         let c = OroCfg::default();
-        let t = bake(&c, 6.5, &ridge_grid(false), [0.0, 0.0], [10.0, 0.0], 10.0);
+        let t = bake(&c, &AirCfg::default(), &ridge_grid(false), [0.0, 0.0], [10.0, 0.0], 10.0, 10.0);
         assert_eq!(t.sample(1.0e5, 0.0), [0.0, 0.0], "outside the tile adds nothing");
         let m = Local { coverage: 0.8, precip: 0.6, dust: 0.2 };
         let k = combine(&c, m, [0.3, 0.5]);
         assert_eq!((k.precip, k.coverage, k.dust), (0.6, 1.0, 0.2));
         assert_eq!(combine(&c, m, [0.9, 0.0]).precip, 0.9);
-        assert!(!t.stale(&c, [100.0, 0.0], [10.0, 0.0], 10.5), "small moves keep the tile");
-        assert!(t.stale(&c, [c.rebake_m + 1.0, 0.0], [10.0, 0.0], 10.0), "camera moved");
-        assert!(t.stale(&c, [0.0, 0.0], [0.0, 10.0], 10.0), "wind turned 90 deg");
-        assert!(t.stale(&c, [0.0, 0.0], [15.0, 0.0], 10.0), "wind 50 % faster");
-        assert!(t.stale(&c, [0.0, 0.0], [10.0, 0.0], 13.0), "air 3 K warmer");
+        assert!(!t.stale(&c, [100.0, 0.0], [10.0, 0.0], 10.5, 10.0), "small moves keep the tile");
+        assert!(t.stale(&c, [c.rebake_m + 1.0, 0.0], [10.0, 0.0], 10.0, 10.0), "camera moved");
+        assert!(t.stale(&c, [0.0, 0.0], [0.0, 10.0], 10.0, 10.0), "wind turned 90 deg");
+        assert!(t.stale(&c, [0.0, 0.0], [15.0, 0.0], 10.0, 10.0), "wind 50 % faster");
+        assert!(t.stale(&c, [0.0, 0.0], [10.0, 0.0], 13.0, 10.0), "air 3 K warmer");
+        assert!(t.stale(&c, [0.0, 0.0], [10.0, 0.0], 10.0, 7.0), "dew point 3 K lower");
+    }
+
+    #[test]
+    fn tile_bytes_are_cover_then_precip() {
+        let t = Tile { min_x: 0.0, max_z: 0.0, cell_m: 1.0, n: 2, precip: vec![0.0, 1.0, 0.5, 0.2], cover: vec![1.0, 0.0, 0.25, 2.0], centre: [0.0; 2], wind: [0.0; 2], temp_c: 0.0, dew_c: 0.0 };
+        assert_eq!(t.rgba8(), vec![255, 0, 0, 255, 0, 255, 0, 255, 64, 128, 0, 255, 255, 51, 0, 255]);
+    }
+
+    // Gate: cloud needs the lifting condensation level. Air with a 10 K dew point spread at the ground saturates only 1250 m up (Espy:
+    // 125 m per K), above the 1 km ridge's crest, so the ridge raises neither cloud nor rain; saturated air over the same ridge rains.
+    // Budget: dry air adds no cover and no precipitation anywhere on the tile (1e-3: the FFT's f32 noise); saturated air rains 3 km
+    // upwind (precip >= rain.precip_lo, as `rain_condenses_upwind_and_drifts_downwind`). Red arm `lcl_m_per_k` 0.
+    #[test]
+    fn cloud_needs_the_lifting_condensation_level() {
+        let air = AirCfg::default();
+        let lo = crate::config::RainCfg::default().precip_lo;
+        let max = |f: &[f32]| f.iter().cloned().fold(0.0, f32::max);
+        let run = |c: &OroCfg| {
+            let dry = bake(c, &air, &ridge_grid(false), [0.0, 0.0], [10.0, 0.0], 20.0, 10.0);
+            let wet = bake(c, &air, &ridge_grid(false), [0.0, 0.0], [10.0, 0.0], 20.0, 20.0);
+            (max(&dry.cover).max(max(&dry.precip)), wet.sample(-3000.0, 0.0)[0])
+        };
+        let (dry, wet) = run(&OroCfg::default());
+        println!("LCL: dry air (10 K spread) max cover or precip {dry:.4}, saturated air 3 km upwind precip {wet:.3} (budget dry <= 0.001, saturated >= {lo})");
+        assert!(dry <= 1e-3 && wet >= lo, "dry air must stay clear over a ridge under its LCL, saturated air must rain");
+        assert!(run(&OroCfg { lcl_m_per_k: 0.0, ..OroCfg::default() }).0 > 1e-3, "red arm (lcl_m_per_k 0) passes: the gate cannot fail");
     }
 }
