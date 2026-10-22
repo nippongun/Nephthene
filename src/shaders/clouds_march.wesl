@@ -27,8 +27,22 @@ import super::clouds_common::{Clouds, Storms, PI, F16_MAX, remap, hg, phase, gra
 @group(1) @binding(4) var map_tex: texture_2d<f32>;
 @group(1) @binding(5) var map_sampler: sampler;
 @group(1) @binding(6) var<uniform> storms: Storms;
-@group(1) @binding(7) var oro_tex: texture_2d<f32>;
-@group(1) @binding(8) var oro_sampler: sampler;
+// Live lightning flashes (src/clouds/render.rs FlashGpu): p = world position + glow radius (m), l = colour x cloud_flash_scale.
+struct Flashes { n: u32, pad0: u32, pad1: u32, pad2: u32, p: array<vec4<f32>, 4>, l: array<vec4<f32>, 4> }
+@group(1) @binding(7) var<uniform> flashes: Flashes;
+
+// Mirrors nephthene_core::lightning::cloud_flash_lux: each flash is a point source softened by its glow radius. ponytail: no occlusion
+// toward the flash (the glow radius stands in for multiple scattering); upgrade: a short storm_od toward it.
+fn flash_light(q: vec3<f32>) -> vec3<f32> {
+    var s = vec3(0.0);
+    for (var i = 0u; i < min(flashes.n, 4u); i++) {
+        let dv = q - flashes.p[i].xyz;
+        s += flashes.l[i].rgb / (dot(dv, dv) + flashes.p[i].w * flashes.p[i].w);
+    }
+    return s;
+}
+@group(1) @binding(8) var oro_tex: texture_2d<f32>;
+@group(1) @binding(9) var oro_sampler: sampler;
 
 // ponytail: the literals left in this file (phase g, gradients, Nubis in-scatter constants, octave a/b/c, n*2+8 iteration cap, 5 up-taps at 30 deg) are look-shaping math, untuned; lift into clouds.look as they become knobs.
 
@@ -210,10 +224,12 @@ struct MarchOut {
     @location(0) color: vec4<f32>,
     // Cloud depth in metres, 0 = no cloud.
     @location(1) depth: f32,
+    // Lightning light on the cloud (exposed, no alpha), read only by the composite: kept out of the temporal history so a flash does not smear.
+    @location(2) flash: vec4<f32>,
 }
 
 fn none() -> MarchOut {
-    return MarchOut(select(vec4(0.0), vec4(0.0, 0.0, 0.0, 1.0), u.debug != 0u), 0.0);
+    return MarchOut(select(vec4(0.0), vec4(0.0, 0.0, 0.0, 1.0), u.debug != 0u), 0.0, vec4(0.0));
 }
 
 @fragment
@@ -248,6 +264,7 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
 
     var tr = 1.0;
     var lum = vec3(0.0);
+    var lum_f = vec3(0.0);
     // Debug split of `lum` into direct sun/moon light and sky ambient (only read when u.debug is set).
     var lum_d = vec3(0.0);
     var lum_a = vec3(0.0);
@@ -359,6 +376,11 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
                 }
                 let s = sd * u.light_gain + sa;
                 let ts = exp(-sigma * dt);
+                // Lightning: integrated like `lum` but kept apart, so it skips the shoulder and the history.
+                if flashes.n > 0u {
+                    let sf = flash_light(vec3(xz.x, alt, xz.y));
+                    lum_f += tr * (sf - sf * ts);
+                }
                 av_sum += tr * (1.0 - ts) * air_vis;
                 av_w += tr * (1.0 - ts);
                 // Energy-conserving integration over the step (Hillaire 2016).
@@ -404,7 +426,7 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
         else if u.debug == 3u { v = luma(lum_a * t_air * view.exposure) / 8.0; }
         else if u.debug == 4u { v = alpha; }
         else { v = tc / u.max_distance; }
-        return MarchOut(vec4(vec3(v), 1.0), tc);
+        return MarchOut(vec4(vec3(v), 1.0), tc, vec4(0.0));
     }
     // Highlight shoulder on the cloud's own exposed light only: compress the max channel, keep the hue.
     let m = max(rgb.r, max(rgb.g, rgb.b));
@@ -414,5 +436,5 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
         rgb *= (u.shoulder + w * x / (x + w)) / m;
     }
     rgb += alpha * s_air * view.exposure * select(1.0, av_sum / max(av_w, 1e-6), storms.n > 0u);
-    return MarchOut(vec4(min(rgb, vec3(F16_MAX)), alpha), tc);
+    return MarchOut(vec4(min(rgb, vec3(F16_MAX)), alpha), tc, vec4(min(lum_f * t_air * view.exposure, vec3(F16_MAX)), 0.0));
 }

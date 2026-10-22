@@ -46,6 +46,9 @@ pub struct Lightning {
     /// Test switch: hold a cloud-to-ground flash of the first selected storm at this age (s) every frame, so a frozen-clock shot
     /// sees it. None = the schedule.
     pub force_age_s: Option<f32>,
+    /// Clouds lit by a flash: gain on the point light's flux reaching the cloud march (0 = clouds unlit, the red arm of gate G30), and
+    /// the glow radius (m) that softens the inverse square near the flash (multiple scattering spreads the light through the cloud).
+    pub cloud_gain: f32, pub cloud_radius_m: f32,
 }
 impl Default for Lightning {
     fn default() -> Self {
@@ -53,9 +56,19 @@ impl Default for Lightning {
                     branch_p: 0.3, branch_len: 0.4, branch_levels: 4, branch_bright: 0.35, branch_spread: 0.6,
                     strokes: [2, 5], stroke_gap_s: [0.03, 0.1], stroke_decay_s: 0.02, glow: 0.25, glow_decay_s: 0.12, life_s: 1.0,
                     width_m: 3.0, min_px: 1.5, radiance: 1.0e6, color: [0.85, 0.9, 1.0], base_fade_m: 400.0,
-                    light_lm: 1.0e10, light_range_m: 30000.0, light_at: 0.3, max_live: 2, jump_s: 5.0, force_age_s: None }
+                    light_lm: 1.0e10, light_range_m: 30000.0, light_at: 0.3, max_live: 2, jump_s: 5.0, force_age_s: None, cloud_gain: 1.0, cloud_radius_m: 1500.0 }
     }
 }
+
+/// Most flashes the cloud march lights at once (the length of the cloud flash uniform's arrays; clouds_march.wesl `Flashes`).
+pub const MAX_CLOUD_FLASHES: usize = 4;
+
+/// A flash's cloud light scale (lux x m^2) at brightness `light` (energy x envelope): the point light's flux `light_lm x light` spread
+/// over the sphere and scattered isotropically, `cloud_gain x light_lm x light / (4 pi)^2`. The march divides it by d^2 + r^2.
+pub fn cloud_flash_scale(c: &Lightning, light: f32) -> f32 { c.cloud_gain * c.light_lm * light / (16.0 * std::f32::consts::PI * std::f32::consts::PI) }
+
+/// Cloud light (lux) from one flash `d_m` metres away; clouds_march.wesl `flash_light` mirrors it.
+pub fn cloud_flash_lux(c: &Lightning, light: f32, d_m: f32) -> f32 { cloud_flash_scale(c, light) / (d_m * d_m + c.cloud_radius_m * c.cloud_radius_m) }
 
 /// Where one flash goes: a straight line from `top` to `end` (the channel wanders around it), cloud-to-ground or in-cloud.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -275,5 +288,17 @@ mod tests {
         assert_eq!(distance_m(&k, Vec3::new(4000.0, 1500.0, 0.0)), 4000.0);
         assert_eq!(distance_m(&k, Vec3::new(0.0, -100.0, 0.0)), 100.0);
         assert_eq!(distance_m(&k, Vec3::new(0.0, 3500.0, 0.0)), 500.0);
+    }
+
+    #[test]
+    fn cloud_flash_falls_with_distance() {
+        let c = Lightning::default();
+        assert_eq!(cloud_flash_lux(&c, 0.0, 100.0), 0.0, "no light without a flash");
+        assert_eq!(cloud_flash_lux(&Lightning { cloud_gain: 0.0, ..c.clone() }, 1.0, 100.0), 0.0, "gain 0 leaves clouds unlit");
+        assert!((cloud_flash_lux(&c, 1.0, 0.0) - cloud_flash_scale(&c, 1.0) / (c.cloud_radius_m * c.cloud_radius_m)).abs() < 1e-6 * cloud_flash_scale(&c, 1.0));
+        let lux: Vec<f32> = [0.0, 500.0, 1500.0, 5000.0, 20000.0].iter().map(|&d| cloud_flash_lux(&c, 1.0, d)).collect();
+        for w in lux.windows(2) { assert!(w[1] < w[0], "lux does not fall with distance: {lux:?}"); }
+        let r = cloud_flash_lux(&c, 1.0, 1.0e5) / cloud_flash_lux(&c, 1.0, 2.0e5);
+        assert!((r - 4.0).abs() < 0.01, "far field ratio {r} is not inverse-square");
     }
 }

@@ -15,7 +15,7 @@ default until the owner's look check.
 - Combined at the camera (`orographic::combine`), before the storms': precipitation = max(map, tile), cover = min(1, map +
   `cover_weight` x tile). `Weather.here` then feeds rain, fog and the panel (the `terrain uplift` line). Shots print an
   `OROGRAPHIC` line per bake.
-- The GPU reads the same tile: an RGBA8 texture (R cover, G precip) at cloud bindings 7 and 8, placed by `Clouds.oro_origin`,
+- The GPU reads the same tile: an RGBA8 texture (R cover, G precip) at cloud bindings 8 and 9 (7 is the flash uniform), placed by `Clouds.oro_origin`,
   `oro_size` (0 = no tile) and `oro_weight`. `map_sample` (clouds_common.wesl) combines it like `orographic::combine`, so the
   cloud march, the cloud shadow and the rain shafts all see the terrain's share. A new tile is uploaded when it lands.
 

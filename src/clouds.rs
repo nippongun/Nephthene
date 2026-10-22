@@ -12,7 +12,7 @@ use nephthene_core as w;
 
 pub mod render;
 pub use render::{CloudParams, StormGpu};
-use render::{CloudGpu, ShadowGpu, ShaftGpu};
+use render::{CloudGpu, FlashGpu, ShadowGpu, ShaftGpu};
 
 #[derive(Resource)]
 struct SharedShaders(#[allow(dead_code)] Handle<bevy::shader::Shader>);
@@ -83,7 +83,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
             precip_lo: r.precip_lo, precip_hi: r.precip_hi, sigma: sh.sigma, near_m: sh.near_m, fade_m: sh.fade_m, max_m: sh.max_m, xz_m: sh.xz_m, y_m: sh.y_m,
             ground_keep: sh.ground_keep, cloud_lo: sh.cloud_lo, cloud_hi: sh.cloud_hi, streak_lo: sh.streak_lo, streak_hi: sh.streak_hi, gap: sh.gap,
             albedo: sh.albedo, light_od: sh.light_od, steps: sh.steps },
-        ground: images.add(crate::rain::ground_image(&grid)), storm: StormGpu::default(),
+        ground: images.add(crate::rain::ground_image(&grid)), storm: StormGpu::default(), flash: FlashGpu::default(),
         gpu, update_div: check_div(c.update_div), render_scale: c.render_scale, temporal_alpha: c.temporal_alpha,
         resolve: cfg.resolve.clone(), pass_timing: c.pass_timing, map_wrap: cfg.map.wrap,
         base: images.add(noise_3d(n.base_res, &n.base_freqs, Some((n.base_perlin_cells, n.base_perlin_octaves)), n.worley_mix)),

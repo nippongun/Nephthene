@@ -10,8 +10,8 @@ import super::clouds_common::{Clouds, Storms, density_at, map_sample, StormCell,
 @group(0) @binding(4) var map_tex: texture_2d<f32>;
 @group(0) @binding(5) var map_sampler: sampler;
 @group(0) @binding(6) var<uniform> storms: Storms;
-@group(0) @binding(7) var oro_tex: texture_2d<f32>;
-@group(0) @binding(8) var oro_sampler: sampler;
+@group(0) @binding(8) var oro_tex: texture_2d<f32>;
+@group(0) @binding(9) var oro_sampler: sampler;
 
 fn density(xz: vec2<f32>, alt: f32, h: f32, detail: bool) -> f32 {
     return density_at(u, base_tex, detail_tex, noise_sampler, map_tex, map_sampler, oro_tex, oro_sampler, xz, alt, h, detail, true);

@@ -35,8 +35,8 @@ struct Shaft {
 @group(1) @binding(4) var map_tex: texture_2d<f32>;
 @group(1) @binding(5) var map_sampler: sampler;
 @group(1) @binding(6) var<uniform> storms: Storms;
-@group(1) @binding(7) var oro_tex: texture_2d<f32>;
-@group(1) @binding(8) var oro_sampler: sampler;
+@group(1) @binding(8) var oro_tex: texture_2d<f32>;
+@group(1) @binding(9) var oro_sampler: sampler;
 @group(2) @binding(0) var<uniform> sh: Shaft;
 @group(2) @binding(1) var ground: texture_2d<f32>;
 
