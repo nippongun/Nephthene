@@ -1,11 +1,10 @@
 export const meta = {
   name: 'graph',
-  description: 'Run a planner-written task graph: a Haiku executor per node in dependency order, a fresh Sonnet verifier per node (one retry on refutation), then a final verifier',
+  description: 'Run a planner-written task graph: a Haiku executor per node in dependency order, then one fresh Sonnet verifier over the whole change',
   whenToUse: 'After the planner has written the graph. args: {goal, nodes: [{id, deps, files, task, check}], final_check}',
   phases: [
-    { title: 'Execute', detail: 'one executor per node, as soon as its deps pass', model: 'haiku' },
-    { title: 'Verify', detail: 'fresh verifier per node tries to refute', model: 'sonnet' },
-    { title: 'Final', detail: 'fresh verifier over the whole change', model: 'sonnet' },
+    { title: 'Execute', detail: 'one executor per node, as soon as its deps pass (each runs its own check)', model: 'haiku' },
+    { title: 'Final', detail: 'one fresh verifier over the whole change', model: 'sonnet' },
   ],
 }
 
@@ -46,22 +45,12 @@ const visit = (id, path) => {
 }
 for (const n of g.nodes) visit(n.id, [])
 
-const executorPrompt = (n, refuted) => [
+const executorPrompt = n => [
   `Goal: ${g.goal}`,
   `Node ${n.id}: ${n.task}`,
   `Files you may touch: ${(n.files || []).join(', ') || '(none: read-only node)'}`,
   `Done when: ${n.check}`,
-  refuted ? `Your previous attempt was refuted by the verifier. Fix exactly this:\n${refuted}` : '',
 ].filter(Boolean).join('\n\n')
-
-const verifyPrompt = (n, rep) => [
-  `Claim: node ${n.id} of "${g.goal}" is done.`,
-  `Task: ${n.task}`,
-  `Allowed files: ${(n.files || []).join(', ') || '(none)'}`,
-  `Check: ${n.check}`,
-  `Executor says it changed: ${rep.changed.join(', ') || '(nothing)'}; check output:\n${rep.check_output}`,
-  'Re-run the check and read the diff. Refute if anything is off.',
-].join('\n\n')
 
 // Role agents (.claude/agents) load at session start; a session that predates them gets the same model told to read its role file.
 const MODEL = { executor: 'haiku', verifier: 'sonnet' }
@@ -76,29 +65,22 @@ const promises = {}
 const run = async n => {
   const deps = await Promise.all((n.deps || []).map(d => promises[d]))
   if (deps.some(r => !r || !r.pass)) { log(`${n.id}: skipped (a dependency failed)`); return { id: n.id, pass: false, skipped: true } }
-  let refuted = ''
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const rep = await role('executor', executorPrompt(n, refuted), { label: `exec ${n.id} #${attempt}`, phase: 'Execute', schema: REPORT })
-    if (!rep) return { id: n.id, pass: false, problems: ['executor died'] }
-    if (rep.blocked) { log(`${n.id}: blocked: ${rep.blocked}`); return { id: n.id, pass: false, blocked: rep.blocked } }
-    const v = await role('verifier', verifyPrompt(n, rep), { label: `verify ${n.id} #${attempt}`, phase: 'Verify', schema: VERDICT })
-    if (v && v.pass) return { id: n.id, pass: true, attempt, changed: rep.changed, evidence: v.evidence }
-    refuted = v ? v.problems.join('\n') : 'verifier died'
-    log(`${n.id}: attempt ${attempt} refuted: ${refuted.slice(0, 160)}`)
-  }
-  return { id: n.id, pass: false, problems: refuted.split('\n') }
+  const rep = await role('executor', executorPrompt(n), { label: `exec ${n.id}`, phase: 'Execute', schema: REPORT })
+  if (!rep) return { id: n.id, pass: false, problems: ['executor died'] }
+  if (rep.blocked) { log(`${n.id}: blocked: ${rep.blocked}`); return { id: n.id, pass: false, blocked: rep.blocked } }
+  return { id: n.id, pass: true, changed: rep.changed, check_output: rep.check_output }
 }
 for (const n of order) promises[n.id] = run(n)
 const results = await Promise.all(order.map(n => promises[n.id]))
 
 const failed = results.filter(r => !r.pass)
 let final = null
-if (!failed.length && g.final_check) {
+if (!failed.length) {
   final = await role('verifier', [
-    `Claim: "${g.goal}" is done; every node passed its own check.`,
-    `Final check: ${g.final_check}`,
-    `Nodes: ${results.map(r => `${r.id} (${(r.changed || []).join(', ')})`).join('; ')}`,
-    'Run the final check, read the whole diff against HEAD, and refute if the change as a whole is wrong, incomplete or breaks a rule.',
+    `Claim: "${g.goal}" is done; every node's executor reports its own check passed (unverified).`,
+    `Final check: ${g.final_check || '(none beyond the node checks)'}`,
+    `Nodes:\n${results.map(r => `${r.id} (${(r.changed || []).join(', ')}): ${(r.check_output || '').slice(0, 400)}`).join('\n')}`,
+    'Re-run each node check and the final check, read the whole diff against HEAD, and refute if any node or the change as a whole is wrong, incomplete or breaks a rule.',
   ].join('\n\n'), { label: 'final verify', phase: 'Final', schema: VERDICT })
 }
-return { pass: !failed.length && (!g.final_check || !!(final && final.pass)), results, final }
+return { pass: !failed.length && !!(final && final.pass), results, final }
