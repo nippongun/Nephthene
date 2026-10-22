@@ -50,6 +50,7 @@ starting values and **untuned**. Sections:
 | `fog`, `moon`, `stars`, `sky`, `wind` | dust fog, moon, star field, Mie dust medium, `sky.msaa_fix`, wind and gusts |
 | `map` | world offset of the weather map, built-in procedural map values (tileable: `default_cycles`, `default_phase`, `default_blob`); advection with the wind (`advect`, on by default), `wrap` (on), `start_shift_m`, test switch `static_gpu`. See `docs/weather_map.md` |
 | `air` | the temperature field over the weather map (force-restore per cell on the clock: sun, season, latitude, the cell's cloud cover; moves with the map), dew point and humidity, lapse rates, freezing level, snow line, precipitation type (`snow_c`..`rain_c`); `Weather.air` is the air at the ground under the camera, `Weather.air_field` the field. See `docs/air.md` |
+| `climate` | what a place is like: a second map fixed to the world (`climate_map.png`; R temperature offset, G humidity, B ground snow, A ground wetness) or `uniform` without one; it sets each place's restore target, dew point and snow albedo for the air; test switch `ignore`. See `docs/climate.md` |
 | `clouds` (+ `look`, `noise`) | layer heights, march steps, light, shoulder, render scale, update div, shadow cookie, towers, probe view, coverage override |
 | `resolve` | temporal resolve: reject gain, still box, fresh confidence, cut thresholds, jitter, the `wide_upsample` switch, and the test switches `no_reproject`, `light_jitter_shared`, `motion_half_px` |
 | `shafts` | rain-shaft pass |

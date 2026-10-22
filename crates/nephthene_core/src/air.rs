@@ -7,7 +7,8 @@
 //!
 //! [`Field`] holds the temperature over the weather map, one force-restore cell per texel block, in the map's frame (it moves with the
 //! weather). Cells store the temperature reduced to `ref_alt_m`; the altitude of the place read applies the lapse rates.
-use crate::{Clock, WeatherMap, config::AirCfg, rain::smoothstep, texel_axis};
+use crate::{Clock, Config, WeatherMap, climate, config::AirCfg, rain::smoothstep, texel_axis};
+use glam::Vec2;
 
 /// The air at one place: temperature and dew point (deg C) at the altitude read (`ref_alt_m` for [`state`]), relative humidity 0..1,
 /// the altitudes (m) of the 0 deg C level and of the snow line, and the precipitation type there (0 rain, 1 snow, sleet between).
@@ -84,41 +85,46 @@ pub fn state(c: &AirCfg, clock: &Clock, temp_c: f32, wetness: f32, dust: f32) ->
 /// The temperature field: `n` x `n` cells over the weather map's extent, in map coordinates (rows north to south, cell centres like the
 /// map's texels), holding the surface temperature reduced to `ref_alt_m` (deg C). Each cell runs the force-restore model under the
 /// map's cloud cover at its centre. Being in the map's frame, it moves with the weather (`map_shift`); read it through `map_xz`.
-/// ponytail: one sun for the whole field (a 200 km map spans about 2 degrees of sun); the climate field will set each cell's restore
-/// target, today it is the season's mean everywhere.
+/// Each cell restores to the climate under it now (`climate::air`): the climate is fixed to the world, the field moves over it.
+/// ponytail: one sun for the whole field (a 200 km map spans about 2 degrees of sun).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Field { pub n: u32, pub min_x: f32, pub max_z: f32, pub size_x: f32, pub size_z: f32, pub wrap: bool, pub temp_c: Vec<f32> }
 
 impl Field {
-    /// The cloud cover at each cell centre.
-    fn cover(&self, map: &WeatherMap) -> Vec<f32> {
+    /// Each cell's cloud cover and local air config. A cell at map (x, z) sits on the climate map at (x + shift.x, z + shift.y): map =
+    /// world + world_offset - shift, and the climate map is read at world + world_offset.
+    fn inputs(&self, cfg: &Config, map: &WeatherMap, climate: Option<&WeatherMap>, shift: Vec2) -> Vec<(f32, AirCfg)> {
         let (dx, dz) = (self.size_x / self.n as f32, self.size_z / self.n as f32);
         (0..self.n * self.n).map(|k| {
             let (i, j) = (k % self.n, k / self.n);
-            map.sample(self.min_x + (i as f32 + 0.5) * dx, self.max_z - (j as f32 + 0.5) * dz).coverage
+            let (x, z) = (self.min_x + (i as f32 + 0.5) * dx, self.max_z - (j as f32 + 0.5) * dz);
+            let p = climate::place(&cfg.climate, climate, x + shift.x, z + shift.y);
+            (map.sample(x, z).coverage, climate::air(&cfg.air, &cfg.climate, &p))
         }).collect()
     }
 
-    /// The field over `map` at `hour` after `spin_up_h` hours of the map's cover, from the season's mean (as [`spin_up`] per cell).
-    pub fn spin_up(c: &AirCfg, clock: &Clock, map: &WeatherMap, hour: f32) -> Field {
-        let n = c.field_px.max(1);
-        let mut f = Field { n, min_x: map.min_x, max_z: map.max_z, size_x: map.size_x, size_z: map.size_z, wrap: map.wrap, temp_c: vec![mean_c(c, clock); (n * n) as usize] };
-        let cover = f.cover(map);
-        let steps = (c.spin_up_h / SPIN_STEP_H).ceil() as u32;
+    /// The field over `map` at `hour` after `air.spin_up_h` hours of the map's cover, each cell from its own season mean: [`spin_up`]
+    /// per cell with its place's air config. `climate` None reads `climate.uniform` everywhere.
+    pub fn spin_up(cfg: &Config, map: &WeatherMap, climate: Option<&WeatherMap>, shift: Vec2, hour: f32) -> Field {
+        let n = cfg.air.field_px.max(1);
+        let mut f = Field { n, min_x: map.min_x, max_z: map.max_z, size_x: map.size_x, size_z: map.size_z, wrap: map.wrap, temp_c: Vec::new() };
+        let inputs = f.inputs(cfg, map, climate, shift);
+        f.temp_c = inputs.iter().map(|(_, a)| mean_c(a, &cfg.clock)).collect();
+        let steps = (cfg.air.spin_up_h / SPIN_STEP_H).ceil() as u32;
         let h0 = hour - steps as f32 * SPIN_STEP_H;
-        for s in 0..steps { f.advance(c, clock, &cover, h0 + SPIN_STEP_H * s as f32, SPIN_STEP_H); }
+        for s in 0..steps { f.advance(&cfg.clock, &inputs, h0 + SPIN_STEP_H * s as f32, SPIN_STEP_H); }
         f
     }
 
-    /// One step of `dt_h` game hours from `hour`, under the map's cover now.
-    pub fn step(&mut self, c: &AirCfg, clock: &Clock, map: &WeatherMap, hour: f32, dt_h: f32) {
-        let cover = self.cover(map);
-        self.advance(c, clock, &cover, hour, dt_h);
+    /// One step of `dt_h` game hours from `hour`, under the map's cover and the climate under each cell now.
+    pub fn step(&mut self, cfg: &Config, map: &WeatherMap, climate: Option<&WeatherMap>, shift: Vec2, hour: f32, dt_h: f32) {
+        let inputs = self.inputs(cfg, map, climate, shift);
+        self.advance(&cfg.clock, &inputs, hour, dt_h);
     }
 
-    fn advance(&mut self, c: &AirCfg, clock: &Clock, cover: &[f32], hour: f32, dt_h: f32) {
+    fn advance(&mut self, clock: &Clock, inputs: &[(f32, AirCfg)], hour: f32, dt_h: f32) {
         let el = crate::sun(clock, hour).0;
-        for (t, &cov) in self.temp_c.iter_mut().zip(cover) { *t += dt_h * rate(c, clock, *t, el, cov); }
+        for (t, (cov, a)) in self.temp_c.iter_mut().zip(inputs) { *t += dt_h * rate(a, clock, *t, el, *cov); }
     }
 
     /// Bilinear temperature reduced to `ref_alt_m` (deg C) at map (x, z), held at the edges (wrapped when the map wraps).
@@ -130,9 +136,12 @@ impl Field {
         a + (b - a) * tz
     }
 
-    /// The air at map (x, z) at altitude `y` (m; the ground there for the surface air), with ground `wetness` and `dust` 0..1.
-    pub fn state(&self, c: &AirCfg, clock: &Clock, x: f32, z: f32, y: f32, wetness: f32, dust: f32) -> State {
-        state_at(c, clock, self.temp_at(x, z), y, wetness, dust)
+    /// The air at map (x, z) at altitude `y` (m; the ground there for the surface air), with the climate there (its air config, and
+    /// its ground wetness or the rain's `wetness`, the wetter) and `dust` 0..1.
+    #[allow(clippy::too_many_arguments)]
+    pub fn state(&self, cfg: &Config, climate: Option<&WeatherMap>, shift: Vec2, x: f32, z: f32, y: f32, wetness: f32, dust: f32) -> State {
+        let p = climate::place(&cfg.climate, climate, x + shift.x, z + shift.y);
+        state_at(&climate::air(&cfg.air, &cfg.climate, &p), &cfg.clock, self.temp_at(x, z), y, climate::wetness(&p, wetness), dust)
     }
 }
 
@@ -235,7 +244,7 @@ mod tests {
         let (map, c0) = halves();
         let k = Clock::default();
         let ranges = |c: &AirCfg| {
-            let days: Vec<_> = (0..96).map(|i| { let h = i as f32 * 0.25; (h, Field::spin_up(c, &k, &map, h)) }).collect();
+            let days: Vec<_> = (0..96).map(|i| { let h = i as f32 * 0.25; (h, Field::spin_up(&Config { air: c.clone(), clock: k.clone(), ..Config::default() }, &map, None, Vec2::ZERO, h)) }).collect();
             let at = |x: f32, cov: f32| {
                 let d: Vec<(f32, f32)> = days.iter().map(|(h, f)| (*h, f.temp_at(x, 500.0))).collect();
                 let worst = days.iter().map(|(h, f)| (f.temp_at(x, 500.0) - spin_up(c, &k, *h, cov)).abs()).fold(0.0, f32::max);
@@ -260,14 +269,79 @@ mod tests {
         let m = crate::config::MapCfg::default();
         let map = WeatherMap::procedural(&m);
         let kinds = |c: &AirCfg| {
-            let f = Field::spin_up(c, &k, &map, 14.0);
-            let [x, z] = crate::map_xz(&m, glam::Vec2::ZERO, 0.0, 0.0);
-            (f.state(c, &k, x, z, 0.0, 0.0, 0.0), f.state(c, &k, x, z, 3000.0, 0.0, 0.0))
+            let cfg = Config { air: c.clone(), clock: k.clone(), ..Config::default() };
+            let f = Field::spin_up(&cfg, &map, None, Vec2::ZERO, 14.0);
+            let [x, z] = crate::map_xz(&m, Vec2::ZERO, 0.0, 0.0);
+            (f.state(&cfg, None, Vec2::ZERO, x, z, 0.0, 0.0, 0.0), f.state(&cfg, None, Vec2::ZERO, x, z, 3000.0, 0.0, 0.0))
         };
         let ok = |c: &AirCfg| { let (lo, hi) = kinds(c); lo.precip_kind <= 0.1 && hi.precip_kind >= 0.9 };
         let (lo, hi) = kinds(&AirCfg::default());
         println!("winter 14 h: 0 m {:.1} C kind {:.2}, 3000 m {:.1} C kind {:.2}", lo.temp_c, lo.precip_kind, hi.temp_c, hi.precip_kind);
         assert!(ok(&AirCfg::default()), "valley {lo:?}, ridge {hi:?}: budget rain <= 0.1 and snow >= 0.9");
         assert!(!ok(&AirCfg { lapse_k_per_km: 0.0, ..AirCfg::default() }), "red arm (lapse rate 0) passes: the gate cannot fail");
+    }
+
+    /// The halves' extent with uniform cover 0.1, and a climate map painted -25 K (R 0) in the west half, neutral (128) in the east.
+    fn cold_west() -> (WeatherMap, WeatherMap) {
+        let (mut map, _) = halves();
+        map.rgba = (0..64).flat_map(|_| [26u8, 0, 0, 0]).collect();
+        let clim = WeatherMap { rgba: (0..64).flat_map(|k| [if k % 8 < 4 { 0u8 } else { 128 }, 128, 0, 0]).collect(), ..map.clone() };
+        (map, clim)
+    }
+
+    // Budget: 1 % of the painted offset (0.25 K). The model is linear in the temperature, so a restore target 25 K lower makes the
+    // spun-up day 25 K colder, less e^(-restore_per_h x spin_up_h) = 6e-6 of it.
+    #[test]
+    fn a_painted_cold_place_is_colder() {
+        let (map, clim) = cold_west();
+        let diff = |c: &Config| {
+            let days: Vec<Field> = (0..24).map(|h| Field::spin_up(c, &map, Some(&clim), Vec2::ZERO, h as f32)).collect();
+            let mean = |x: f32| days.iter().map(|f| f.temp_at(x, 500.0)).sum::<f32>() / 24.0;
+            mean(-2500.0) - mean(2500.0)
+        };
+        let c = Config { air: AirCfg { field_px: 8, ..AirCfg::default() }, ..Config::default() };
+        let d = diff(&c);
+        println!("painted -25 K: daily mean west minus east {d:.3} K (budget -25 +- 0.25 K)");
+        assert!((d + 25.0).abs() <= 0.25, "west minus east {d} K, painted -25 K");
+        let mut red = c.clone();
+        red.climate.ignore = true;
+        assert!((diff(&red) + 25.0).abs() > 0.25, "red arm (climate.ignore) passes: the gate cannot fail");
+    }
+
+    /// A clear map (cover 0.1 everywhere).
+    fn clear() -> WeatherMap { WeatherMap::procedural(&crate::config::MapCfg { default_coverage: 0.1, default_coverage_swing: 0.0, ..Default::default() }) }
+
+    // Budget: desert afternoon air under 25 % relative humidity (Phoenix: about 10 % on June afternoons, 30 % year-round;
+    // docs/climate.md). Mid-July 15 h at 35 N, clear, the air mass at full dryness.
+    #[test]
+    fn desert_air_is_dry_in_the_afternoon() {
+        let map = clear();
+        let rh = |humidity: f32, ignore: bool| {
+            let mut c = Config::default();
+            (c.climate.uniform, c.climate.ignore) = ([0.0, humidity, 0.0, 0.0], ignore);
+            Field::spin_up(&c, &map, None, Vec2::ZERO, 15.0).state(&c, None, Vec2::ZERO, 0.0, 0.0, 0.0, 0.0, 0.0).rh
+        };
+        let (dry, neutral, humid) = (rh(-1.0, false), rh(0.0, false), rh(1.0, false));
+        println!("15 h July rh: dry {dry:.2}, neutral {neutral:.2}, humid {humid:.2} (budget dry <= 0.25)");
+        assert!(dry <= 0.25, "desert afternoon rh {dry}, budget 0.25");
+        assert!(humid >= neutral && neutral > dry, "humidity must order the air: dry {dry}, neutral {neutral}, humid {humid}");
+        assert!(rh(-1.0, true) > 0.25, "red arm (climate.ignore) passes: the gate cannot fail");
+    }
+
+    // Budget: snow absorbs (1 - 0.7) / (1 - 0.2) = 0.375 of the sunlight bare ground does (albedo tables, docs/climate.md), and the
+    // model's diurnal swing is linear in the heating, so the range falls to about 0.375 of bare; 0.5 is the budget.
+    #[test]
+    fn snow_cover_cuts_the_days_warming() {
+        let map = clear();
+        let range_with = |snow: f32, ignore: bool| {
+            let mut c = Config { air: AirCfg { field_px: 1, ..AirCfg::default() }, ..Config::default() };
+            (c.climate.uniform, c.climate.ignore) = ([0.0, 0.0, snow, 0.0], ignore);
+            let d: Vec<(f32, f32)> = (0..96).map(|i| { let h = i as f32 * 0.25; (h, Field::spin_up(&c, &map, None, Vec2::ZERO, h).temp_c[0]) }).collect();
+            range(&d)
+        };
+        let (bare, snow) = (range_with(0.0, false), range_with(1.0, false));
+        println!("diurnal range: bare {bare:.2} K, snow {snow:.2} K (budget snow <= 0.5 x bare)");
+        assert!(snow <= 0.5 * bare, "snow range {snow} K is not under half the bare range {bare} K");
+        assert!(range_with(1.0, true) > 0.5 * bare, "red arm (climate.ignore) passes: the gate cannot fail");
     }
 }
