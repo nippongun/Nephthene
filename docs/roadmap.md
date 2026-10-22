@@ -109,6 +109,10 @@ blowing snow reduces visibility near the ground; gates on wall visibility and on
 
 ## Phase 6: lightning and thunder
 Can start after Phase 1, in parallel with Phases 2-5: the flash schedule (`storm_fx::flashes`) and the analytic cells exist.
+Slice 1 built (lavapipe; Metal pending): bolt geometry in core (`core::lightning`, unit tests), channel ribbons, one point light per
+live flash, `LightningStrike` / `Thunder` messages, gates G23 (channel reads as a line) and G24 (flash lights the ground). Off by
+default (`storms.lightning.enabled`). Left for slice 2 (touches `clouds_march.wesl`, ask first): clouds lit from inside, the
+resolve-vs-flash term, in-cloud flashes, bloom, fog lit by the flash.
 Done when: cloud-to-ground and in-cloud flashes light the clouds, terrain and fog, thunder arrives late by distance, and the host
 receives events; gates below.
 - **Bolt geometry in core**: seeded stepped leader with branches (midpoint displacement), deterministic from the `Flash`; pure,
