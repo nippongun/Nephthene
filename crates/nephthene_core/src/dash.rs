@@ -84,7 +84,8 @@ pub fn clamp_speed(s: f32) -> f32 { s.clamp(0.0, 30.0) }
 pub const RAIN_PRECIP: f32 = 1.0;
 pub fn precip_override(rain: bool) -> Option<f32> { rain.then_some(RAIN_PRECIP) }
 
-/// Precipitation type in words with its value (0 rain, 1 snow): the ends of the blend are rain and snow, the middle sleet. Bands untuned.
+/// Precipitation type in words with its value (0 rain, 1 snow): the ends of the blend are rain and snow, the middle sleet.
+/// ponytail: the 0.1 / 0.9 word bands are display-only (the gate C5-place uses the same ends); a config knob if a host shows them.
 pub fn precip_word(kind: f32) -> String {
     let w = if kind <= 0.1 { "rain" } else if kind >= 0.9 { "snow" } else { "sleet" };
     format!("precip {w} ({kind:.2})")
