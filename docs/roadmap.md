@@ -125,7 +125,7 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 | 6 | Terrain-following volumetric ground fog | have | G15-G19, G21 |
 | 7 | Light shafts through cloud gaps (god rays) | partial | rain shafts only |
 | 8 | Rain particles and surface wetness | partial | no occlusion, density bug open |
-| 9 | Snow particles and accumulation | partial | flakes and sleet in the rain pass from the air's `precip_kind`; G27 shape green, visibility red (look call); no accumulation yet |
+| 9 | Snow particles and accumulation | partial | flakes and sleet in the rain pass from the air's `precip_kind`; G27 shape green, visibility red (look call); snow cover on `SurfaceMaterial` ground (one value at the camera, G29) |
 | 10 | Precipitation occlusion (nothing falls indoors) | partial | `Shelter` roof grid from bounding boxes, G28; ground under roofs still wets |
 | 11 | Lightning and thunder | partial | slice 1 in: channel, flash light, strike/thunder messages, G23/G24; on by default, Metal pending |
 | 12 | Storm cells with a lifecycle | partial | analytic capsules, read as lenses |

@@ -26,7 +26,7 @@ pub use fog::FogState;
 pub use lightning::{Flashes, LightningStrike, Thunder};
 #[cfg(feature = "panel")]
 pub use panel::{Panel, Wid};
-pub use rain::{Ground, RainState, Shelter, WetGround};
+pub use rain::{Ground, RainState, Shelter, SurfaceMaterial, WeatherSurface, WetGround};
 pub use sky::{Moon, NephtheneSun, Weather};
 pub use storms::Storms;
 

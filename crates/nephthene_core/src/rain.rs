@@ -44,6 +44,20 @@ pub fn wet_look(c: &RainCfg, wet: f32, dry_roughness: f32, dry_reflectance: f32)
     (1.0 - c.wet_darken * w, dry_roughness + (c.wet_roughness - dry_roughness) * w, dry_reflectance + (c.wet_reflectance - dry_reflectance) * w)
 }
 
+/// Snow cover 0..1 after `dt` seconds: builds at `cover_up_per_s` x the snowfall (intensity x kind), melts at `melt_per_s` while the
+/// air at the ground is above `melt_c`.
+pub fn snow_cover_step(c: &RainCfg, cover: f32, intensity: f32, kind: f32, temp_c: f32, dt: f32) -> f32 {
+    let up = c.cover_up_per_s * intensity.clamp(0.0, 1.0) * kind.clamp(0.0, 1.0);
+    let down = if temp_c > c.melt_c { c.melt_per_s } else { 0.0 };
+    (cover + (up - down) * dt).clamp(0.0, 1.0)
+}
+
+/// The cover a surface shows: `cover_force` when set, otherwise the live cover or the climate map's ground snow, whichever is more.
+pub fn snow_cover(c: &RainCfg, live: f32, climate_snow: f32) -> f32 { c.cover_force.unwrap_or(live.max(climate_snow)).clamp(0.0, 1.0) }
+
+/// Snow on a surface whose normal points `normal_y` up: the cover, where the ground is flat enough to hold it. surface.wesl mirrors it.
+pub fn snow_mask(c: &RainCfg, cover: f32, normal_y: f32) -> f32 { cover.clamp(0.0, 1.0) * smoothstep(c.cover_slope_lo, c.cover_slope_hi, normal_y) }
+
 // ---- hash: PCG (O'Neill), u32 wrapping arithmetic, identical in rain.wesl (`pcg`, `hash01`). ----
 pub const PCG_MUL: u32 = 747796405;
 pub const PCG_ADD: u32 = 2891336453;
@@ -509,5 +523,30 @@ mod tests {
         let xs: Vec<f32> = (0..8).map(|i| flake_pos(&rc(), 5, period * i as f32 / 8.0, vel, cam, 0.0).x).collect();
         let (lo, hi) = xs.iter().fold((f32::MAX, f32::MIN), |(l, h), &x| (l.min(x), h.max(x)));
         assert!(hi - lo > rc().flutter_m, "flake swirls: x spans {}", hi - lo);
+    }
+    #[test]
+    fn snow_cover_builds_while_snowing_and_melts_when_warm() {
+        let step = |c: f32, i: f32, k: f32, t: f32, n: usize| (0..n).fold(c, |c, _| snow_cover_step(&rc(), c, i, k, t, 0.1));
+        // 120 s of full snow reach the top (to f32 rounding); 130 s clamp to it exactly.
+        assert!(step(0.0, 1.0, 1.0, -5.0, 1200) > 1.0 - 1e-5 && step(0.0, 1.0, 1.0, -5.0, 1300) == 1.0, "120 s of snow saturates");
+        assert_eq!(step(0.0, 1.0, 0.0, -5.0, 1200), 0.0, "rain does not cover");
+        let melted = step(1.0, 0.0, 1.0, 5.0, 1200);
+        assert!(0.8 < melted && melted < 0.9 && (melted - 0.8667).abs() < 1e-3, "{melted}");
+        assert_eq!(step(1.0, 0.0, 1.0, 0.0, 1200), 1.0, "below melt_c the cover holds");
+    }
+    #[test]
+    fn snow_cover_takes_force_then_the_more_of_live_and_climate() {
+        assert_eq!(snow_cover(&rc(), 0.2, 0.6), 0.6);
+        assert_eq!(snow_cover(&rc(), 0.7, 0.1), 0.7);
+        assert_eq!(snow_cover(&RainCfg { cover_force: Some(0.0), ..rc() }, 1.0, 1.0), 0.0);
+        assert_eq!(snow_cover(&RainCfg { cover_force: Some(3.0), ..rc() }, 0.0, 0.0), 1.0);
+    }
+    #[test]
+    fn snow_holds_on_flat_ground_only() {
+        assert_eq!(snow_mask(&rc(), 1.0, 1.0), 1.0);
+        assert_eq!(snow_mask(&rc(), 1.0, 0.5), 0.0, "steeper than cover_slope_lo");
+        assert_eq!(snow_mask(&rc(), 0.5, 1.0), 0.5);
+        let m = snow_mask(&rc(), 1.0, 0.725);
+        assert!(0.0 < m && m < 1.0, "{m}");
     }
 }
