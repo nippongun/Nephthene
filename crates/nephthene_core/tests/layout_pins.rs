@@ -11,6 +11,7 @@ const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
 const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
+const SURFACE: &str = include_str!("../../../src/shaders/surface.wesl");
 const RAIN_RS: &str = include_str!("../../../src/rain.rs");
 const LIGHTNING_RS: &str = include_str!("../../../src/lightning.rs");
 const LIGHTNING: &str = include_str!("../../../src/shaders/lightning.wesl");
@@ -77,6 +78,14 @@ fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogRe
 #[test]
 fn rain_uniform_matches_wgsl() { same_order(RAIN_RS, "struct RainGpu {", RAIN, "struct Rain {"); }
 #[test]
+fn surface_uniform_matches_wgsl() { same_order(RAIN_RS, "struct SurfaceGpu {", SURFACE, "struct Surface {"); }
+#[test]
+fn surface_shader_mirrors_snow_mask() {
+    for line in ["s.snow * smoothstep(s.slope_lo, s.slope_hi, pbr_input.world_normal.y)", "mix(pbr_input.material.perceptual_roughness, s.wet_roughness, wet)"] {
+        assert!(SURFACE.contains(line), "surface.wesl lost `{line}`");
+    }
+}
+#[test]
 fn bolt_uniform_matches_wgsl() {
     same_order(LIGHTNING_RS, "struct BoltGpu {", LIGHTNING, "struct Bolt {");
     // The segment array: 2 vec4 per segment on both sides.
@@ -116,7 +125,10 @@ fn rain_shader_mirrors_rust_hash() {
         "f32(pcg(v) >> 8u) / 16777216.0", "f32(q) >= u.intensity * f32(u.count)", "cam.x - u.half + rem(",
         "let c = q * 7919u + u32(k);", "let tt = u.time / u.life + hash01(q * 4u);",
         "let fq = q ^ FLAKE_SALT;", "hash01(fq * 4u) < u.kind", "hash01(fq * 4u + 1u)",
+        "fn floor_h(xz: vec2<f32>) -> f32 { return max(ground_h(xz), shelter_h(xz)); }", "floor_h(vec2<f32>(fx, fz))",
+        "floor_h(vec2<f32>(hx, hz))", "floor_h(vec2<f32>(px0, pz0))",
     ] { assert!(RAIN.contains(line), "rain.wesl lost `{line}`"); }
+    assert!(RAIN.contains(&format!("const NO_ROOF: f32 = {:.1};", r::NO_ROOF)), "NO_ROOF differs from rain::NO_ROOF");
     assert_eq!(RAIN.matches("f32(q) >= u.intensity * f32(u.count)").count(), 2, "streaks and splashes both use the prefix rule");
     assert_eq!((r::pcg(0), r::pcg(1), r::pcg(12345)), (129708002, 2831084092, 4099845390));
 }

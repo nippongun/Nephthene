@@ -44,6 +44,20 @@ pub fn wet_look(c: &RainCfg, wet: f32, dry_roughness: f32, dry_reflectance: f32)
     (1.0 - c.wet_darken * w, dry_roughness + (c.wet_roughness - dry_roughness) * w, dry_reflectance + (c.wet_reflectance - dry_reflectance) * w)
 }
 
+/// Snow cover 0..1 after `dt` seconds: builds at `cover_up_per_s` x the snowfall (intensity x kind), melts at `melt_per_s` while the
+/// air at the ground is above `melt_c`.
+pub fn snow_cover_step(c: &RainCfg, cover: f32, intensity: f32, kind: f32, temp_c: f32, dt: f32) -> f32 {
+    let up = c.cover_up_per_s * intensity.clamp(0.0, 1.0) * kind.clamp(0.0, 1.0);
+    let down = if temp_c > c.melt_c { c.melt_per_s } else { 0.0 };
+    (cover + (up - down) * dt).clamp(0.0, 1.0)
+}
+
+/// The cover a surface shows: `cover_force` when set, otherwise the live cover or the climate map's ground snow, whichever is more.
+pub fn snow_cover(c: &RainCfg, live: f32, climate_snow: f32) -> f32 { c.cover_force.unwrap_or(live.max(climate_snow)).clamp(0.0, 1.0) }
+
+/// Snow on a surface whose normal points `normal_y` up: the cover, where the ground is flat enough to hold it. surface.wesl mirrors it.
+pub fn snow_mask(c: &RainCfg, cover: f32, normal_y: f32) -> f32 { cover.clamp(0.0, 1.0) * smoothstep(c.cover_slope_lo, c.cover_slope_hi, normal_y) }
+
 // ---- hash: PCG (O'Neill), u32 wrapping arithmetic, identical in rain.wesl (`pcg`, `hash01`). ----
 pub const PCG_MUL: u32 = 747796405;
 pub const PCG_ADD: u32 = 2891336453;
@@ -159,6 +173,42 @@ impl Ground for HeightGrid {
         a + (b - a) * ty
     }
 }
+
+// ---- Shelter: roofs the precipitation stops on (occlusion). rain.wesl mirrors `HeightGrid::top` (`shelter_h`) and `floor_at` (`floor_h`). ----
+
+/// Height of "no roof here": below any ground.
+pub const NO_ROOF: f32 = -1.0e9;
+
+impl HeightGrid {
+    /// The nearest cell's height, or `NO_ROOF` outside the grid (no clamping: a roof ends at its edge).
+    pub fn top(&self, x: f32, z: f32) -> f32 {
+        let (fx, fy) = ((x - self.min_x) / self.cell_m, (self.max_z - z) / self.cell_m);
+        if fx < 0.0 || fy < 0.0 || fx >= self.w as f32 || fy >= self.h as f32 { return NO_ROOF; }
+        self.y[(fy as u32 * self.w + fx as u32) as usize]
+    }
+}
+
+/// Roof heights from world boxes (min, max corners): each cell centre takes the highest box top over it, `NO_ROOF` where none is.
+/// The cell grows from `cell_m` so the grid stays near `max_cells`. No boxes: one `NO_ROOF` cell.
+pub fn shelter_grid(boxes: &[(Vec3, Vec3)], cell_m: f32, max_cells: u32) -> HeightGrid {
+    if boxes.is_empty() { return HeightGrid { min_x: 0.0, max_z: 0.0, cell_m: 1.0, w: 1, h: 1, y: vec![NO_ROOF] }; }
+    let (lo, hi) = boxes.iter().fold((Vec3::MAX, Vec3::MIN), |(l, h), (a, b)| (l.min(*a), h.max(*b)));
+    // ponytail: 1 mm floor keeps a zero-width box from dividing by zero; not a look value.
+    let (sx, sz) = ((hi.x - lo.x).max(1e-3), (hi.z - lo.z).max(1e-3));
+    let cell = cell_m.max((sx * sz / max_cells.max(1) as f32).sqrt());
+    let (w, h) = (((sx / cell).ceil() as u32).max(1), ((sz / cell).ceil() as u32).max(1));
+    let y = (0..h).flat_map(|j| (0..w).map(move |i| (i, j))).map(|(i, j)| {
+        let (x, z) = (lo.x + (i as f32 + 0.5) * cell, hi.z - (j as f32 + 0.5) * cell);
+        boxes.iter().filter(|(a, b)| x >= a.x && x <= b.x && z >= a.z && z <= b.z).map(|(_, b)| b.y).fold(NO_ROOF, f32::max)
+    }).collect();
+    HeightGrid { min_x: lo.x, max_z: hi.z, cell_m: cell, w, h, y }
+}
+
+/// Where precipitation lands at (x, z): the ground, or a roof above it.
+pub fn floor_at(g: &dyn Ground, roofs: &HeightGrid, x: f32, z: f32) -> f32 { g.height(x, z).max(roofs.top(x, z)) }
+
+/// The camera stands under a roof.
+pub fn sheltered(roofs: &HeightGrid, cam: Vec3) -> bool { roofs.top(cam.x, cam.z) > cam.y }
 
 /// `streak_pos` over terrain: the drop's xz wraps in the window as before, its y is `height_m` above the ground under it.
 pub fn streak_pos_on(c: &RainCfg, q: u32, t: f32, vel: Vec3, cam: Vec3, g: &dyn Ground) -> Vec3 {
@@ -396,6 +446,34 @@ mod tests {
         assert!(red > SWING_BUDGET_M, "red arm must swing past the budget, got {red} m (budget {SWING_BUDGET_M} m)");
     }
     #[test]
+    fn shelter_grid_takes_the_highest_roof() {
+        let a = (Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 4.0, 10.0));
+        let b = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(5.0, 7.0, 5.0));
+        let g = shelter_grid(&[a, b], 0.5, 1 << 20);
+        assert_eq!(g.top(-5.0, -5.0), 4.0);
+        assert_eq!(g.top(2.5, 2.5), 7.0, "the higher box wins where they overlap");
+        assert_eq!(g.top(20.0, 0.0), NO_ROOF);
+        assert_eq!(g.top(0.0, -10.5), NO_ROOF);
+        assert!(g.cell_m == 0.5 && g.w == 40 && g.h == 40);
+    }
+    #[test]
+    fn shelter_grid_caps_its_cells_and_handles_none() {
+        assert_eq!(shelter_grid(&[], 0.5, 100).top(0.0, 0.0), NO_ROOF);
+        let big = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(1000.0, 3.0, 1000.0));
+        let g = shelter_grid(&[big], 0.5, 10_000);
+        assert!(g.cell_m >= 10.0 - 1e-3 && g.w * g.h <= 10_100, "cell {} grid {}x{}", g.cell_m, g.w, g.h);
+        assert_eq!(g.top(500.0, 500.0), 3.0);
+    }
+    #[test]
+    fn floor_is_the_roof_over_the_ground() {
+        let roofs = shelter_grid(&[(Vec3::new(-4.0, 0.0, -4.0), Vec3::new(4.0, 3.0, 4.0))], 0.5, 1 << 20);
+        assert_eq!(floor_at(&Flat(1.0), &roofs, 0.0, 0.0), 3.0);
+        assert_eq!(floor_at(&Flat(1.0), &roofs, 10.0, 0.0), 1.0);
+        assert!(sheltered(&roofs, Vec3::new(0.0, 1.7, 0.0)));
+        assert!(!sheltered(&roofs, Vec3::new(0.0, 5.0, 0.0)), "above the roof is open sky");
+        assert!(!sheltered(&roofs, Vec3::new(10.0, 1.7, 0.0)));
+    }
+    #[test]
     fn kind_follows_air_unless_forced() {
         assert_eq!(kind(&rc(), 0.3), 0.3);
         assert_eq!(kind(&RainCfg { kind_force: Some(0.0), ..rc() }, 1.0), 0.0);
@@ -445,5 +523,30 @@ mod tests {
         let xs: Vec<f32> = (0..8).map(|i| flake_pos(&rc(), 5, period * i as f32 / 8.0, vel, cam, 0.0).x).collect();
         let (lo, hi) = xs.iter().fold((f32::MAX, f32::MIN), |(l, h), &x| (l.min(x), h.max(x)));
         assert!(hi - lo > rc().flutter_m, "flake swirls: x spans {}", hi - lo);
+    }
+    #[test]
+    fn snow_cover_builds_while_snowing_and_melts_when_warm() {
+        let step = |c: f32, i: f32, k: f32, t: f32, n: usize| (0..n).fold(c, |c, _| snow_cover_step(&rc(), c, i, k, t, 0.1));
+        // 120 s of full snow reach the top (to f32 rounding); 130 s clamp to it exactly.
+        assert!(step(0.0, 1.0, 1.0, -5.0, 1200) > 1.0 - 1e-5 && step(0.0, 1.0, 1.0, -5.0, 1300) == 1.0, "120 s of snow saturates");
+        assert_eq!(step(0.0, 1.0, 0.0, -5.0, 1200), 0.0, "rain does not cover");
+        let melted = step(1.0, 0.0, 1.0, 5.0, 1200);
+        assert!(0.8 < melted && melted < 0.9 && (melted - 0.8667).abs() < 1e-3, "{melted}");
+        assert_eq!(step(1.0, 0.0, 1.0, 0.0, 1200), 1.0, "below melt_c the cover holds");
+    }
+    #[test]
+    fn snow_cover_takes_force_then_the_more_of_live_and_climate() {
+        assert_eq!(snow_cover(&rc(), 0.2, 0.6), 0.6);
+        assert_eq!(snow_cover(&rc(), 0.7, 0.1), 0.7);
+        assert_eq!(snow_cover(&RainCfg { cover_force: Some(0.0), ..rc() }, 1.0, 1.0), 0.0);
+        assert_eq!(snow_cover(&RainCfg { cover_force: Some(3.0), ..rc() }, 0.0, 0.0), 1.0);
+    }
+    #[test]
+    fn snow_holds_on_flat_ground_only() {
+        assert_eq!(snow_mask(&rc(), 1.0, 1.0), 1.0);
+        assert_eq!(snow_mask(&rc(), 1.0, 0.5), 0.0, "steeper than cover_slope_lo");
+        assert_eq!(snow_mask(&rc(), 0.5, 1.0), 0.5);
+        let m = snow_mask(&rc(), 1.0, 0.725);
+        assert!(0.0 < m && m < 1.0, "{m}");
     }
 }
