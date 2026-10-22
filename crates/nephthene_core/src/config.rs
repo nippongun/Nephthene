@@ -467,13 +467,16 @@ pub struct AirCfg {
     pub snow_c: f32, pub rain_c: f32,
     /// Cells per side of the temperature field (`air::Field`) over the weather map's extent.
     pub field_px: u32,
+    /// Game hours gathered before the live field takes one step (one step of a 32 x 32 field costs about 50-80 us of CPU, so stepping
+    /// every frame is waste). Keep it at or under 0.25 h, the spin-up step, for explicit Euler to stay accurate.
+    pub step_h: f32,
 }
 impl Default for AirCfg {
     fn default() -> Self {
         AirCfg {
             mean_c: 15.0, season_c: 10.0, lag_days: 30.0, heat_k_per_h: 4.0, cool_k_per_h: 1.5, restore_per_h: 0.25, cloud_shade: 0.7, cloud_block: 0.8,
             dew_below_c: 4.0, wet_gain_c: 3.0, dust_dry_c: 6.0, ref_alt_m: 0.0, lapse_k_per_km: 6.5, melt_m: 300.0, spin_up_h: 48.0,
-            dew_lapse_k_per_km: 1.8, snow_c: -0.5, rain_c: 2.5, field_px: 32,
+            dew_lapse_k_per_km: 1.8, snow_c: -0.5, rain_c: 2.5, field_px: 32, step_h: 1.0 / 60.0,
         }
     }
 }

@@ -38,7 +38,7 @@ impl Plugin for FogPlugin {
 type Baked = (Arc<Field>, Vec<f32>, FogMap);
 
 /// What a frozen clock's spin-up was computed for (hour, weather, field origin); a change re-spins.
-type Key = [f32; 7];
+type Key = [f32; 10];
 
 /// Fog state around the camera and the bake in flight.
 #[derive(Resource)]
@@ -128,7 +128,7 @@ fn bake(
     b.since += time.delta_secs();
     let moved = b.field.as_ref().is_none_or(|o| at.distance(Vec2::new(o.min_x, o.max_z) + Vec2::new(0.5, -0.5) * c.extent_m) > c.rebake_m);
     let origin = b.field.as_ref().map_or([f32::NAN; 2], |o| [o.min_x, o.max_z]);
-    let key = [wx.hour, air.coverage, air.wind_mps, air.wetness, air.dust, origin[0], origin[1]];
+    let key = [wx.hour, air.coverage, air.wind_mps, air.wetness, air.dust, origin[0], origin[1], ac.mean_c, ac.dew_below_c, ac.heat_k_per_h];
     let changed = b.cfg.as_ref() != Some(c);
     let due = changed || if frozen { moved || b.key.is_none_or(|k| k.iter().zip(&key).any(|(a, b)| (a - b).abs() > 1e-3) || k[5].is_nan()) } else { moved || b.since > c.rebake_s };
     if b.task.is_none() && due {

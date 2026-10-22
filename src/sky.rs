@@ -122,7 +122,7 @@ pub(crate) fn tick(
     time: Res<Time>, mut wx: ResMut<Weather>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>,
     mut sun: Query<(&mut DirectionalLight, &mut Transform), (With<NephtheneSun>, Without<Moon>)>, mut moon: Query<(&mut DirectionalLight, &mut Transform), With<Moon>>,
     mut exposure: Query<&mut Exposure>, mut fog: Query<&mut DistanceFog>, mut sky: Query<&mut Skybox>, rain: Option<Res<crate::rain::RainState>>,
-    ground: Option<Res<crate::rain::Ground>>, mut spun: Local<Option<(f32, w::AirCfg, w::Clock, w::ClimateCfg)>>,
+    ground: Option<Res<crate::rain::Ground>>, mut spun: Local<Option<(f32, w::AirCfg, w::Clock, w::ClimateCfg)>>, mut pending: Local<Option<(f32, f32)>>,
 ) {
     let dt = time.delta_secs();
     let h0 = wx.hour;
@@ -144,13 +144,22 @@ pub(crate) fn tick(
         (target.precip, target.coverage) = (target.precip.max(s.precip), target.coverage.max(s.cover));
         wx.here = w::smooth(wx.here, target, dt, wx.cfg.sim.here_tau_s);
     }
-    // The air field rides the game clock under the map's cover; a frozen clock spins it up when the hour or the config changes.
+    // The air field rides the game clock under the map's cover in steps of `air.step_h`; a frozen clock spins it up when the hour or the config changes.
     // ponytail: a host editing `Weather.map` or `Weather.climate` under a frozen clock is not seen until the hour changes; a map revision counter is the upgrade.
     let wx = &mut *wx;
     if wx.rate > 0.0 {
-        wx.air_field.step(&wx.cfg, &wx.map, wx.climate.as_ref(), wx.map_shift, h0, dt * wx.rate);
+        // Game hours gather until `air.step_h`, then the field takes one step over them from the hour they began.
+        let (from, gathered) = pending.unwrap_or((h0, 0.0));
+        let gathered = gathered + dt * wx.rate;
+        if gathered >= wx.cfg.air.step_h {
+            wx.air_field.step(&wx.cfg, &wx.map, wx.climate.as_ref(), wx.map_shift, from, gathered);
+            *pending = None;
+        } else {
+            *pending = Some((from, gathered));
+        }
         *spun = None;
     } else if spun.as_ref().is_none_or(|(h, a, c, k)| *h != wx.hour || *a != wx.cfg.air || *c != wx.cfg.clock || *k != wx.cfg.climate) {
+        *pending = None;
         wx.air_field = air::Field::spin_up(&wx.cfg, &wx.map, wx.climate.as_ref(), wx.map_shift, wx.hour);
         *spun = Some((wx.hour, wx.cfg.air.clone(), wx.cfg.clock.clone(), wx.cfg.climate.clone()));
     }

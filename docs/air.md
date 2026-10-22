@@ -3,7 +3,7 @@
 A temperature field over the weather map (`air::Field`), and the air read from it at any place and altitude: temperature, dew point
 and humidity, freezing level, snow line and precipitation type. The pure maths is `nephthene_core::air` (config `air`). The plugin
 keeps the field as `Weather.air_field` and the air at the ground under the camera as `Weather.air`. `sky::tick` integrates the field
-on the game clock, so it follows the sun, the season and the cloud cover over hours. When the clock is frozen
+on the game clock, so it follows the sun, the season and the cloud cover over hours. The live field steps once `air.step_h` game hours (default one game minute) have gathered: one step of the 32 x 32 field costs about 50-80 us of CPU, a spin-up about 2 ms. When the clock is frozen
 (`clock.minutes_per_second` 0) it is spun up for the hour instead, again only when the hour or the `air` or `clock` config changes.
 The panel's Here section shows the air under the camera (`air ... precip rain|sleet|snow`).
 
@@ -14,7 +14,7 @@ The panel's Here section shows the air under the camera (`air ... precip rain|sl
   wraps when the map wraps.
 - Each cell runs the force-restore model below under the map's cloud cover at its centre.
 - A cell holds the temperature reduced to `ref_alt_m`. The altitude of the place read applies the lapse rates there:
-  `Field::state(x, z, y, ...)`. The plugin reads it at the `Ground` height under the camera (0 m without a `Ground`). Air carried
+  `Field::state(cfg, climate, shift, x, z, y, wetness, dust)`. The plugin reads it at the `Ground` height under the camera (0 m without a `Ground`). Air carried
   over a ridge therefore reads colder on the ridge, not with the valley's temperature.
 - Each cell restores to the climate under it: the climate map sets its restore target, its dew point and its sun heating (`docs/climate.md`).
 
@@ -50,6 +50,7 @@ Spin-up starts from the season mean about `spin_up_h` hours before the hour and 
 | Dew point falls about 1.8 K/km in mixed air (with the dry adiabat, the 125 m per K of spread rule for the cloud base) | `dew_lapse_k_per_km` 1.8 | Espy's cloud base rule |
 | Rain and snow equally likely at -0.4 to 2.4 C air temperature over Northern Hemisphere land, mean 1.0 C | `snow_c` -0.5, `rain_c` 2.5 (midpoint 1.0 C) | Jennings, Winchell, Livneh & Molotch 2018 |
 | Field resolution | `field_px` 32 | none: a cost and detail choice, untuned |
+| Field step cadence | `step_h` 1/60 h | none: a cost choice (measured 48-79 us per step at `field_px` 32, release build), untuned |
 
 Every default is UNTUNED. Each is a starting value from the source in its row, not a fit to a measurement.
 
