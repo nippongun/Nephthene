@@ -311,7 +311,8 @@
     "flake_alpha": 1.0,
     "flutter_m": 0.25,
     "flutter_hz": 0.4,
-    "snow_half_m": 13.3
+    "snow_half_m": 13.3,
+    "draw_levels": 6
   },
   "storms": {
     "seed": "nephthene",

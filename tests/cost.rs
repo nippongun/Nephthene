@@ -165,6 +165,29 @@ fn cost_rain() {
     finish("COST rain FX", f);
 }
 
+/// Share 0.25: rain at intensity 0.05 costs at most a quarter of rain at intensity 1 (transparent span over rain forced off, 1080p).
+/// The prefix meshes draw at most 2 x 0.05 = 10% of the quads at 0.05, so a quarter leaves room for the pass's fixed overhead.
+const RAIN_SCALE_SHARE: f64 = 0.25;
+
+/// Cost follows intensity: light rain draws a small prefix mesh. Red arm: `rain.draw_levels` 0 (every quad at any intensity, the old
+/// cost) must read above the share; if it does not, vertex work was never the cost and the gate cannot fail: log it (roadmap rule).
+#[test]
+#[ignore = "manual gate"]
+fn cost_rain_follows_intensity() {
+    if software() && std::env::var("NEPHTHENE_COST_ON_CPU").is_err() { println!("COST skipped: software renderer"); return; }
+    let transparent = |m: &HashMap<String, f64>| m["transparent"];
+    let off = transparent(&run("cost_scale_off", &["rain.force=0.0"], false));
+    let full = transparent(&run("cost_scale_full", &["rain.force=1.0"], false)) - off;
+    let light = transparent(&run("cost_scale_light", &["rain.force=0.05"], false)) - off;
+    let red = transparent(&run("cost_scale_red", &["rain.force=0.05", "rain.draw_levels=0"], false)) - off;
+    println!("COST rain scale: intensity 1 {full:.3} ms, 0.05 {light:.3} ms (budget <= {RAIN_SCALE_SHARE} x full = {:.3}); red arm (draw_levels 0) {red:.3}", RAIN_SCALE_SHARE * full);
+    if software() { return; }
+    let mut f = vec![];
+    if light > RAIN_SCALE_SHARE * full { f.push(format!("light rain {light:.3} ms > {RAIN_SCALE_SHARE} x full {full:.3}")); }
+    if red <= RAIN_SCALE_SHARE * full { f.push(format!("red arm {red:.3} not above {RAIN_SCALE_SHARE} x full: the gate cannot fail, delete it and log it (roadmap rule)")); }
+    finish("COST rain scale", f);
+}
+
 // ---------------------------------------------------------------- rain off switch
 
 /// Noise band 0.05 ms (one sixth of the rain FX budget): the smallest rain cost this 60-frame mean is meant to resolve. A switched-off
