@@ -480,7 +480,9 @@
     "edge_fade": 0.15,
     "step_power": 2.0,
     "render_scale": 0.25,
-    "hash_noise": false
+    "hash_noise": false,
+    "temporal_alpha": 0.1,
+    "still_px": 0.5
   },
   "sim": {
     "here_tau_s": 5.0,
