@@ -312,7 +312,22 @@
     "flutter_m": 0.25,
     "flutter_hz": 0.4,
     "snow_half_m": 13.3,
-    "draw_levels": 6
+    "draw_levels": 6,
+    "shelter_cell_m": 0.5,
+    "shelter_max_cells": 1048576,
+    "ignore_shelter": false,
+    "cover_force": null,
+    "cover_up_per_s": 0.008333334,
+    "melt_per_s": 0.0011111111,
+    "melt_c": 0.5,
+    "snow_color": [
+      0.9,
+      0.9,
+      0.93
+    ],
+    "snow_roughness": 0.7,
+    "cover_slope_lo": 0.6,
+    "cover_slope_hi": 0.85
   },
   "storms": {
     "seed": "nephthene",

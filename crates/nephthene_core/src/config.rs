@@ -440,6 +440,16 @@ pub struct RainCfg {
     /// Prefix meshes: the pass draws the smallest of the `count >> k` quad meshes (k = 0..=draw_levels) that holds the falling quads
     /// (`intensity x count`), so vertex work follows intensity within 2x. 0 draws every quad at any intensity (the cost gate's red arm).
     pub draw_levels: u32,
+    /// Shelter (roofs the precipitation stops on): roof grid cell (m), the cap on its cells (the cell grows to stay under it), and the
+    /// test switch that ignores every `Shelter` (red arm of gate G28: rain falls indoors).
+    pub shelter_cell_m: f32, pub shelter_max_cells: u32, pub ignore_shelter: bool,
+    /// Snow cover 0..1 used instead of the model (None = the model; Some(0.0) is the red arm of gate G29: snow never covers the ground).
+    pub cover_force: Option<f32>,
+    /// Snow cover gain per second at full snowfall (intensity x kind), loss per second while the air at the ground is above `melt_c` (C).
+    pub cover_up_per_s: f32, pub melt_per_s: f32, pub melt_c: f32,
+    /// Snow look on a `SurfaceMaterial`: albedo, perceptual roughness, and the surface normal's up component over which snow holds
+    /// (none below `cover_slope_lo`, full above `cover_slope_hi`).
+    pub snow_color: [f32; 3], pub snow_roughness: f32, pub cover_slope_lo: f32, pub cover_slope_hi: f32,
 }
 impl Default for RainCfg {
     fn default() -> Self {
@@ -451,7 +461,8 @@ impl Default for RainCfg {
             wet_up_per_s: 1.0 / 40.0, dry_per_s: 1.0 / 240.0, wet_threshold: 0.05, wet_darken: 0.35, wet_roughness: 0.35, wet_reflectance: 0.5,
             light_gain: 1.0, sun_share: 0.65, sky_share: 0.35, night_floor: 0.04, cloud_dim: 0.8, level_scale: 1.2, light_color: [1.0, 0.98, 0.95],
             day_from_deg: -6.0, day_to_deg: 10.0, dim_from: 0.2, dim_to: 0.7, force: None, wet_epsilon: 0.002,
-            kind_force: None, snow_fall_mps: 1.0, snow_drift: 1.0, snow_drift_max: 15.0, flake_m: 0.025, flake_alpha: 1.0, flutter_m: 0.25, flutter_hz: 0.4, snow_half_m: 13.3, draw_levels: 6,
+            kind_force: None, snow_fall_mps: 1.0, snow_drift: 1.0, snow_drift_max: 15.0, flake_m: 0.025, flake_alpha: 1.0, flutter_m: 0.25, flutter_hz: 0.4, snow_half_m: 13.3, draw_levels: 6, shelter_cell_m: 0.5, shelter_max_cells: 1 << 20, ignore_shelter: false,
+            cover_force: None, cover_up_per_s: 1.0 / 120.0, melt_per_s: 1.0 / 900.0, melt_c: 0.5, snow_color: [0.9, 0.9, 0.93], snow_roughness: 0.7, cover_slope_lo: 0.6, cover_slope_hi: 0.85,
         }
     }
 }

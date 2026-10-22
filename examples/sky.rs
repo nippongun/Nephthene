@@ -10,6 +10,7 @@
 //! `--set clouds.update_div=1`), `--settle frames` (default 60), `--seq count,every` / `--at a,b,c` (several frames per run),
 //! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (drive the panel with synthetic pointer input).
 //! `--terrain`: the test valley (nephthene_core::fog::test_valley) as the ground mesh and the plugin's `Ground`, instead of the flat plane.
+//! `--roof`: a 200 x 200 m slab 4 m up over the origin, marked `Shelter` (precipitation occlusion tests: no rain falls under it).
 //! `--print-config` prints the effective config as JSON and exits (the reference file).
 //! `--describe` (shots): after the settle frames, prints one `DESCRIBE` line: the weather at the camera (`nephthene_core::dash::describe`).
 //! Exit codes: 0 ok, 3 timeout, 4 bad argument.
@@ -26,7 +27,7 @@ use bevy::{
     window::ExitCondition,
     winit::WinitPlugin,
 };
-use nephthene::{Config, NephtheneSun, NephthenePlugin, Weather, WetGround};
+use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, SurfaceMaterial, Weather, WeatherSurface};
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone)]
@@ -88,6 +89,7 @@ fn main() {
         app.add_plugins(plugins);
     }
     if args.has("--terrain") { app.insert_resource(nephthene::Ground(nephthene::core::fog::test_valley())); }
+    if args.has("--roof") { app.insert_resource(Roof); }
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     match shot {
         Some(name) => { app.add_plugins(ShotPlugin { name, args }); }
@@ -98,6 +100,8 @@ fn main() {
 
 #[derive(Resource)]
 struct Cfg(Config);
+#[derive(Resource)]
+struct Roof;
 #[derive(Component)]
 struct Cam;
 
@@ -114,16 +118,17 @@ fn camera_bundle(cfg: &Config) -> impl Bundle {
 }
 
 /// Flat ground (or the `--terrain` mesh over a lowered plane) and the sun; the camera is spawned by the mode (look-around or shot).
-fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>) {
-    let mat = mats.add(StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() });
+fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, mut surf: ResMut<Assets<SurfaceMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>, roof: Option<Res<Roof>>) {
+    let ground = surf.add(SurfaceMaterial { base: StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() }, extension: WeatherSurface::default() });
     // Under the terrain the plane sits just below its lowest point, so it shows only past the terrain's edge.
     let below = terrain.as_ref().map_or(0.0, |t| t.0.y.iter().cloned().fold(f32::MAX, f32::min) - 10.0);
-    commands.spawn((Name::new("Ground"), WetGround, Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))), MeshMaterial3d(mat.clone()), Transform::from_xyz(0.0, below, 0.0)));
-    if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), WetGround, Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(mat))); }
+    commands.spawn((Name::new("Ground"), Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))), MeshMaterial3d(ground.clone()), Transform::from_xyz(0.0, below, 0.0)));
+    if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(ground))); }
     commands.spawn((
         NephtheneSun, DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },
         CascadeShadowConfigBuilder { maximum_distance: 250.0, first_cascade_far_bound: 8.0, ..default() }.build(), Transform::default(),
     ));
+    if roof.is_some() { commands.spawn((Name::new("Roof"), Shelter, Mesh3d(meshes.add(Cuboid::new(200.0, 0.3, 200.0))), MeshMaterial3d(mats.add(StandardMaterial { base_color: Color::srgb(0.5, 0.5, 0.5), perceptual_roughness: 0.9, ..default() })), Transform::from_xyz(0.0, 4.15, 0.0))); }
     let _ = cfg;
 }
 
