@@ -11,6 +11,7 @@ const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
 const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
+const RAIN_RS: &str = include_str!("../../../src/rain.rs");
 const LIGHTNING_RS: &str = include_str!("../../../src/lightning.rs");
 const LIGHTNING: &str = include_str!("../../../src/shaders/lightning.wesl");
 
@@ -51,6 +52,8 @@ fn fog_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogGpu {", FO
 #[test]
 fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogResolveGpu {", FOG, "struct FogResolve {"); }
 #[test]
+fn rain_uniform_matches_wgsl() { same_order(RAIN_RS, "struct RainGpu {", RAIN, "struct Rain {"); }
+#[test]
 fn bolt_uniform_matches_wgsl() {
     same_order(LIGHTNING_RS, "struct BoltGpu {", LIGHTNING, "struct Bolt {");
     // The segment array: 2 vec4 per segment on both sides.
@@ -81,7 +84,7 @@ fn wgsl_storm_cell_field_order_is_the_pack_layout() {
 
 #[test]
 fn rain_shader_mirrors_rust_hash() {
-    for (name, v) in [("PCG_MUL", r::PCG_MUL), ("PCG_ADD", r::PCG_ADD), ("PCG_OUT", r::PCG_OUT)] {
+    for (name, v) in [("PCG_MUL", r::PCG_MUL), ("PCG_ADD", r::PCG_ADD), ("PCG_OUT", r::PCG_OUT), ("FLAKE_SALT", r::FLAKE_SALT)] {
         assert!(RAIN.contains(&format!("const {name}: u32 = {v}u;")), "{name} = {v} missing in rain.wesl");
     }
     // The same expressions, token for token.
@@ -89,6 +92,7 @@ fn rain_shader_mirrors_rust_hash() {
         "let s = v * PCG_MUL + PCG_ADD;", "let w = ((s >> ((s >> 28u) + 4u)) ^ s) * PCG_OUT;", "return (w >> 22u) ^ w;",
         "f32(pcg(v) >> 8u) / 16777216.0", "hash01(q * 4u + 3u) >= u.intensity", "cam.x - u.half + rem(",
         "let c = q * 7919u + u32(k);", "hash01(c * 4u + 3u) >= u.intensity", "let tt = u.time / u.life + hash01(q * 4u);",
+        "let fq = q ^ FLAKE_SALT;", "hash01(fq * 4u) < u.kind", "hash01(fq * 4u + 1u)",
     ] { assert!(RAIN.contains(line), "rain.wesl lost `{line}`"); }
     assert_eq!((r::pcg(0), r::pcg(1), r::pcg(12345)), (129708002, 2831084092, 4099845390));
 }

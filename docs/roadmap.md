@@ -125,9 +125,9 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 | 6 | Terrain-following volumetric ground fog | have | G15-G19, G21 |
 | 7 | Light shafts through cloud gaps (god rays) | partial | rain shafts only |
 | 8 | Rain particles and surface wetness | partial | no occlusion, density bug open |
-| 9 | Snow particles and accumulation | none | Phase 4 |
+| 9 | Snow particles and accumulation | partial | flakes and sleet in the rain pass from the air's `precip_kind`; G27 shape green, visibility red (look call); no accumulation yet |
 | 10 | Precipitation occlusion (nothing falls indoors) | none | Phase 4 |
-| 11 | Lightning and thunder | partial | slice 1 in: channel, flash light, strike/thunder messages, G23/G24; off by default, Metal pending |
+| 11 | Lightning and thunder | partial | slice 1 in: channel, flash light, strike/thunder messages, G23/G24; on by default, Metal pending |
 | 12 | Storm cells with a lifecycle | partial | analytic capsules, read as lenses |
 | 13 | Weather field authoring (paint a region) | have | `WeatherMap::load`, panel map |
 | 14 | Wind field driving clouds, rain, fog, foliage | none | one global vector; Phase 2 |
@@ -234,7 +234,7 @@ a state by name. This phase is C5.
   arm `orographic.gain` 0 (`docs/orographic.md`). Open (slice 2): the cloud shader, shadow and shafts read the tile (the cap-cloud
   render, a GPU handover), then on by default; a cache per (tile, wind octant).
 - **Weather field advects with the wind**. Step 1 done: under one global wind the field is translated, not resampled
-  (`map.advect`, off by default; `map.wrap`; `map.start_shift_m` for save/restore; gates `map_tests` and G22;
+  (`map.advect`, on by default; `map.wrap`; `map.start_shift_m` for save/restore; gates `map_tests` and G22;
   `docs/weather_map.md`). Step 2, with the wind field below: a non-uniform wind cannot be a translation, so the field becomes a
   ping-pong compute or fragment pass on the GPU (semi-Lagrangian) with a CPU copy for `Weather.here`. Owner: the default `advect`,
   and a tileable field before `wrap` goes on.

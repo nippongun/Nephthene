@@ -4,6 +4,7 @@
 //! Reads only the `Weather` resource (map sample at the atmosphere camera, wind, clock) plus `RainState.panel` (panel toggle) and
 //! `rain.force` from the config (forces rain everywhere). `RainState.intensity` / `.wetness` are for audio and gameplay.
 //! Ground: streak bottoms and splashes sit on the optional [`Ground`] height grid, otherwise flat 0.
+//! Snow and sleet use the same streak quads: the share `kind` of them (air `precip_kind`, or `rain.kind_force`) draw as slow, swirling round flakes.
 //! ponytail: no roof occlusion (rain also falls indoors).
 use crate::sky::Weather;
 use bevy::{
@@ -48,10 +49,11 @@ pub struct WetGround;
 #[derive(Resource)]
 pub struct Ground(pub r::HeightGrid);
 
-/// Live rain. `intensity` 0..1 at the camera, `wetness` 0..1 of the ground, `vel` the drop velocity (m/s). `panel` is the panel toggle's
+/// Live rain. `intensity` 0..1 at the camera, `wetness` 0..1 of the ground, `vel` the drop velocity (m/s). `snow_vel` the flake velocity (m/s),
+/// `kind` the precipitation kind 0 rain .. 1 snow (sleet between) at the camera. `panel` is the panel toggle's
 /// forced precip, `force` is the config's `rain.force`; either replaces the map.
 #[derive(Resource, Default, Clone, Debug)]
-pub struct RainState { pub intensity: f32, pub wetness: f32, pub vel: Vec3, pub panel: Option<f32>, pub force: Option<f32> }
+pub struct RainState { pub intensity: f32, pub wetness: f32, pub vel: Vec3, pub snow_vel: Vec3, pub kind: f32, pub panel: Option<f32>, pub force: Option<f32> }
 impl RainState {
     pub fn slant_deg(&self) -> f32 { r::slant_deg(self.vel) }
     pub fn source(&self) -> &'static str { if self.panel.is_some() { "panel" } else if self.force.is_some() { "config rain.force" } else { "weather map" } }
@@ -66,6 +68,7 @@ struct RainGpu {
     half: f32, height: f32, ground_y: f32, mode: u32,
     width: f32, alpha: f32, life: f32, count: u32,
     g_min: Vec2, g_cell: f32, g_w: u32, g_h: u32,
+    snow_vel: Vec3, kind: f32, flake: f32, flake_alpha: f32, flutter_m: f32, flutter_hz: f32, snow_half: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -125,7 +128,10 @@ fn state(time: Res<Time>, wx: Res<Weather>, mut rain: ResMut<RainState>) {
     rain.intensity = r::intensity(c, &wx.here, force);
     // The live wind (panel override included) plus the storms' gust front.
     rain.vel = r::velocity(c, wx.wind + Vec3::new(wx.storm.outflow.x, 0.0, wx.storm.outflow.y), rain.intensity);
-    rain.wetness = r::wetness_step(c, rain.wetness, rain.intensity, time.delta_secs());
+    rain.kind = r::kind(c, wx.air.precip_kind);
+    rain.snow_vel = r::snow_velocity(c, wx.wind + Vec3::new(wx.storm.outflow.x, 0.0, wx.storm.outflow.y));
+    // Snow does not wet the ground: only the liquid share counts.
+    rain.wetness = r::wetness_step(c, rain.wetness, r::liquid(rain.intensity, rain.kind), time.delta_secs());
 }
 
 /// Rain light before exposure: the exposure curve's scene level (so streaks sit at the same display brightness the sun/sky give surfaces),
@@ -146,6 +152,9 @@ fn drive(time: Res<Time>, wx: Res<Weather>, rain: Res<RainState>, mut mats: ResM
         let g = &mut mat.gpu;
         (g.light, g.time, g.vel, g.len, g.sun_dir, g.intensity, g.ground_y) =
             (light, time.elapsed_secs() % 4096.0, rain.vel, r::streak_len(c, rain.vel), w::dir(el, az), rain.intensity, 0.0);
+        (g.snow_vel, g.kind, g.flake, g.flake_alpha, g.flutter_m, g.flutter_hz, g.snow_half) = (rain.snow_vel, rain.kind, c.flake_m, c.flake_alpha, c.flutter_m, c.flutter_hz, c.snow_half_m);
+        // Splashes come from the liquid share only.
+        if g.mode == 1 { g.intensity = r::liquid(rain.intensity, rain.kind); }
     }
 }
 

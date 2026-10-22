@@ -1,6 +1,7 @@
 // rain, GPU only: every streak and splash is a quad whose corners are computed here from (quad id, time, uniform); no CPU particle state.
 // Mesh vertex = (corner.x, corner.y, quad id). The hash and the drop/splash maths mirror crates/nephthene_core/src/rain.rs line for line
 // (that file is the reference; tests/rain.rs asserts the constants and the unit tests pin the values). All numbers untuned.
+// Flakes (snow, and the snow share of sleet) mirror nephthene_core::rain::{is_flake, flake_pos}.
 import bevy_render::view::View;
 
 struct Rain {
@@ -22,6 +23,13 @@ struct Rain {
     g_cell: f32,
     g_w: u32,
     g_h: u32,
+    snow_vel: vec3<f32>, // flake velocity m/s
+    kind: f32,          // 0 rain .. 1 snow: share of streak quads drawn as flakes
+    flake: f32,         // flake diameter m
+    flake_alpha: f32,
+    flutter_m: f32,
+    flutter_hz: f32,
+    snow_half: f32,     // flake window half-width m (flakes are denser than drops)
 }
 
 @group(0) @binding(0) var<uniform> view: View;
@@ -44,6 +52,7 @@ fn ground_h(xz: vec2<f32>) -> f32 {
 const PCG_MUL: u32 = 747796405u;
 const PCG_ADD: u32 = 2891336453u;
 const PCG_OUT: u32 = 277803737u;
+const FLAKE_SALT: u32 = 1759714724u;
 
 fn pcg(v: u32) -> u32 {
     let s = v * PCG_MUL + PCG_ADD;
@@ -58,6 +67,7 @@ struct VOut {
     @location(0) uv: vec2<f32>,
     @location(1) fade: f32,
     @location(2) shade: f32,
+    @location(3) flake: f32,
 }
 
 fn hidden() -> VOut {
@@ -80,6 +90,31 @@ fn vertex(@location(0) v: vec3<f32>) -> VOut {
         let b0 = hash01(q * 4u);
         let b1 = hash01(q * 4u + 1u);
         let b2 = hash01(q * 4u + 2u);
+        let fq = q ^ FLAKE_SALT;
+        if (hash01(fq * 4u) < u.kind) {
+            // Flake: a camera-facing round sprite at the drop's wrapped place on the flake velocity, swirling about its fall line.
+            // ponytail: 6.283185307 is tau; the one-pixel floor and the disc profile in `fragment` are shape constants like the streak's.
+            let a = 6.283185307 * (u.flutter_hz * u.time + hash01(fq * 4u + 1u));
+            let fs = 2.0 * u.snow_half;
+            let fx = cam.x - u.snow_half + rem(b0 * fs + u.snow_vel.x * u.time - cam.x, fs);
+            let fz = cam.z - u.snow_half + rem(b2 * fs + u.snow_vel.z * u.time - cam.z, fs);
+            let pos = vec3<f32>(fx + u.flutter_m * sin(a), ground_h(vec2<f32>(fx, fz)) + u.ground_y + rem(b1 * u.height + u.snow_vel.y * u.time, u.height), fz + u.flutter_m * cos(a));
+            let dist = max(length(cam - pos), 0.1);
+            let fpx = dist * 2.0 / (view.clip_from_view[1][1] * view.viewport.w);
+            let r = max(0.5 * u.flake, fpx);
+            let right = view.world_from_view[0].xyz;
+            let up = view.world_from_view[1].xyz;
+            let p = pos + (right * (corner.x - 0.5) + up * (corner.y - 0.5)) * 2.0 * r;
+            o.clip = view.clip_from_world * vec4<f32>(p, 1.0);
+            let hd = length(vec2<f32>(pos.x - cam.x, pos.z - cam.z));
+            // Coverage when the sprite is held at one pixel falls with the area ratio.
+            let cov = 0.5 * u.flake / r;
+            o.fade = cov * cov * (1.0 - smoothstep(0.55 * u.snow_half, u.snow_half, hd)) * smoothstep(0.4, 2.0, dist);
+            // Snow scatters diffusely: no forward-scatter peak.
+            o.shade = 1.0;
+            o.flake = 1.0;
+            return o;
+        }
         let hx = cam.x - u.half + rem(b0 * s + u.vel.x * u.time - cam.x, s);
         let hz = cam.z - u.half + rem(b2 * s + u.vel.z * u.time - cam.z, s);
         let head = vec3<f32>(hx, ground_h(vec2<f32>(hx, hz)) + u.ground_y + rem(b1 * u.height + u.vel.y * u.time, u.height), hz);
@@ -125,7 +160,13 @@ fn vertex(@location(0) v: vec3<f32>) -> VOut {
 @fragment
 fn fragment(i: VOut) -> @location(0) vec4<f32> {
     var a: f32;
-    if (u.mode == 0u) {
+    var peak = u.alpha;
+    if (i.flake > 0.5) {
+        // Flake: a soft round disc.
+        let r = length(2.0 * i.uv - vec2<f32>(1.0));
+        a = 1.0 - smoothstep(0.5, 1.0, r);
+        peak = u.flake_alpha;
+    } else if (u.mode == 0u) {
         // Soft across the ribbon, brighter at the head (corner.y = 0), fading to the tail.
         let across = 1.0 - abs(2.0 * i.uv.x - 1.0);
         a = across * mix(1.0, 0.25, i.uv.y);
@@ -133,7 +174,7 @@ fn fragment(i: VOut) -> @location(0) vec4<f32> {
         let r = length(2.0 * i.uv - vec2<f32>(1.0));
         a = smoothstep(0.45, 0.7, r) * (1.0 - smoothstep(0.8, 1.0, r)) + 0.5 * (1.0 - smoothstep(0.0, 0.35, r));
     }
-    let al = clamp(a * i.fade * u.alpha, 0.0, 1.0);
+    let al = clamp(a * i.fade * peak, 0.0, 1.0);
     // Premultiplied: radiance times exposure, as lit surfaces are.
     return vec4<f32>(u.light * view.exposure * i.shade * al, al);
 }

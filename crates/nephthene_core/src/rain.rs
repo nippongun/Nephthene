@@ -86,6 +86,42 @@ pub fn splash(c: &RainCfg, sid: u32, t: f32, cam: Vec3, ground_y: f32, intensity
 }
 
 
+// ---- Snow and sleet: the same streak quads; the share `kind` of them are flakes (sleet is a mix of drops and flakes). rain.wesl mirrors this. ----
+
+/// Salt of the flake hash, so a quad's kind does not correlate with its drop fields (q * 4 + 0..3). rain.wesl has the same constant.
+pub const FLAKE_SALT: u32 = 1759714724;
+
+/// Precipitation kind 0 rain .. 1 snow at the camera: `kind_force` when set, otherwise the air state's `precip_kind`.
+pub fn kind(c: &RainCfg, air_kind: f32) -> f32 { c.kind_force.unwrap_or(air_kind).clamp(0.0, 1.0) }
+
+/// The liquid share of the precipitation: what splashes and wets the ground.
+pub fn liquid(intensity: f32, kind: f32) -> f32 { intensity * (1.0 - kind.clamp(0.0, 1.0)) }
+
+fn flake_field(q: u32, k: u32) -> f32 { hash01((q ^ FLAKE_SALT).wrapping_mul(4).wrapping_add(k)) }
+
+/// Whether streak quad `q` is a flake at this kind (field 0 of its flake hash).
+pub fn is_flake(q: u32, kind: f32) -> bool { flake_field(q, 0) < kind }
+
+/// Flake velocity: falls at `snow_fall_mps`, drifts with the wind (world XZ, m/s) at `snow_drift`, capped at `snow_drift_max`.
+pub fn snow_velocity(c: &RainCfg, wind: Vec3) -> Vec3 {
+    let d = Vec3::new(wind.x, 0.0, wind.z) * c.snow_drift;
+    let d = if d.length() > c.snow_drift_max { d.normalize() * c.snow_drift_max } else { d };
+    Vec3::new(d.x, -c.snow_fall_mps, d.z)
+}
+
+/// Flake `q` at time `t`: the drop's fixed point (`streak_pos`'s hash fields) falling with the flake velocity `vel`, wrapped into the
+/// `snow_half_m` x `height_m` window, plus a horizontal swirl of radius `flutter_m` at `flutter_hz` turns per second (phase: field 1 of the flake hash).
+pub fn flake_pos(c: &RainCfg, q: u32, t: f32, vel: Vec3, cam: Vec3, ground_y: f32) -> Vec3 {
+    let (s, half) = (2.0 * c.snow_half_m, c.snow_half_m);
+    let b = |k: u32| hash01(q.wrapping_mul(4).wrapping_add(k));
+    let a = std::f32::consts::TAU * (c.flutter_hz * t + flake_field(q, 1));
+    Vec3::new(
+        cam.x - half + rem(b(0) * s + vel.x * t - cam.x, s) + c.flutter_m * a.sin(),
+        ground_y + rem(b(1) * c.height_m + vel.y * t, c.height_m),
+        cam.z - half + rem(b(2) * s + vel.z * t - cam.z, s) + c.flutter_m * a.cos(),
+    )
+}
+
 // ---- Ground height source (near rain sits on the slopes) ----
 
 /// Terrain height under (x, z), world metres. Flat ground is `Flat(h)`; a terrain supplies a `HeightGrid`.
@@ -327,5 +363,56 @@ mod tests {
         println!("shaft foot swing over a gust cycle: default {default:.3} m, red arm {red:.3} m (budget {SWING_BUDGET_M} m)");
         assert!(default <= SWING_BUDGET_M, "default shafts swing {default} m, budget {SWING_BUDGET_M} m");
         assert!(red > SWING_BUDGET_M, "red arm must swing past the budget, got {red} m (budget {SWING_BUDGET_M} m)");
+    }
+    #[test]
+    fn kind_follows_air_unless_forced() {
+        assert_eq!(kind(&rc(), 0.3), 0.3);
+        assert_eq!(kind(&RainCfg { kind_force: Some(0.0), ..rc() }, 1.0), 0.0);
+        assert_eq!(kind(&RainCfg { kind_force: Some(7.0), ..rc() }, 0.0), 1.0);
+        assert_eq!(kind(&rc(), -2.0), 0.0);
+    }
+    #[test]
+    fn liquid_share() {
+        assert_eq!(liquid(1.0, 1.0), 0.0);
+        assert_eq!(liquid(0.8, 0.0), 0.8);
+        assert!((liquid(1.0, 0.5) - 0.5).abs() < 1e-6);
+    }
+    #[test]
+    fn flake_share_tracks_kind() {
+        let n = rc().max_streaks;
+        let share = |k: f32| (0..n).filter(|&q| is_flake(q, k)).count() as f32 / n as f32;
+        assert_eq!(share(0.0), 0.0);
+        assert_eq!(share(1.0), 1.0);
+        assert!((share(0.5) - 0.5).abs() < 0.03, "{}", share(0.5));
+        let live: Vec<u32> = (0..n).filter(|&q| streak_active(q, 0.5)).collect();
+        let flakes = live.iter().filter(|&&q| is_flake(q, 0.5)).count() as f32 / live.len() as f32;
+        assert!((flakes - 0.5).abs() < 0.05, "flakes among live streaks: {flakes}");
+    }
+    #[test]
+    fn snow_falls_slowly_and_drifts() {
+        let still = snow_velocity(&rc(), Vec3::ZERO);
+        assert_eq!(still, Vec3::new(0.0, -rc().snow_fall_mps, 0.0));
+        assert!(-still.y < fall_speed(&rc(), 0.0), "flakes fall slower than the lightest rain");
+        let drift = snow_velocity(&rc(), Vec3::new(6.0, 0.0, 0.0));
+        assert!(drift.x > 0.0 && slant_deg(drift) > slant_deg(velocity(&rc(), Vec3::new(6.0, 0.0, 0.0), 1.0)), "{drift:?}");
+        assert!(snow_velocity(&rc(), Vec3::new(500.0, 0.0, 0.0)).x <= rc().snow_drift_max + 1e-4);
+    }
+    #[test]
+    fn flakes_swirl_inside_the_window() {
+        let cam = Vec3::new(123.0, 1.7, -45.0);
+        let vel = snow_velocity(&rc(), Vec3::ZERO);
+        for q in (0..rc().max_streaks).step_by(97) {
+            for t in [0.0, 1.3, 77.7] {
+                let p = flake_pos(&rc(), q, t, vel, cam, 0.0);
+                let s = flake_pos(&RainCfg { flutter_m: 0.0, ..rc() }, q, t, vel, cam, 0.0);
+                assert!(((p.x - s.x).hypot(p.z - s.z) - rc().flutter_m).abs() < 1e-3, "{p:?} {s:?}");
+                assert!((p.x - cam.x).abs() <= rc().snow_half_m + rc().flutter_m + 1e-3 && (p.z - cam.z).abs() <= rc().snow_half_m + rc().flutter_m + 1e-3, "{p:?}");
+                assert!(p.y >= 0.0 && p.y <= rc().height_m + 1e-3);
+            }
+        }
+        let period = 1.0 / rc().flutter_hz;
+        let xs: Vec<f32> = (0..8).map(|i| flake_pos(&rc(), 5, period * i as f32 / 8.0, vel, cam, 0.0).x).collect();
+        let (lo, hi) = xs.iter().fold((f32::MAX, f32::MIN), |(l, h), &x| (l.min(x), h.max(x)));
+        assert!(hi - lo > rc().flutter_m, "flake swirls: x spans {}", hi - lo);
     }
 }
