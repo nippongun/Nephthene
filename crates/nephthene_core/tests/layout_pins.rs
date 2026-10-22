@@ -11,6 +11,8 @@ const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
 const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
+const LIGHTNING_RS: &str = include_str!("../../../src/lightning.rs");
+const LIGHTNING: &str = include_str!("../../../src/shaders/lightning.wesl");
 
 /// Text between the `{` after `head` and the first line that is just `}`, comments removed.
 fn body(src: &str, head: &str) -> String {
@@ -48,6 +50,14 @@ fn resolve_uniform_matches_wgsl() { same_order(RENDER, "struct ResolveGpu {", RE
 fn fog_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogGpu {", FOG, "struct Fog {"); }
 #[test]
 fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogResolveGpu {", FOG, "struct FogResolve {"); }
+#[test]
+fn bolt_uniform_matches_wgsl() {
+    same_order(LIGHTNING_RS, "struct BoltGpu {", LIGHTNING, "struct Bolt {");
+    // The segment array: 2 vec4 per segment on both sides.
+    let n = 2 * nephthene_core::lightning::MAX_SEGMENTS;
+    assert!(LIGHTNING_RS.contains("s: [Vec4; 2 * MAX_SEGMENTS]"), "src/lightning.rs BoltSegs drifted");
+    assert!(LIGHTNING.contains(&format!("s: array<vec4<f32>, {n}>")), "lightning.wesl Segs is not {n} vec4");
+}
 
 /// (field, floats) in pack order; a vec2 is two floats.
 const EXPECT: [(&str, usize); 13] = [("a", 2), ("b", 2), ("core_r", 1), ("base", 1), ("top", 1), ("overshoot", 1), ("anvil_r", 1), ("shift", 2), ("anvil_base", 1), ("precip", 1), ("gust_r", 1), ("shelf_low", 1), ("dir_angle", 1)];

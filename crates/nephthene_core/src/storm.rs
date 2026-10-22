@@ -62,6 +62,8 @@ pub struct StormCfg {
     pub genesis_type: [f32; 2], pub genesis_floor: f32, pub rebuild_s: f64, pub rebuild_m: f32,
     pub render: StormRender,
     pub fx: StormFx,
+    /// Lightning: strike, channel, strokes, light (off by default).
+    pub lightning: crate::lightning::Lightning,
     /// Force this authored storm (by name) alone, timetable off. And a scene tag: authored storms with that `scene` join the timetable.
     pub force: Option<String>, pub scene: Option<String>,
     pub enabled: bool, pub sky_scale: f32, pub clock_scale: f32,
@@ -76,7 +78,7 @@ pub struct StormCfg {
 impl Default for StormCfg {
     fn default() -> Self {
         Self { seed: "nephthene".into(), dev_end: 0.3, diss_start: 0.7, edge: 0.05, core_flare: 0.8, anvil_wide: 0.55, anvil_p: 0.85, shelf_ceil: 1.0,
-               select_hysteresis: 0.8, genesis_type: [0.4, 0.9], genesis_floor: 0.3, rebuild_s: 60.0, rebuild_m: 2000.0, render: StormRender::default(), fx: StormFx::default(), force: None, scene: None,
+               select_hysteresis: 0.8, genesis_type: [0.4, 0.9], genesis_floor: 0.3, rebuild_s: 60.0, rebuild_m: 2000.0, render: StormRender::default(), fx: StormFx::default(), lightning: Default::default(), force: None, scene: None,
                enabled: false, sky_scale: 1.0, clock_scale: 0.25, bin_m: 20000.0, bin_min: 30.0, window_m: 120000.0,
                rate_per_km2_hr: 4.0e-5, diurnal_peak_hour: 16.0, diurnal_amp: 0.9, line_frac: 0.1,
                tropopause_m: 13000.0, base_m: [2400.0, 3200.0], top_frac: [0.75, 1.0], core_r_m: [3000.0, 8000.0],

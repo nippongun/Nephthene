@@ -1,7 +1,7 @@
 # Nephthene
 
 A weather system for [Bevy](https://bevy.org) 0.20: a clock that drives sun, moon, stars and exposure; a Bevy `Atmosphere` sky with
-dust; HZD-style raymarched volumetric clouds with a temporal resolve; cloud shadows; GPU rain with splashes and wet ground; distant rain
+dust; HZD-style raymarched volumetric clouds with a temporal resolve; cloud shadows; GPU rain with splashes and wet ground; lightning (branched channels, flash light, strike and thunder messages); distant rain
 shafts; optional storm cells; terrain-following ground fog (valley pools, shallow mist, burn-off); wind; a weather map; wind/rain audio mapping; and a mouse-driven weather panel.
 
 Two crates:
@@ -32,6 +32,7 @@ The scene provides a camera with `AtmosphereSettings` (add `Exposure` / `Distanc
 ## Tests (all headless)
 
 - `cargo test --release` runs: core unit and integration tests, the golden still gate (`tests/golden.rs`, goldens in `tests/golden/`, Apple Silicon/Metal), the metric self-test.
+- Manual lightning gates G23-G24 (channel reads as a line, flash lights the ground): `cargo test --release --test lightning -- --ignored --nocapture --test-threads=1`.
 - Manual fog gates G15-G16 (terrain, mountain shadow): `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`.
 - Manual cloud gates G7-G14 (a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
 - Regenerate goldens after an approved look change: `NEPHTHENE_UPDATE_GOLDEN=1 cargo test --release --test golden golden_cloud_sky`.
@@ -52,7 +53,7 @@ starting values and **untuned**. Sections:
 | `shafts` | rain-shaft pass |
 | `ground_fog` | terrain-following radiation fog: formation from night cooling, cloud cover, wind, wetness and dust; burn-off and base lift; valley pooling depth, shallow mist, optics, bake and march (`render_scale`, half resolution by default, depth-aware composite); test switches `ignore_terrain`, `ignore_shadow`, `hash_noise`; off by default via `enabled` (the panel's Fog section switches it on at runtime). See `docs/fog.md` |
 | `rain` | streaks, splashes, drop kinematics, wetness, rain light, `force` |
-| `storms` (+ `render`, `fx`) | timetable, cell shape, shader constants, flashes, authored storms, `force` |
+| `storms` (+ `render`, `fx`, `lightning`) | timetable, cell shape, shader constants, flash schedule, authored storms, `force`; `lightning`: strike, channel shape, return strokes, channel look, flash light, `force_age_s` (off by default via `enabled`) |
 | `audio` | wind/rain bed mapping (the plugin does not play sound; use `core::audio` from your audio code) |
 | `sim` | smoothing, `panel_open` |
 

@@ -94,7 +94,7 @@ pub fn ground_image(g: &r::HeightGrid) -> Image {
 struct RainQuads(Handle<RainMaterial>);
 
 /// `n` quads, vertex = (corner x, corner y, quad id).
-fn quads(n: u32) -> Mesh {
+pub(crate) fn quads(n: u32) -> Mesh {
     let pos: Vec<[f32; 3]> = (0..n).flat_map(|q| [[0.0, 0.0, q as f32], [1.0, 0.0, q as f32], [1.0, 1.0, q as f32], [0.0, 1.0, q as f32]]).collect();
     let idx: Vec<u32> = (0..n).flat_map(|i| [4 * i, 4 * i + 1, 4 * i + 2, 4 * i, 4 * i + 2, 4 * i + 3]).collect();
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
