@@ -31,7 +31,7 @@ pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, R
 #[derive(Component)]
 struct SelShown(usize);
 #[derive(Component, Clone, Copy, Default)]
-enum Txt { #[default] Time, Play, Here, Air, Climate, Rain, Sun, Frame, Hover, Pin, Fog, Storm }
+enum Txt { #[default] Time, Play, Here, Air, Climate, Oro, Rain, Sun, Frame, Hover, Pin, Fog, Storm }
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Mark { Cam, Heading, Pin, Storm(usize) }
 
@@ -221,6 +221,7 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
     cm.spawn_scene(label(String::new())).insert((Txt::Here, ChildOf(root)));
     cm.spawn_scene(label(String::new())).insert((Txt::Air, ChildOf(root)));
     cm.spawn_scene(label_dim(String::new())).insert((Txt::Climate, ChildOf(root)));
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Oro, ChildOf(root)));
     cm.spawn_scene(label_dim(String::new())).insert((Txt::Rain, ChildOf(root)));
     cm.spawn_scene(label(String::new())).insert((Txt::Sun, ChildOf(root)));
     cm.spawn_scene(label_dim(String::new())).insert((Txt::Frame, ChildOf(root)));
@@ -401,6 +402,7 @@ fn storm_txt(storms: Option<&crate::storms::Storms>, wx: &Weather, p: Vec3) -> S
 fn refresh_ui(
     d: Res<Panel>, wx: Res<Weather>, rain: Res<RainState>, fog: Res<crate::fog::FogState>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, time: Res<Time>, hover: Res<MapHover>,
     mut ms: Local<f32>, mut texts: Query<(&Txt, &mut Text)>, mut marks: Query<(&Mark, &mut Node)>, storms: Option<Res<crate::storms::Storms>>,
+    oro: Option<Res<crate::orographic::Orographic>>,
 ) {
     *ms += (time.delta_secs() * 1000.0 - *ms) * 0.1;
     if !d.0.open { return; }
@@ -427,6 +429,10 @@ fn refresh_ui(
                         Txt::Here => format!("coverage {:.2}   rain {:.2}   dust {:.2}", wx.here.coverage, wx.here.precip, wx.here.dust),
             Txt::Air => { let a = &wx.air; format!("air {:.1} C   dew {:.1} C   rh {:.2}   freezing {:.0} m   {}", a.temp_c, a.dew_c, a.rh, a.freezing_m, c::precip_word(a.precip_kind)) }
             Txt::Climate => { let k = &wx.climate_here; format!("climate {:+.1} K   humidity {:+.2}   snow {:.2}   ground wet {:.2}", k.temp_k, k.humidity, k.snow, k.wetness) }
+            Txt::Oro => match oro.as_ref().and_then(|o| o.tile.as_ref()) {
+                Some(t) => { let [pr, cv] = t.sample(p.x, p.z); format!("terrain uplift: precip {pr:.2}   cover {cv:.2}") }
+                None => "terrain uplift: off".into(),
+            },
             Txt::Rain => format!("rain: intensity {:.2}   wetness {:.2}   fall {:.1} m/s   slant {:.0} deg   source {}", rain.intensity, rain.wetness, -rain.vel.y, rain.slant_deg(), rain.source()),
             Txt::Sun => format!("sun elevation {el:.1} deg   azimuth {az:.1} deg   heading {:.0}", c::heading_deg(fwd.to_array())),
             Txt::Frame => format!("frame {:.1} ms ({:.0} fps)", *ms, 1000.0 / ms.max(0.1)),

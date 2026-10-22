@@ -58,8 +58,17 @@ pub fn pcg(v: u32) -> u32 {
 pub fn hash01(v: u32) -> f32 { (pcg(v) >> 8) as f32 / 16777216.0 }
 fn rem(x: f32, s: f32) -> f32 { x - s * (x / s).floor() }
 
-/// Whether streak `q` is drawn at this intensity (field 3 of its hash).
-pub fn streak_active(q: u32, intensity: f32) -> bool { hash01(q.wrapping_mul(4).wrapping_add(3)) < intensity }
+/// Whether quad `q` of `count` falls at this intensity: the falling quads are the prefix `q < intensity x count`, so the pass can draw
+/// just that range (`draw_quads`). Each quad's place is hashed, so any prefix is spread evenly through the volume.
+pub fn active(q: u32, count: u32, intensity: f32) -> bool { (q as f32) < intensity.clamp(0.0, 1.0) * count as f32 }
+
+/// Quads to draw for `count` at `intensity`: the smallest `count >> k` (k = 0..=levels, never 0) that still holds every falling quad.
+pub fn draw_quads(count: u32, intensity: f32, levels: u32) -> u32 {
+    let need = (intensity.clamp(0.0, 1.0) * count as f32).ceil() as u32;
+    let mut n = count;
+    for _ in 0..levels { if n / 2 >= need.max(1) { n /= 2 } else { break } }
+    n
+}
 
 /// World position of the head of streak `q` at time `t` (s): a fixed point per drop, falling with `vel`, wrapped into the
 /// `half_m` x `height_m` window around `cam` (x, z) and `ground_y` (y).
@@ -73,7 +82,8 @@ pub fn streak_pos(c: &RainCfg, q: u32, t: f32, vel: Vec3, cam: Vec3, ground_y: f
     )
 }
 
-/// Splash `s` at time `t`: (ground position, age 0..1, active). Each splash re-rolls its place every `splash_life_s`.
+/// Splash `s` at time `t`: (ground position, age 0..1, active). Each splash re-rolls its place every `splash_life_s`. Active: the prefix
+/// `sid < intensity x max_splashes`.
 pub fn splash(c: &RainCfg, sid: u32, t: f32, cam: Vec3, ground_y: f32, intensity: f32) -> (Vec3, f32, bool) {
     let half = c.half_m;
     let tt = t / c.splash_life_s + hash01(sid.wrapping_mul(4));
@@ -82,7 +92,7 @@ pub fn splash(c: &RainCfg, sid: u32, t: f32, cam: Vec3, ground_y: f32, intensity
     let sz = 2.0 * half;
     let h = |f: u32| hash01(k_c.wrapping_mul(4).wrapping_add(f));
     let p = Vec3::new(cam.x - half + rem(h(1) * sz - cam.x, sz), ground_y, cam.z - half + rem(h(2) * sz - cam.z, sz));
-    (p, age, h(3) < intensity)
+    (p, age, active(sid, c.max_splashes, intensity))
 }
 
 
@@ -276,9 +286,30 @@ mod tests {
     }
     #[test]
     fn active_fraction_tracks_intensity() {
-        let frac = |i: f32| (0..rc().max_streaks).filter(|&q| streak_active(q, i)).count() as f32 / rc().max_streaks as f32;
+        let n = rc().max_streaks;
+        let frac = |i: f32| (0..n).filter(|&q| active(q, n, i)).count() as f32 / n as f32;
         assert_eq!(frac(0.0), 0.0);
         assert!((frac(0.5) - 0.5).abs() < 0.03 && (frac(1.0) - 1.0).abs() < 1e-6);
+        assert!((0..n).filter(|&q| active(q, n, 0.3)).all(|q| q < (0.3 * n as f32).ceil() as u32), "falling quads are a prefix");
+    }
+    #[test]
+    fn prefix_mesh_holds_every_falling_quad() {
+        for count in [24000u32, 6000, 1000, 7] {
+            for i in [0.0f32, 0.001, 0.05, 0.3, 0.5, 0.51, 1.0] {
+                for levels in [0u32, 1, 6] {
+                    let n = draw_quads(count, i, levels);
+                    let need = (i * count as f32).ceil() as u32;
+                    assert!(n <= count && (0..=levels).any(|k| count >> k == n), "{count} {i} {levels}: {n}");
+                    assert!((0..count).filter(|&q| active(q, count, i)).all(|q| q < n), "{count} {i} {levels}: {n}");
+                    // Within 2x only where the mesh can shrink to a 2x fit: none at zero intensity (1 quad is the floor).
+                    if levels == 6 && need >= 1 && need >= count >> 6 { assert!(n <= 2 * need, "{count} {i}: {n} for {need}"); }
+                }
+            }
+        }
+        assert_eq!(draw_quads(24000, 0.05, 6), 1500);
+        assert_eq!(draw_quads(24000, 1.0, 6), 24000);
+        assert_eq!(draw_quads(24000, 0.05, 0), 24000);
+        assert_eq!(draw_quads(24000, 0.0, 6), 375);
     }
     #[test]
     fn splashes_land_on_the_ground_in_the_window() {
@@ -384,7 +415,7 @@ mod tests {
         assert_eq!(share(0.0), 0.0);
         assert_eq!(share(1.0), 1.0);
         assert!((share(0.5) - 0.5).abs() < 0.03, "{}", share(0.5));
-        let live: Vec<u32> = (0..n).filter(|&q| streak_active(q, 0.5)).collect();
+        let live: Vec<u32> = (0..n).filter(|&q| active(q, n, 0.5)).collect();
         let flakes = live.iter().filter(|&&q| is_flake(q, 0.5)).count() as f32 / live.len() as f32;
         assert!((flakes - 0.5).abs() < 0.05, "flakes among live streaks: {flakes}");
     }
