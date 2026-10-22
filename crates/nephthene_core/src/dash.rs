@@ -84,6 +84,12 @@ pub fn clamp_speed(s: f32) -> f32 { s.clamp(0.0, 30.0) }
 pub const RAIN_PRECIP: f32 = 1.0;
 pub fn precip_override(rain: bool) -> Option<f32> { rain.then_some(RAIN_PRECIP) }
 
+/// Precipitation type in words with its value (0 rain, 1 snow): the ends of the blend are rain and snow, the middle sleet. Bands untuned.
+pub fn precip_word(kind: f32) -> String {
+    let w = if kind <= 0.1 { "rain" } else if kind >= 0.9 { "snow" } else { "sleet" };
+    format!("precip {w} ({kind:.2})")
+}
+
 /// Cloud debug views (debug modes 0..=5), named in words.
 pub const DEBUG_NAMES: [&str; 6] = ["off (normal look)", "exposed max channel", "direct light", "sky ambient", "cloud alpha", "cloud depth"];
 
@@ -141,6 +147,10 @@ mod tests {
         // A wrapped map folds a point one period east and one south back onto the same uv.
         let w = WeatherMap { wrap: true, ..map() };
         assert_eq!(map_uv(&w, -50.0 + 200.0, 50.0 - 200.0), map_uv(&m, -50.0, 50.0));
+    }
+    #[test]
+    fn precip_words() {
+        assert_eq!((precip_word(0.0), precip_word(0.5), precip_word(1.0)), ("precip rain (0.00)".into(), "precip sleet (0.50)".into(), "precip snow (1.00)".into()));
     }
     #[test]
     fn compass_heading() {

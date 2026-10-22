@@ -479,7 +479,11 @@
     "ref_alt_m": 0.0,
     "lapse_k_per_km": 6.5,
     "melt_m": 300.0,
-    "spin_up_h": 48.0
+    "spin_up_h": 48.0,
+    "dew_lapse_k_per_km": 1.8,
+    "snow_c": -0.5,
+    "rain_c": 2.5,
+    "field_px": 32
   },
   "ground_fog": {
     "enabled": false,
