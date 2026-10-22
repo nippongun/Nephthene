@@ -29,7 +29,7 @@ pub struct Storms {
     centre: Option<Vec2>, built: Option<(f64, Vec2)>, logged: Option<usize>,
 }
 
-fn select_storms(
+pub(crate) fn select_storms(
     wx: Res<Weather>, mut st: ResMut<Storms>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, params: Option<ResMut<CloudParams>>,
 ) {
     let st = &mut *st;

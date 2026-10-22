@@ -15,7 +15,7 @@ knob in `Config`. A host game only consumes it.
 - **Judged by eye**: every row that changes a pixel ships renders of the fixed poses and the owner accepts them. Green gates do
   not prove a look.
 
-Today the matrix reads 7 `have`, 5 `partial`, 13 `none`: about 38% weighted. The number is arbitrary; the denominator is not,
+Today the matrix reads 7 `have`, 6 `partial`, 12 `none`: about 40% weighted. The number is arbitrary; the denominator is not,
 and neither is any individual row.
 
 ## The five commitments
@@ -61,8 +61,8 @@ An open world 100x larger must not cost one millisecond more.
 
 ### C3 Everything toggleable, and off costs nothing
 
-- Every feature has an `enabled` in its config section. Today only `clouds`, `ground_fog` and `storms` do: rain, shafts, stars,
-  moon, dust and the sky driving have none.
+- Every feature has an `enabled` in its config section. Today only `clouds`, `ground_fog`, `storms` and `storms.lightning` do:
+  rain, shafts, stars, moon, dust and the sky driving have none.
 - **Off means no pass, no system, no allocation.** `FogPlugin` is always built and idles; that is acceptable only while a gate
   proves the idle cost is zero.
 - **Gate (new).** Everything off: `PASSMS` reports no spans, the frame time matches the same scene with the plugin absent within
@@ -127,7 +127,7 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 | 8 | Rain particles and surface wetness | partial | no occlusion, density bug open |
 | 9 | Snow particles and accumulation | none | Phase 4 |
 | 10 | Precipitation occlusion (nothing falls indoors) | none | Phase 4 |
-| 11 | Lightning and thunder | none | Phase 6 |
+| 11 | Lightning and thunder | partial | slice 1 in: channel, flash light, strike/thunder messages, G23/G24; off by default, Metal pending |
 | 12 | Storm cells with a lifecycle | partial | analytic capsules, read as lenses |
 | 13 | Weather field authoring (paint a region) | have | `WeatherMap::load`, panel map |
 | 14 | Wind field driving clouds, rain, fog, foliage | none | one global vector; Phase 2 |
@@ -295,22 +295,28 @@ snow reduces visibility near the ground; gates on wall visibility and on dust on
 ## Phase 6: lightning and thunder
 
 Can start after Phase 1, in parallel with Phases 2-5: the flash schedule (`storm_fx::flashes`) and the analytic cells exist.
+Slice 1 built (lavapipe; Metal pending): bolt geometry in core (`core::lightning`, unit tests), channel ribbons, one point light per
+live flash, `LightningStrike` / `Thunder` messages, gates G23 (channel reads as a line) and G24 (flash lights the ground). Off by
+default (`storms.lightning.enabled`). Left for slice 2 (touches `clouds_march.wesl`, ask first): clouds lit from inside, the
+resolve-vs-flash term, in-cloud flashes, bloom, fog lit by the flash.
 Done when: cloud-to-ground and in-cloud flashes light the clouds, terrain and fog, thunder arrives late by distance, and the host
 receives events.
 
-- **Bolt geometry in core**: seeded stepped leader with branches (midpoint displacement), deterministic from the `Flash`; pure,
-  unit-tested (connectivity, ends on the ground for CG, stays inside the cell for IC).
-- **Bolt render**: emissive ribbons from a segment buffer in a vertex shader (the rain scheme), HDR so Bevy's bloom makes the
-  glow; 3-5 return strokes over ~0.5 s, channel afterglow.
-- **Clouds lit from inside**: one point-light term in the cloud march from the flash position with a cheap transmittance
+- **Bolt geometry in core** (slice 1, in): seeded stepped leader with branches (midpoint displacement), deterministic from the
+  `Flash`; pure, unit-tested (connectivity, ends on the ground for CG, stays inside the cell for IC). `core::lightning`.
+- **Bolt render** (slice 1, in): emissive camera-facing ribbons, at least `min_px` wide with radiance scaled by width / drawn
+  width, added over the scene; gate G23. Left for slice 2: HDR bloom, and whether 3-5 return strokes over ~0.5 s and channel
+  afterglow read as one flash.
+- **Clouds lit from inside** (slice 2, touches `clouds_march.wesl`: ask first): one point-light term in the cloud march from the flash position with a cheap transmittance
   (distance and local density, no light march), evaluated only while a flash is live.
-- **Temporal resolves vs flashes**: the cloud and fog resolves blend history at 0.1 per frame, so a one-frame flash would smear
+- **Temporal resolves vs flashes** (slice 2): the cloud and fog resolves blend history at 0.1 per frame, so a one-frame flash would smear
   over ~10 frames and its rise would be clamped. Flash light needs its own unresolved term (or the history re-weighted on flash
   frames). Gate: luma at flash frame N, and back within budget of the pre-flash level by N+k.
-- **Scene light**: a short-lived Bevy light at the strike (no shadows by default) plus an ambient bump; fog lit by the flash.
-- **Thunder**: `thunder_delay_s` by distance (exists); host events `LightningStrike { pos, cg, energy }` and
-  `Thunder { delay_s, distance_m, energy }`. The wind and rain audio mapping (`core::audio`) becomes host events in the same
-  change, so a host wires one event stream rather than polling resources.
+- **Scene light** (slice 1, in for the strike): one Bevy `PointLight` per live flash from a pool of `max_live`, no shadows,
+  placed along the channel at `light_at`; gate G24. Left for slice 2: the ambient bump and fog lit by the flash.
+- **Thunder** (slice 1, in): `thunder_delay_s` by distance, and the `LightningStrike` / `Thunder` messages a host reads. Still
+  open: the wind and rain audio mapping (`core::audio`) becomes messages too, so a host wires one stream rather than polling
+  resources.
 - Thundersnow (rare flashes in strong snow storms) falls out of the same code.
 
 ## Phase 7: day and night
@@ -350,7 +356,7 @@ Done when a designer or an agent can author, preview and verify a region without
 
 | Kind | Needs | Look | Distinct gate |
 |---|---|---|---|
-| Thunderstorm | 3 cells, 4 rain, 5 gust front, 6 lightning | dark-based Cb, curtains, shelf cloud, flashes | flash light + resolve recovery |
+| Thunderstorm | 3 cells, 4 rain, 5 gust front, 6 lightning | dark-based Cb, curtains, shelf cloud, flashes | flash light (G24, in) + resolve recovery (slice 2) |
 | Blizzard | 2 cold air + altitude + climate, 4 snow + accumulation, 5 blowing snow, 7 whiteout | horizontal snow, visibility < 200 m, white ground | visibility at the camera vs red arm (blowing snow off); and the C5-place gate (same place, 0 m rain / 3000 m snow) |
 | Sandstorm / haboob | 2 dry climate + wind field, 5 dust wall and grains | brown wall, red sun, near-zero contrast inside | dust only where the ground is dry (red arm: ignore ground state) |
 | Rain shower | 3 cells, 4 rain | grey curtains under cumulus | exists (shafts) |
@@ -439,7 +445,7 @@ Phase 1. After Phase 2, phases run in parallel sessions, one owner per file.
 | Phase 3 (storms) | `crates/nephthene_core/src/storm.rs`, `src/storms.rs`, storm shaders |
 | Phase 4 (precipitation) | `src/rain.rs`, `src/shaders/rain.wesl`, `crates/nephthene_core/src/rain.rs`, new surface material, new occlusion pass |
 | Phase 5 (dust) | `src/shaders/fog.wesl` and `src/fog/` after Phase 0 hands them over |
-| Phase 6 (lightning) | new `crates/nephthene_core/src/lightning.rs`, `crates/nephthene_core/src/storm_fx.rs`, new bolt shader; `clouds_march.wesl` flash term (ask first) |
+| Phase 6 (lightning) | `crates/nephthene_core/src/lightning.rs`, `src/lightning.rs`, `src/shaders/lightning.wesl`, `tests/lightning.rs` (all slice 1), `crates/nephthene_core/src/storm_fx.rs`; `clouds_march.wesl` flash term (slice 2, ask first) |
 | Phase 8 (scale) | `crates/nephthene_core/src/lib.rs` (the `WeatherField` trait), new tile source, the field passes |
 | Phase 9 (authoring) | `examples/sky.rs` (by then it is the authoring tool: ask first until Phase 1 closes) |
 | Shared, append-only | `crates/nephthene_core/src/config.rs` (own section only), `examples/poses.json` (new poses only), `docs/bugs.md`, `docs/decisions.md`, `README.md` |

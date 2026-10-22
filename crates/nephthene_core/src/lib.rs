@@ -13,6 +13,7 @@ pub mod dash;
 pub mod storm;
 pub mod storm_fx;
 pub mod fog;
+pub mod lightning;
 pub use config::{Clock, Clouds, Config, Fog, MapCfg, Moon, RainCfg, Shafts, Sky, Stars, Wind};
 use serde::Deserialize;
 

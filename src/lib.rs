@@ -7,13 +7,14 @@
 //! The scene supplies a camera with [`bevy::pbr::AtmosphereSettings`] (plus `Exposure` / `DistanceFog` if it wants them driven) and one
 //! `DirectionalLight` marked [`NephtheneSun`]. The plugin spawns the Atmosphere, the moon and the stars, moves the sun along the clock,
 //! draws volumetric clouds with cloud shadows, rain, optional storms, optional terrain-following ground fog, and (feature `panel`) a mouse-driven weather panel.
-//! Runtime state: [`Weather`], [`RainState`], [`Storms`]; mark a mesh [`WetGround`] to let rain wet it.
+//! Runtime state: [`Weather`], [`RainState`], [`Storms`], [`Flashes`]; messages [`LightningStrike`] and [`Thunder`]; mark a mesh [`WetGround`] to let rain wet it.
 //! Every tunable is in [`Config`] (re-exported from `nephthene_core`).
 use bevy::prelude::*;
 pub use nephthene_core::{self as core, Config, WeatherMap};
 
 mod clouds;
 mod fog;
+mod lightning;
 #[cfg(feature = "panel")]
 mod panel;
 mod rain;
@@ -22,6 +23,7 @@ mod storms;
 
 pub use clouds::CloudParams;
 pub use fog::FogState;
+pub use lightning::{Flashes, LightningStrike, Thunder};
 #[cfg(feature = "panel")]
 pub use panel::{Panel, Wid};
 pub use rain::{Ground, RainState, WetGround};
@@ -51,7 +53,7 @@ impl Plugin for NephthenePlugin {
         let map = self.map.clone().unwrap_or_else(|| WeatherMap::procedural(&self.config.map));
         sky::build(app, &self.config, map);
         if self.config.clouds.enabled { app.add_plugins(clouds::CloudPlugin); }
-        app.add_plugins((rain::RainPlugin, storms::StormPlugin));
+        app.add_plugins((rain::RainPlugin, storms::StormPlugin, lightning::LightningPlugin));
         app.add_plugins(fog::FogPlugin);
         #[cfg(feature = "panel")]
         app.add_plugins(panel::PanelPlugin);
