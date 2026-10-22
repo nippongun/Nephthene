@@ -160,6 +160,42 @@ impl Ground for HeightGrid {
     }
 }
 
+// ---- Shelter: roofs the precipitation stops on (occlusion). rain.wesl mirrors `HeightGrid::top` (`shelter_h`) and `floor_at` (`floor_h`). ----
+
+/// Height of "no roof here": below any ground.
+pub const NO_ROOF: f32 = -1.0e9;
+
+impl HeightGrid {
+    /// The nearest cell's height, or `NO_ROOF` outside the grid (no clamping: a roof ends at its edge).
+    pub fn top(&self, x: f32, z: f32) -> f32 {
+        let (fx, fy) = ((x - self.min_x) / self.cell_m, (self.max_z - z) / self.cell_m);
+        if fx < 0.0 || fy < 0.0 || fx >= self.w as f32 || fy >= self.h as f32 { return NO_ROOF; }
+        self.y[(fy as u32 * self.w + fx as u32) as usize]
+    }
+}
+
+/// Roof heights from world boxes (min, max corners): each cell centre takes the highest box top over it, `NO_ROOF` where none is.
+/// The cell grows from `cell_m` so the grid stays near `max_cells`. No boxes: one `NO_ROOF` cell.
+pub fn shelter_grid(boxes: &[(Vec3, Vec3)], cell_m: f32, max_cells: u32) -> HeightGrid {
+    if boxes.is_empty() { return HeightGrid { min_x: 0.0, max_z: 0.0, cell_m: 1.0, w: 1, h: 1, y: vec![NO_ROOF] }; }
+    let (lo, hi) = boxes.iter().fold((Vec3::MAX, Vec3::MIN), |(l, h), (a, b)| (l.min(*a), h.max(*b)));
+    // ponytail: 1 mm floor keeps a zero-width box from dividing by zero; not a look value.
+    let (sx, sz) = ((hi.x - lo.x).max(1e-3), (hi.z - lo.z).max(1e-3));
+    let cell = cell_m.max((sx * sz / max_cells.max(1) as f32).sqrt());
+    let (w, h) = (((sx / cell).ceil() as u32).max(1), ((sz / cell).ceil() as u32).max(1));
+    let y = (0..h).flat_map(|j| (0..w).map(move |i| (i, j))).map(|(i, j)| {
+        let (x, z) = (lo.x + (i as f32 + 0.5) * cell, hi.z - (j as f32 + 0.5) * cell);
+        boxes.iter().filter(|(a, b)| x >= a.x && x <= b.x && z >= a.z && z <= b.z).map(|(_, b)| b.y).fold(NO_ROOF, f32::max)
+    }).collect();
+    HeightGrid { min_x: lo.x, max_z: hi.z, cell_m: cell, w, h, y }
+}
+
+/// Where precipitation lands at (x, z): the ground, or a roof above it.
+pub fn floor_at(g: &dyn Ground, roofs: &HeightGrid, x: f32, z: f32) -> f32 { g.height(x, z).max(roofs.top(x, z)) }
+
+/// The camera stands under a roof.
+pub fn sheltered(roofs: &HeightGrid, cam: Vec3) -> bool { roofs.top(cam.x, cam.z) > cam.y }
+
 /// `streak_pos` over terrain: the drop's xz wraps in the window as before, its y is `height_m` above the ground under it.
 pub fn streak_pos_on(c: &RainCfg, q: u32, t: f32, vel: Vec3, cam: Vec3, g: &dyn Ground) -> Vec3 {
     let p = streak_pos(c, q, t, vel, cam, 0.0);
@@ -394,6 +430,34 @@ mod tests {
         println!("shaft foot swing over a gust cycle: default {default:.3} m, red arm {red:.3} m (budget {SWING_BUDGET_M} m)");
         assert!(default <= SWING_BUDGET_M, "default shafts swing {default} m, budget {SWING_BUDGET_M} m");
         assert!(red > SWING_BUDGET_M, "red arm must swing past the budget, got {red} m (budget {SWING_BUDGET_M} m)");
+    }
+    #[test]
+    fn shelter_grid_takes_the_highest_roof() {
+        let a = (Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 4.0, 10.0));
+        let b = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(5.0, 7.0, 5.0));
+        let g = shelter_grid(&[a, b], 0.5, 1 << 20);
+        assert_eq!(g.top(-5.0, -5.0), 4.0);
+        assert_eq!(g.top(2.5, 2.5), 7.0, "the higher box wins where they overlap");
+        assert_eq!(g.top(20.0, 0.0), NO_ROOF);
+        assert_eq!(g.top(0.0, -10.5), NO_ROOF);
+        assert!(g.cell_m == 0.5 && g.w == 40 && g.h == 40);
+    }
+    #[test]
+    fn shelter_grid_caps_its_cells_and_handles_none() {
+        assert_eq!(shelter_grid(&[], 0.5, 100).top(0.0, 0.0), NO_ROOF);
+        let big = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(1000.0, 3.0, 1000.0));
+        let g = shelter_grid(&[big], 0.5, 10_000);
+        assert!(g.cell_m >= 10.0 - 1e-3 && g.w * g.h <= 10_100, "cell {} grid {}x{}", g.cell_m, g.w, g.h);
+        assert_eq!(g.top(500.0, 500.0), 3.0);
+    }
+    #[test]
+    fn floor_is_the_roof_over_the_ground() {
+        let roofs = shelter_grid(&[(Vec3::new(-4.0, 0.0, -4.0), Vec3::new(4.0, 3.0, 4.0))], 0.5, 1 << 20);
+        assert_eq!(floor_at(&Flat(1.0), &roofs, 0.0, 0.0), 3.0);
+        assert_eq!(floor_at(&Flat(1.0), &roofs, 10.0, 0.0), 1.0);
+        assert!(sheltered(&roofs, Vec3::new(0.0, 1.7, 0.0)));
+        assert!(!sheltered(&roofs, Vec3::new(0.0, 5.0, 0.0)), "above the roof is open sky");
+        assert!(!sheltered(&roofs, Vec3::new(10.0, 1.7, 0.0)));
     }
     #[test]
     fn kind_follows_air_unless_forced() {

@@ -7,7 +7,7 @@
 //! The scene supplies a camera with [`bevy::pbr::AtmosphereSettings`] (plus `Exposure` / `DistanceFog` if it wants them driven) and one
 //! `DirectionalLight` marked [`NephtheneSun`]. The plugin spawns the Atmosphere, the moon and the stars, moves the sun along the clock,
 //! draws volumetric clouds with cloud shadows, rain, optional storms, optional terrain-following ground fog, and (feature `panel`) a mouse-driven weather panel.
-//! Runtime state: [`Weather`], [`RainState`], [`Storms`], [`Flashes`]; messages [`LightningStrike`] and [`Thunder`]; mark a mesh [`WetGround`] to let rain wet it.
+//! Runtime state: [`Weather`], [`RainState`], [`Storms`], [`Flashes`]; messages [`LightningStrike`] and [`Thunder`]; mark a mesh [`WetGround`] to let rain wet it, or [`Shelter`] to keep rain out from under it.
 //! Every tunable is in [`Config`] (re-exported from `nephthene_core`).
 use bevy::prelude::*;
 pub use nephthene_core::{self as core, Config, WeatherMap};
@@ -26,7 +26,7 @@ pub use fog::FogState;
 pub use lightning::{Flashes, LightningStrike, Thunder};
 #[cfg(feature = "panel")]
 pub use panel::{Panel, Wid};
-pub use rain::{Ground, RainState, WetGround};
+pub use rain::{Ground, RainState, Shelter, WetGround};
 pub use sky::{Moon, NephtheneSun, Weather};
 pub use storms::Storms;
 
