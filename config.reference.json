@@ -312,7 +312,10 @@
     "flutter_m": 0.25,
     "flutter_hz": 0.4,
     "snow_half_m": 13.3,
-    "draw_levels": 6
+    "draw_levels": 6,
+    "shelter_cell_m": 0.5,
+    "shelter_max_cells": 1048576,
+    "ignore_shelter": false
   },
   "storms": {
     "seed": "nephthene",

@@ -93,7 +93,10 @@ fn rain_shader_mirrors_rust_hash() {
         "f32(pcg(v) >> 8u) / 16777216.0", "f32(q) >= u.intensity * f32(u.count)", "cam.x - u.half + rem(",
         "let c = q * 7919u + u32(k);", "let tt = u.time / u.life + hash01(q * 4u);",
         "let fq = q ^ FLAKE_SALT;", "hash01(fq * 4u) < u.kind", "hash01(fq * 4u + 1u)",
+        "fn floor_h(xz: vec2<f32>) -> f32 { return max(ground_h(xz), shelter_h(xz)); }", "floor_h(vec2<f32>(fx, fz))",
+        "floor_h(vec2<f32>(hx, hz))", "floor_h(vec2<f32>(px0, pz0))",
     ] { assert!(RAIN.contains(line), "rain.wesl lost `{line}`"); }
+    assert!(RAIN.contains(&format!("const NO_ROOF: f32 = {:.1};", r::NO_ROOF)), "NO_ROOF differs from rain::NO_ROOF");
     assert_eq!(RAIN.matches("f32(q) >= u.intensity * f32(u.count)").count(), 2, "streaks and splashes both use the prefix rule");
     assert_eq!((r::pcg(0), r::pcg(1), r::pcg(12345)), (129708002, 2831084092, 4099845390));
 }

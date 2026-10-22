@@ -31,11 +31,16 @@ struct Rain {
     flutter_m: f32,
     flutter_hz: f32,
     snow_half: f32,     // flake window half-width m (flakes are denser than drops)
+    s_min: vec2<f32>,   // roof grid: west edge x, north edge z
+    s_cell: f32,
+    s_w: u32,
+    s_h: u32,
 }
 
 @group(0) @binding(0) var<uniform> view: View;
 @group(3) @binding(0) var<uniform> u: Rain;
 @group(3) @binding(1) var ground: texture_2d<f32>;
+@group(3) @binding(2) var shelter: texture_2d<f32>;
 
 fn gtex(i: i32, j: i32) -> f32 {
     return textureLoad(ground, vec2<i32>(clamp(i, 0, i32(u.g_w) - 1), clamp(j, 0, i32(u.g_h) - 1)), 0).r;
@@ -49,6 +54,16 @@ fn ground_h(xz: vec2<f32>) -> f32 {
     let b = mix(gtex(i.x, i.y + 1), gtex(i.x + 1, i.y + 1), t.x);
     return mix(a, b, t.y);
 }
+
+const NO_ROOF: f32 = -1000000000.0;
+// Mirrors nephthene_core::rain::HeightGrid::top (nearest cell; outside the grid there is no roof).
+fn shelter_h(xz: vec2<f32>) -> f32 {
+    let f = vec2<f32>((xz.x - u.s_min.x) / u.s_cell, (u.s_min.y - xz.y) / u.s_cell);
+    if (f.x < 0.0 || f.y < 0.0 || f.x >= f32(u.s_w) || f.y >= f32(u.s_h)) { return NO_ROOF; }
+    return textureLoad(shelter, vec2<i32>(floor(f)), 0).r;
+}
+// Mirrors nephthene_core::rain::floor_at: precipitation lands on the ground or a roof above it.
+fn floor_h(xz: vec2<f32>) -> f32 { return max(ground_h(xz), shelter_h(xz)); }
 
 const PCG_MUL: u32 = 747796405u;
 const PCG_ADD: u32 = 2891336453u;
@@ -99,7 +114,7 @@ fn vertex(@location(0) v: vec3<f32>) -> VOut {
             let fs = 2.0 * u.snow_half;
             let fx = cam.x - u.snow_half + rem(b0 * fs + u.snow_vel.x * u.time - cam.x, fs);
             let fz = cam.z - u.snow_half + rem(b2 * fs + u.snow_vel.z * u.time - cam.z, fs);
-            let pos = vec3<f32>(fx + u.flutter_m * sin(a), ground_h(vec2<f32>(fx, fz)) + u.ground_y + rem(b1 * u.height + u.snow_vel.y * u.time, u.height), fz + u.flutter_m * cos(a));
+            let pos = vec3<f32>(fx + u.flutter_m * sin(a), floor_h(vec2<f32>(fx, fz)) + u.ground_y + rem(b1 * u.height + u.snow_vel.y * u.time, u.height), fz + u.flutter_m * cos(a));
             let dist = max(length(cam - pos), 0.1);
             let fpx = dist * 2.0 / (view.clip_from_view[1][1] * view.viewport.w);
             let r = max(0.5 * u.flake, fpx);
@@ -118,7 +133,7 @@ fn vertex(@location(0) v: vec3<f32>) -> VOut {
         }
         let hx = cam.x - u.half + rem(b0 * s + u.vel.x * u.time - cam.x, s);
         let hz = cam.z - u.half + rem(b2 * s + u.vel.z * u.time - cam.z, s);
-        let head = vec3<f32>(hx, ground_h(vec2<f32>(hx, hz)) + u.ground_y + rem(b1 * u.height + u.vel.y * u.time, u.height), hz);
+        let head = vec3<f32>(hx, floor_h(vec2<f32>(hx, hz)) + u.ground_y + rem(b1 * u.height + u.vel.y * u.time, u.height), hz);
         let dir = normalize(u.vel);
         let tail = head - dir * u.len;
         let mid = 0.5 * (head + tail);
@@ -144,7 +159,7 @@ fn vertex(@location(0) v: vec3<f32>) -> VOut {
         if (f32(q) >= u.intensity * f32(u.count)) { return hidden(); }
         let px0 = cam.x - u.half + rem(hash01(c * 4u + 1u) * s - cam.x, s);
         let pz0 = cam.z - u.half + rem(hash01(c * 4u + 2u) * s - cam.z, s);
-        let pos = vec3<f32>(px0, ground_h(vec2<f32>(px0, pz0)) + u.ground_y + 0.01, pz0);
+        let pos = vec3<f32>(px0, floor_h(vec2<f32>(px0, pz0)) + u.ground_y + 0.01, pz0);
         let to_cam = cam - pos;
         let dist = max(length(to_cam), 0.1);
         let px = dist * 2.0 / (view.clip_from_view[1][1] * view.viewport.w);

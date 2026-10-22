@@ -6,16 +6,18 @@
 //! Ground: streak bottoms and splashes sit on the optional [`Ground`] height grid, otherwise flat 0.
 //! Snow and sleet use the same streak quads: the share `kind` of them (air `precip_kind`, or `rain.kind_force`) draw as slow, swirling round flakes.
 //! Only the falling quads (a prefix of the ids) are drawn: the plugin swaps in the smallest prebuilt prefix mesh that holds them (`rain.draw_levels`).
-//! ponytail: no roof occlusion (rain also falls indoors).
+//! Roofs: meshes marked [`Shelter`] stop rain, snow and splashes on the top of their bounding box (a world-fixed roof grid).
+//! ponytail: the ground under a roof still gets wet (WetGround is one material), and shelter heights come from axis-aligned boxes.
 use crate::sky::Weather;
 use bevy::{
     asset::embedded_asset,
     asset::RenderAssetUsages,
     camera::visibility::NoFrustumCulling,
     light::NotShadowCaster,
+    camera::primitives::Aabb,
     mesh::{Indices, PrimitiveTopology},
     mesh::MeshVertexBufferLayoutRef,
-    pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin, MeshMaterial3d},
+    pbr::{AtmosphereSettings, Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin, MeshMaterial3d},
     prelude::*,
     reflect::TypePath,
     render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError},
@@ -37,7 +39,7 @@ impl Plugin for RainPlugin {
         // Off: no quads and no rain systems, so nothing runs per frame. RainState stays at rest (intensity 0, wetness 0).
         if enabled {
             app.add_systems(PostStartup, spawn.after(crate::sky::setup))
-                .add_systems(Update, (state.before(crate::NephtheneSet::Drive), drive, wet_ground).chain().after(crate::NephtheneSet::Tick));
+                .add_systems(Update, (roofs, state.before(crate::NephtheneSet::Drive), drive, wet_ground).chain().after(crate::NephtheneSet::Tick));
         }
     }
 }
@@ -46,15 +48,24 @@ impl Plugin for RainPlugin {
 #[derive(Component)]
 pub struct WetGround;
 
+/// Marks a mesh precipitation stops on (a roof, an overhang): rain, snow and splashes land on the top of its world bounding box and
+/// none falls below it. The box is axis-aligned, so mark roof meshes, not whole buildings with open sides.
+#[derive(Component)]
+pub struct Shelter;
+
 /// Optional terrain heights the rain and rain shafts stop on; absent = flat 0. Insert before PostStartup.
 #[derive(Resource)]
 pub struct Ground(pub r::HeightGrid);
 
+/// The roof grid of every [`Shelter`] and its texture (rain.wesl `shelter`).
+#[derive(Resource)]
+struct Roofs { grid: r::HeightGrid, tex: Handle<Image> }
+
 /// Live rain. `intensity` 0..1 at the camera, `wetness` 0..1 of the ground, `vel` the drop velocity (m/s). `snow_vel` the flake velocity (m/s),
-/// `kind` the precipitation kind 0 rain .. 1 snow (sleet between) at the camera. `panel` is the panel toggle's
+/// `kind` the precipitation kind 0 rain .. 1 snow (sleet between) at the camera, `sheltered` the camera stands under a [`Shelter`]. `panel` is the panel toggle's
 /// forced precip, `force` is the config's `rain.force`; either replaces the map.
 #[derive(Resource, Default, Clone, Debug)]
-pub struct RainState { pub intensity: f32, pub wetness: f32, pub vel: Vec3, pub snow_vel: Vec3, pub kind: f32, pub panel: Option<f32>, pub force: Option<f32> }
+pub struct RainState { pub intensity: f32, pub wetness: f32, pub vel: Vec3, pub snow_vel: Vec3, pub kind: f32, pub sheltered: bool, pub panel: Option<f32>, pub force: Option<f32> }
 impl RainState {
     pub fn slant_deg(&self) -> f32 { r::slant_deg(self.vel) }
     pub fn source(&self) -> &'static str { if self.panel.is_some() { "panel" } else if self.force.is_some() { "config rain.force" } else { "weather map" } }
@@ -70,10 +81,11 @@ struct RainGpu {
     width: f32, alpha: f32, life: f32, count: u32,
     g_min: Vec2, g_cell: f32, g_w: u32, g_h: u32,
     snow_vel: Vec3, kind: f32, flake: f32, flake_alpha: f32, flutter_m: f32, flutter_hz: f32, snow_half: f32,
+    s_min: Vec2, s_cell: f32, s_w: u32, s_h: u32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
-struct RainMaterial { #[uniform(0)] gpu: RainGpu, #[texture(1, sample_type = "float", filterable = false)] ground: Handle<Image> }
+struct RainMaterial { #[uniform(0)] gpu: RainGpu, #[texture(1, sample_type = "float", filterable = false)] ground: Handle<Image>, #[texture(2, sample_type = "float", filterable = false)] shelter: Handle<Image> }
 impl Material for RainMaterial {
     fn vertex_shader() -> ShaderRef { "embedded://nephthene/shaders/rain.wesl".into() }
     fn fragment_shader() -> ShaderRef { "embedded://nephthene/shaders/rain.wesl".into() }
@@ -115,18 +127,39 @@ fn spawn(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     let grid = ground_grid(ground.as_deref());
     let c = &wx.cfg.rain;
     let tex = images.add(ground_image(&grid));
+    let roofs = r::shelter_grid(&[], c.shelter_cell_m, c.shelter_max_cells);
+    let roof_tex = images.add(ground_image(&roofs));
     for (mode, n, width, alpha) in [(0, c.max_streaks, c.streak_width_m, c.streak_alpha), (1, c.max_splashes, 0.0, c.splash_alpha)] {
         let gpu = RainGpu { half: c.half_m, height: c.height_m, mode, width, alpha, life: c.splash_life_s, count: n,
             g_min: Vec2::new(grid.min_x, grid.max_z), g_cell: grid.cell_m, g_w: grid.w, g_h: grid.h, ..default() };
-        let m = mats.add(RainMaterial { gpu, ground: tex.clone() });
+        let m = mats.add(RainMaterial { gpu, ground: tex.clone(), shelter: roof_tex.clone() });
         let levels: Vec<(u32, Handle<Mesh>)> = (0..=c.draw_levels).map(|k| n >> k).filter(|&m| m > 0).collect::<std::collections::BTreeSet<_>>().into_iter().rev().map(|m| (m, meshes.add(quads(m)))).collect();
         let mesh = levels.first().map(|l| l.1.clone()).unwrap_or_else(|| meshes.add(quads(n)));
         commands.spawn((Name::new(if mode == 0 { "RainStreaks" } else { "RainSplashes" }), Mesh3d(mesh), MeshMaterial3d(m.clone()),
             RainQuads(m, levels), NoFrustumCulling, NotShadowCaster, Visibility::Hidden));
     }
+    commands.insert_resource(Roofs { grid: roofs, tex: roof_tex });
 }
 
-fn state(time: Res<Time>, wx: Res<Weather>, mut rain: ResMut<RainState>) {
+/// Rebuilds the roof grid when a [`Shelter`] is added, moved, resized or removed (bounding boxes come from Bevy's `Aabb`).
+fn roofs(all: Query<(&Aabb, &GlobalTransform), With<Shelter>>, changed: Query<(), (With<Shelter>, Or<(Changed<Aabb>, Changed<GlobalTransform>)>)>,
+    mut removed: RemovedComponents<Shelter>, wx: Res<Weather>, roofs: Option<ResMut<Roofs>>, mut images: ResMut<Assets<Image>>) {
+    let Some(mut roofs) = roofs else { return };
+    if changed.is_empty() && removed.read().count() == 0 { return; }
+    let c = &wx.cfg.rain;
+    let boxes: Vec<(Vec3, Vec3)> = if c.ignore_shelter { vec![] } else { all.iter().map(|(a, t)| world_box(a, t)).collect() };
+    roofs.grid = r::shelter_grid(&boxes, c.shelter_cell_m, c.shelter_max_cells);
+    if let Some(mut img) = images.get_mut(&roofs.tex) { *img = ground_image(&roofs.grid); }
+}
+
+/// World-space min/max corners of a mesh's local bounding box.
+fn world_box(a: &Aabb, t: &GlobalTransform) -> (Vec3, Vec3) {
+    let (c, e) = (Vec3::from(a.center), Vec3::from(a.half_extents));
+    (0..8).map(|i| t.transform_point(c + e * Vec3::new(if i & 1 == 0 { -1.0 } else { 1.0 }, if i & 2 == 0 { -1.0 } else { 1.0 }, if i & 4 == 0 { -1.0 } else { 1.0 })))
+        .fold((Vec3::MAX, Vec3::MIN), |(l, h), p| (l.min(p), h.max(p)))
+}
+
+fn state(time: Res<Time>, wx: Res<Weather>, mut rain: ResMut<RainState>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, roofs: Option<Res<Roofs>>) {
     let force = rain.panel.or(rain.force);
     let c = &wx.cfg.rain;
     rain.intensity = r::intensity(c, &wx.here, force);
@@ -136,11 +169,12 @@ fn state(time: Res<Time>, wx: Res<Weather>, mut rain: ResMut<RainState>) {
     rain.snow_vel = r::snow_velocity(c, wx.wind + Vec3::new(wx.storm.outflow.x, 0.0, wx.storm.outflow.y));
     // Snow does not wet the ground: only the liquid share counts.
     rain.wetness = r::wetness_step(c, rain.wetness, r::liquid(rain.intensity, rain.kind), time.delta_secs());
+    rain.sheltered = roofs.as_deref().zip(cam.iter().next()).is_some_and(|(s, t)| r::sheltered(&s.grid, t.translation()));
 }
 
 /// Rain light before exposure: the exposure curve's scene level (so streaks sit at the same display brightness the sun/sky give surfaces),
 /// the sun part dimmed under cloud and by night. Constants: config rain.light_* (untuned).
-fn drive(time: Res<Time>, wx: Res<Weather>, rain: Res<RainState>, mut mats: ResMut<Assets<RainMaterial>>, mut q: Query<(&RainQuads, &mut Visibility, &mut Mesh3d)>) {
+fn drive(time: Res<Time>, wx: Res<Weather>, rain: Res<RainState>, roofs: Option<Res<Roofs>>, mut mats: ResMut<Assets<RainMaterial>>, mut q: Query<(&RainQuads, &mut Visibility, &mut Mesh3d)>) {
     let c = &wx.cfg.rain;
     let (el, az) = w::sun(&wx.cfg.clock, wx.hour);
     let day = r::smoothstep(c.day_from_deg, c.day_to_deg, el);
@@ -157,6 +191,7 @@ fn drive(time: Res<Time>, wx: Res<Weather>, rain: Res<RainState>, mut mats: ResM
         (g.light, g.time, g.vel, g.len, g.sun_dir, g.intensity, g.ground_y) =
             (light, time.elapsed_secs() % 4096.0, rain.vel, r::streak_len(c, rain.vel), w::dir(el, az), rain.intensity, 0.0);
         (g.snow_vel, g.kind, g.flake, g.flake_alpha, g.flutter_m, g.flutter_hz, g.snow_half) = (rain.snow_vel, rain.kind, c.flake_m, c.flake_alpha, c.flutter_m, c.flutter_hz, c.snow_half_m);
+        if let Some(s) = roofs.as_deref() { (g.s_min, g.s_cell, g.s_w, g.s_h) = (Vec2::new(s.grid.min_x, s.grid.max_z), s.grid.cell_m, s.grid.w, s.grid.h); }
         // Splashes come from the liquid share only.
         if g.mode == 1 { g.intensity = r::liquid(rain.intensity, rain.kind); }
         // Draw the smallest prefix mesh that holds the falling quads.
