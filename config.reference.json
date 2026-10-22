@@ -539,6 +539,7 @@
     "tau_c": 1000.0,
     "tau_f": 1000.0,
     "full_mm_h": 7.6,
+    "lcl_m_per_k": 125.0,
     "cover_weight": 1.0,
     "tile_px": 128,
     "cell_m": 200.0,

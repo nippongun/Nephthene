@@ -41,6 +41,8 @@ fn flash_light(q: vec3<f32>) -> vec3<f32> {
     }
     return s;
 }
+@group(1) @binding(8) var oro_tex: texture_2d<f32>;
+@group(1) @binding(9) var oro_sampler: sampler;
 
 // ponytail: the literals left in this file (phase g, gradients, Nubis in-scatter constants, octave a/b/c, n*2+8 iteration cap, 5 up-taps at 30 deg) are look-shaping math, untuned; lift into clouds.look as they become knobs.
 
@@ -55,9 +57,9 @@ fn sphere(o: vec3<f32>, d: vec3<f32>, r: f32) -> vec2<f32> {
     return vec2(-b - s, -b + s);
 }
 
-fn map_at(xz: vec2<f32>) -> vec4<f32> { return map_sample(u, map_tex, map_sampler, xz); }
+fn map_at(xz: vec2<f32>) -> vec4<f32> { return map_sample(u, map_tex, map_sampler, oro_tex, oro_sampler, xz); }
 fn density_shell(xz: vec2<f32>, alt: f32, h: f32, detail: bool) -> f32 {
-    return density_at(u, base_tex, detail_tex, noise_sampler, map_tex, map_sampler, xz, alt, h, detail, false);
+    return density_at(u, base_tex, detail_tex, noise_sampler, map_tex, map_sampler, oro_tex, oro_sampler, xz, alt, h, detail, false);
 }
 // ---- Storm cells read from the `storms` uniform (the same few functions live in clouds_shadow.wesl; WGSL cannot pass a uniform
 // pointer, and passing the 1 KB struct by value hung the GPU). ----

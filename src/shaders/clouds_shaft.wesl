@@ -35,12 +35,14 @@ struct Shaft {
 @group(1) @binding(4) var map_tex: texture_2d<f32>;
 @group(1) @binding(5) var map_sampler: sampler;
 @group(1) @binding(6) var<uniform> storms: Storms;
+@group(1) @binding(8) var oro_tex: texture_2d<f32>;
+@group(1) @binding(9) var oro_sampler: sampler;
 @group(2) @binding(0) var<uniform> sh: Shaft;
 @group(2) @binding(1) var ground: texture_2d<f32>;
 
 // The shaft constants are the Shaft uniform fields (config shafts.*), mirroring nephthene_core::rain.
 
-fn map_at(xz: vec2<f32>) -> vec4<f32> { return map_sample(u, map_tex, map_sampler, xz); }
+fn map_at(xz: vec2<f32>) -> vec4<f32> { return map_sample(u, map_tex, map_sampler, oro_tex, oro_sampler, xz); }
 
 fn gtex(i: i32, j: i32) -> f32 {
     return textureLoad(ground, vec2<i32>(clamp(i, 0, i32(sh.g_w) - 1), clamp(j, 0, i32(sh.g_h) - 1)), 0).r;
@@ -57,7 +59,7 @@ fn ground_h(xz: vec2<f32>) -> f32 {
 
 // clouds_march.wesl `density(.., detail = false)`.
 fn density(xz: vec2<f32>, alt: f32, h: f32) -> f32 {
-    return density_at(u, base_tex, detail_tex, noise_sampler, map_tex, map_sampler, xz, alt, h, false, false);
+    return density_at(u, base_tex, detail_tex, noise_sampler, map_tex, map_sampler, oro_tex, oro_sampler, xz, alt, h, false, false);
 }
 
 fn smooth01(lo: f32, hi: f32, x: f32) -> f32 { return smoothstep(lo, hi, x); }
