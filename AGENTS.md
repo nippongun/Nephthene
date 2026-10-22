@@ -19,7 +19,7 @@ Weather library for Bevy 0.20 (Rust 2024). Layout: `crates/nephthene_core` (pure
 ## Roles (save tokens)
 - **Planner** (main session, large model): research, design, decisions; writes the task graph. No mechanical edits itself.
 - **Executors** (`.claude/agents/executor.md`, Haiku): one graph node each, only its files, run its check.
-- **Verifier** (`.claude/agents/verifier.md`, Sonnet, fresh): re-runs checks and tries to refute; never edits (rule 5).
-- Run a graph: workflow `graph` (`.claude/workflows/graph.js`), args `{goal, nodes: [{id, deps, files, task, check}], final_check}`. Nodes start when their deps pass; one retry on refutation. The planner commits after the final verdict.
+- **Verifier** (`.claude/agents/verifier.md`, Sonnet, fresh): one per graph, after all nodes; re-runs every check and tries to refute; never edits (rule 5).
+- Run a graph: workflow `graph` (`.claude/workflows/graph.js`), args `{goal, nodes: [{id, deps, files, task, check}], final_check}`. Nodes start when their deps pass (each executor runs its own check). The planner fixes or re-runs refuted nodes and commits after the verdict.
 - Node size: one file or one tight pair (Rust + WGSL struct), a check that runs in minutes. Write the task so an executor needs no other context.
 - Cloud: `rust-toolchain.toml` pins rustc; the SessionStart hook installs Bevy's system packages and lavapipe (`VK_ICD_FILENAMES`), so shots and gates run on CPU (fog gates matched Metal within 1%; goldens stay Apple-only).

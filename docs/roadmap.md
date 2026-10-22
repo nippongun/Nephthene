@@ -195,10 +195,10 @@ Done when: rain vs snow, fog formation, dust lifting and cloud coverage all read
 (climate, latitude, altitude) and what the terrain does to the wind; the weather field moves with the wind; and a host can ask for
 a state by name. This phase is C5.
 
-- **Air state in core** (pure, unit-tested): surface temperature from clock, season, latitude, climate offset and cloud cover;
-  lapse rate with altitude (freezing level, snow line); humidity and dew point. Today nothing knows a temperature: fog formation
-  has its own night cooling, and snow has no trigger. Fog formation moves onto the shared air state (red arm: its old private
-  cooling).
+- **Air state in core**. Done: `nephthene_core::air` (force-restore surface temperature from clock, season, latitude and cloud
+  cover; dew point, humidity, lapse rate, freezing level, snow line) exposed as `Weather.air`; fog formation reads the dew point
+  spread (red arm `ground_fog.private_cooling`); `docs/air.md`. Open: the climate offset (climate field below), sampling at the
+  camera's terrain height (next bullet), and the air is camera-local, not a field.
 - **Altitude is an input, not an afterthought.** The air state is sampled at the camera's terrain height from `Ground`, so the
   same map texel is rain in the valley and snow on the ridge. Gate C5-place above; red arm, lapse rate 0.
 - **Climate field** (new, the second map the old roadmap reserved): climate class or biome, mean temperature offset, humidity,
