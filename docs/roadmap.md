@@ -24,7 +24,7 @@ storms and weather sound cues, all driven by one weather map and one clock, ever
 - **Roles** (AGENTS.md): a planner session designs and writes task graphs; Haiku executors do the nodes; a fresh verifier checks
   each one. One owner per file across parallel sessions (see Ownership).
 
-## Phase 0: finish ground fog (branch `claude/affectionate-pasteur-qtqvng`)
+## Phase 0: finish ground fog (branch `claude/affectionate-pasteur-qtqvng`) — merged (PR 1); tail below
 Done when: Metal runs green (G15-G19, goldens), the owner accepts the renders, then merge to main.
 - Cost: half-resolution march + depth-aware composite, baked noise texture; gate G19 <= 0.8 ms at 1080p (proposed; the
   branch currently gates 1.5 ms) with red arm `render_scale=1` + `hash_noise=true`. Metal number pending.
@@ -33,8 +33,8 @@ Done when: Metal runs green (G15-G19, goldens), the owner accepts the renders, t
   Phase 2 weather-state question.
 - Sunlit pool reads as snow at 8 h: owner decides exposure (scene runs ~2 stops over sunny-16) and billow amplitude; then a
   surface-texture gate with billows off as red arm.
-- Horizon seam inside fog at `fog_floor` 8 h: not from the fog (present with fog, occlusion and clouds off); the 24 km test
-  terrain ends in the valley notch. Close or enlarge the test terrain.
+- Horizon seam inside fog at `fog_floor` 8 h: from the burn-off lift (a clear gap under the pool the camera stands in), not the terrain; owner's look call on the lift near amount 1 (docs/bugs.md).
+- Temporal resolve of the fog march (G21) done on lavapipe; Metal still and turning renders pending.
 
 ## Phase 1: cost and coverage gates
 Done when: every pass has a Metal cost gate at 1080p, the dropped checks are back with red arms, the golden offset is fixed.

@@ -44,7 +44,7 @@ check, not a measurement.
 
 Full-screen pass after the main pass (where Bevy's volumetric fog runs), premultiplied over the view target, reading the scene depth.
 The march runs at `render_scale` (default 0.25) into a fog target and a surface-distance target (the scene depth stops each ray at the
-first surface); a full-resolution composite upsamples both depth-aware.
+first surface); a `resolve` pass accumulates the march over frames at march resolution: the new march blended at `temporal_alpha` into last frame's resolved fog, reprojected through last frame's view at the texel's surface distance (`max_m` for sky) and clamped to the new march's neighbourhood on the same surface (3x3 while the view moves, 5x5 when still); the first frame, a resize, a skipped frame or a camera cut (`resolve.cut_deg`, `resolve.cut_m`) resets it. A full-resolution composite upsamples the resolved fog depth-aware.
 The ray is clipped to the altitude band holding fog and marched in `steps` jittered steps. Light per sample: sun x atmosphere
 transmittance x cloud shadow cookie x terrain shadow (`sun_alt`) x multiple-scattering octaves over the optical depth to the pool top;
 moon the same without terrain shadow; sky light = mean sky-view radiance over the hemisphere x `ambient_scale`, half from above
@@ -53,7 +53,7 @@ moon the same without terrain shadow; sky light = mean sky-view radiance over th
 
 Noise comes from a baked 64^3 tiling lattice texture (`nephthene_core::fog::noise_lattice`): one trilinear fetch per lookup.
 `ground_fog.hash_noise` restores the old per-step hashing (about 70 hashes per step at full resolution), a test switch for the cost
-gate. Timing: `clouds.pass_timing` prints `FOGMS` (march, composite and total; mean of 60 frames, ms).
+gate. Timing: `clouds.pass_timing` prints `FOGMS` (march = march + resolve, composite and total; mean of 60 frames, ms).
 
 ## Knobs
 
@@ -66,6 +66,8 @@ Look and cost knobs (all defaults untuned):
 - `cloud_diffuse`, `ignore_cloud_sky`: cloud-covered sky light moves toward the sun's diffuse light through cloud; `ignore_cloud_sky` = clear-sky light (red arm).
 - `step_power`: march step spacing (i/steps)^power, dense near the eye; 1 = uniform.
 - `render_scale`: march resolution as a share of the view (default 0.25 = a sixteenth of the pixels); 1 = full resolution.
+- `temporal_alpha`: share of each new march blended into the reprojected history (0.1); 1 = no history (G21 red arm).
+- `still_px`: reprojection motion (march texels) below which the history clamp box is 5x5 instead of 3x3 (0.5).
 - `hash_noise`: test switch, per-step hashed noise (cost gate red arm).
 - `sky.sun_occlusion`, `sky.occlusion_keep`, `sky.occlusion_steps`: with terrain, the share of a view ray in the terrain's shadow loses its aerial sun in-scatter except `occlusion_keep` (0.2), sampled at `occlusion_steps` (8); `sun_occlusion` false = Bevy's own (red arm).
 
@@ -81,7 +83,7 @@ cargo test --release -p nephthene_core fog                                   # m
 cargo run --release --example sky -- --shot fog_valley --terrain --hour 5.6 --out shots --set ground_fog.enabled=true --set wind.speed_mps=1.0
 cargo run --release --example sky -- --shot fog_floor  --terrain --hour 6.0 --out shots --set ground_fog.enabled=true --set wind.speed_mps=1.0
 cargo run --release --example sky -- --shot fog_basin  --terrain --hour 6.5 --out shots --set ground_fog.enabled=true --set wind.speed_mps=1.0
-cargo test --release --test fog -- --ignored --nocapture --test-threads=1   # G15-G19
+cargo test --release --test fog -- --ignored --nocapture --test-threads=1   # G15-G21
 ```
 
 The default wind (6 m/s) is too strong for radiation fog; the model correctly forms none. Use `wind.speed_mps` <= 2.5, or
@@ -94,6 +96,7 @@ Gates (`tests/fog.rs`, manual):
 - G17 terrain hides the sun glow (red arm `sky.sun_occlusion=false`).
 - G18 the pool top is soft (red arm `ground_fog.wisp_m=0` + `top_fade_m=0`).
 - G19 cost at most 1.5 ms per frame at 1080p on the reference GPU (red arm `render_scale=1` + `hash_noise=true`); skips on software renderers.
+- G21 a still view shows no march grain: frame-to-frame flicker at render_scale 1 at most 0.05% of pixels (red arm `ground_fog.temporal_alpha=1`).
 
 Thresholds are budgets with the reason in the test doc comments.
 
@@ -104,8 +107,8 @@ Thresholds are budgets with the reason in the test doc comments.
 - No fog beyond `extent_m` / 2 (fades over `edge_fade`); far valleys rely on `DistanceFog`. Upgrade: a coarse far field.
 - No bounce from sunlit slopes into shaded fog.
 - Moonlight has no terrain shadow; trees and buildings neither shadow the fog nor drain it (terrain only).
-- The march is quarter resolution (`render_scale`) with per-frame jitter and no temporal resolve (edge speckle at the pool top); thin mist seen at grazing angles can be noisy.
-  Upgrade: the clouds' temporal resolve.
+- The march is quarter resolution (`render_scale`): the temporal resolve removes the jitter grain but not the resolution, so the pool top shows 4 px steps up close. Upgrade: jitter the march's sub-texel position per frame and accumulate at full resolution (the clouds' update division).
+- The burn-off lift opens a clear gap under the pool (`lift_max_m` x sun factor x (1 - amount): 8 m at a forced 0.9 at 8 h). A camera inside the gap (pose fog_floor) sees along it to the bright horizon at the valley's end: a thin bright seam. Physically a lifting fog base does this; whether the lift should open at amounts near 1 is a look call.
 - Formation uses one regional amount history per texel with camera-local weather (`Weather.here`); weather map variation across the
   field is not used.
 - Advection and steam fog (over water) are not modelled.

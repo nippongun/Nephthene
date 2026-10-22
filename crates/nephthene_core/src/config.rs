@@ -456,6 +456,11 @@ pub struct GroundFog {
     pub render_scale: f32,
     /// Test switch (cost gate red arm, with render_scale 1): per-step hashed value noise instead of the baked noise texture.
     pub hash_noise: bool,
+    /// Temporal accumulation of the march: each frame blends this share of the new march into the history reprojected from the last
+    /// frame (clamped to the new march's neighbourhood), so the per-pixel step jitter averages out over frames. 1 = no history (test red arm).
+    pub temporal_alpha: f32,
+    /// Reprojection displacement (march texels) below which the history clamp box is 5x5 instead of 3x3: a still view keeps more history.
+    pub still_px: f32,
 }
 impl Default for GroundFog {
     fn default() -> Self {
@@ -469,7 +474,7 @@ impl Default for GroundFog {
             visibility_m: 150.0, shallow_visibility_m: 400.0, lift_max_m: 80.0, lift_full_deg: 20.0, lift_soft_m: 25.0,
             breakup: 0.45, breakup_tile_m: 250.0, breakup_y_m: 40.0, wisp_m: 40.0, wisp_erode: 0.7, top_fade_m: 25.0, top_billow_m: 25.0, billow_tile_m: 300.0, albedo: 0.99, g: 0.75, ms_octaves: 3, ms_a: 0.6, ms_b: 0.35, diffuse_sun: 1.0,
             ambient_scale: 1.0, ambient_od: 0.5, ground_albedo: 0.2, cloud_diffuse: 0.35, ignore_cloud_sky: false, sun_soft_m: 20.0, shadow_range_m: 4000.0, shadow_step_m: 100.0,
-            extent_m: 12000.0, bake_px: 128, blur_passes: 2, rebake_m: 1500.0, rebake_s: 2.0, steps: 48, max_m: 6000.0, edge_fade: 0.15, step_power: 2.0, render_scale: 0.25, hash_noise: false,
+            extent_m: 12000.0, bake_px: 128, blur_passes: 2, rebake_m: 1500.0, rebake_s: 2.0, steps: 48, max_m: 6000.0, edge_fade: 0.15, step_power: 2.0, render_scale: 0.25, hash_noise: false, temporal_alpha: 0.1, still_px: 0.5,
         }
     }
 }

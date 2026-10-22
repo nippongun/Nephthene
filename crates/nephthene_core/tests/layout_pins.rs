@@ -34,7 +34,7 @@ fn rust_to_wgsl(t: &str) -> String {
 fn same_order(rust_src: &str, rust_head: &str, wgsl_src: &str, wgsl_head: &str) {
     let rs: Vec<_> = fields(&body(rust_src, rust_head)).into_iter().map(|(n, t)| (n, rust_to_wgsl(&t))).collect();
     let ws = fields(&body(wgsl_src, wgsl_head));
-    assert!(rs.len() > 10, "{rust_head}: parsed only {} fields", rs.len());
+    assert!(rs.len() >= 5, "{rust_head}: parsed only {} fields", rs.len());
     assert_eq!(rs, ws, "{rust_head} and WGSL `{wgsl_head}` drifted apart");
 }
 
@@ -46,6 +46,8 @@ fn shaft_uniform_matches_wgsl() { same_order(RENDER, "pub struct ShaftGpu {", SH
 fn resolve_uniform_matches_wgsl() { same_order(RENDER, "struct ResolveGpu {", RESOLVE, "struct Resolve {"); }
 #[test]
 fn fog_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogGpu {", FOG, "struct Fog {"); }
+#[test]
+fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogResolveGpu {", FOG, "struct FogResolve {"); }
 
 /// (field, floats) in pack order; a vec2 is two floats.
 const EXPECT: [(&str, usize); 13] = [("a", 2), ("b", 2), ("core_r", 1), ("base", 1), ("top", 1), ("overshoot", 1), ("anvil_r", 1), ("shift", 2), ("anvil_base", 1), ("precip", 1), ("gust_r", 1), ("shelf_low", 1), ("dir_angle", 1)];

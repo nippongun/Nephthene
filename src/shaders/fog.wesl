@@ -98,6 +98,18 @@ struct Fog {
 @group(2) @binding(0) var low_fog: texture_2d<f32>;
 @group(2) @binding(1) var low_t: texture_2d<f32>;
 @group(2) @binding(2) var t_smp: sampler;
+// Resolve pass (same group 2 plus these): last frame's resolved fog and the reprojection (FogResolveGpu in src/fog/render.rs).
+struct FogResolve {
+    prev_clip_from_ray: mat4x4<f32>,
+    ray_from_clip: mat4x4<f32>,
+    delta: vec3<f32>,
+    alpha: f32,
+    max_m: f32,
+    reset: u32,
+    still_px: f32,
+}
+@group(2) @binding(3) var hist_fog: texture_2d<f32>;
+@group(2) @binding(4) var<uniform> fr: FogResolve;
 
 const PI: f32 = 3.14159265;
 const F16_MAX: f32 = 60000.0;
@@ -284,6 +296,47 @@ fn march_low(in: FullscreenVertexOutput) -> Low {
     }
     let fog = march(in, d, eye, t_scene, occ);
     return Low(vec4(fog.rgb - x_ap * (1.0 - fog.a), fog.a), t_scene);
+}
+
+// Temporal accumulation at march resolution (as clouds_resolve.wesl, without the update division): this frame's march blended at
+// `alpha` into last frame's resolved fog, reprojected through the previous view at this texel's surface distance (max_m for sky) and
+// clamped to this frame's neighbourhood: 3x3 while the view moves (no ghosts), 5x5 when it is still (each texel is one jittered march,
+// so a tight box would pin a still view to its noise). A reset (first frame, resize, cut) or off-screen history takes the fresh march.
+@fragment
+fn resolve(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let dim = vec2<i32>(textureDimensions(low_fog));
+    let px = vec2<i32>(in.position.xy);
+    let c = textureLoad(low_fog, px, 0);
+    if fr.reset != 0u || fr.alpha >= 1.0 { return c; }
+    let t = textureLoad(low_t, px, 0).r;
+    let h = fr.ray_from_clip * vec4(uv_to_ndc(in.uv), 1.0, 1.0);
+    let d = normalize(h.xyz / h.w);
+    let pc = fr.prev_clip_from_ray * vec4(d * select(fr.max_m, t, t > 0.0) + fr.delta, 1.0);
+    if pc.w <= 0.0 { return c; }
+    let puv = vec2(pc.x / pc.w * 0.5 + 0.5, 0.5 - 0.5 * pc.y / pc.w);
+    if any(puv < vec2(0.0)) || any(puv > vec2(1.0)) { return c; }
+    var lo = c;
+    var hi = c;
+    var lo5 = c;
+    var hi5 = c;
+    // ponytail: 0.05 relative depth, the composite's same-surface test; a knob if silhouettes show halos.
+    let rel = 0.05 * max(t, 1.0);
+    for (var dy = -2; dy <= 2; dy++) {
+        for (var dx = -2; dx <= 2; dx++) {
+            let p = clamp(px + vec2(dx, dy), vec2(0), dim - 1);
+            // Only neighbours on this texel's surface (sky with sky) bound the history: across a silhouette the box admitted the other
+            // side's fog and let a history sample straddling the edge through, a 1-2 px fringe on a turning view.
+            let tn = textureLoad(low_t, p, 0).r;
+            if select(abs(tn - t) > rel, tn > 0.0, t < 0.0) { continue; }
+            let v = textureLoad(low_fog, p, 0);
+            lo5 = min(lo5, v);
+            hi5 = max(hi5, v);
+            if abs(dx) <= 1 && abs(dy) <= 1 { lo = min(lo, v); hi = max(hi, v); }
+        }
+    }
+    let still = 1.0 - saturate(length((puv - in.uv) * vec2<f32>(dim)) / max(fr.still_px, 1e-6));
+    let hist = clamp(textureSampleLevel(hist_fog, smp, puv, 0.0), mix(lo, lo5, still), mix(hi, hi5, still));
+    return mix(hist, c, fr.alpha);
 }
 
 // Full-resolution composite of the half-resolution fog over the scene: the 4 texels around the pixel, weighted bilinearly and by how
