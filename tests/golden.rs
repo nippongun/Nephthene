@@ -12,12 +12,13 @@
 //! converged by settle 300: frame-to-frame and frame-to-16-later both 0.086, no drift), and each still is the mean of 64 consecutive frames (the per-frame
 //! jitter averages down; 8 frames already gave 0.046). The div-4 resolve's own look is gated against the same div-1 reference by G7-G14 in tests/clouds.rs.
 //! The phase is checked too: the stills render again at settle `PHASE_SHIFT` and the worst shift may use at most half the bound.
-//! Goldens are per GPU/driver: regenerate elsewhere.
+//! Goldens are per GPU/driver: regenerate elsewhere. On a software renderer (lavapipe) `golden_cloud_sky` skips with a printed reason;
+//! NEPHTHENE_FORCE_GOLDEN=1 runs the comparison there anyway.
 //! Regenerate after a look change someone approved: `NEPHTHENE_UPDATE_GOLDEN=1 cargo test --release --test golden`.
 mod common;
 use common::*;
 use image::RgbImage;
-use std::path::PathBuf;
+use std::{path::PathBuf, process::Command, sync::OnceLock};
 
 /// Sky rows only (top 80%): the horizon and ground say nothing about the cloud look.
 fn mad(a: &RgbImage, b: &RgbImage) -> f64 {
@@ -37,6 +38,10 @@ const REFERENCE: [&str; 4] = ["--set", "clouds.update_div=1", "--settle", "300"]
 const MEAN_FRAMES: usize = 64;
 /// The settle of the phase check: 7 frames later is a different jitter and update phase of the same look.
 const PHASE_SHIFT: &str = "307";
+/// Per-shot timeout for the reference shots, overriding the example's 240 s default. A settle-300 div-1 run averaging 64 frames takes
+/// minutes on a software renderer (lavapipe ran a single case to ~244 s, just over the default, so the gate died of the clock rather
+/// than of the picture). This is a hang guard, not a speed budget: only a stuck run should ever reach it.
+const TIMEOUT_S: &str = "1800";
 
 /// (shot label, pose, hour, sway)
 const CASES: [(&str, &str, &str, bool); 7] = [
@@ -55,8 +60,8 @@ fn cases() -> Vec<(&'static str, &'static str, &'static str, bool)> {
     v
 }
 
-/// The reference renderer's args at `settle`.
-fn reference(settle: &str) -> Vec<&str> { vec![REFERENCE[0], REFERENCE[1], REFERENCE[2], settle] }
+/// The reference renderer's args at `settle`, with the hang-guard timeout.
+fn reference(settle: &str) -> Vec<&str> { vec![REFERENCE[0], REFERENCE[1], REFERENCE[2], settle, "--timeout", TIMEOUT_S] }
 
 /// Per-pixel, per-channel mean of equal-size frames, rounded to the nearest level.
 fn mean_frames(v: &[RgbImage]) -> RgbImage {
@@ -94,8 +99,29 @@ fn render(tag: &str, (label, pose, hour, sway): (&str, &str, &str, bool), settle
     }
 }
 
+/// True on a software renderer. One 64x36 probe run, cached: its log names the adapter (`device_type: Cpu`).
+fn software() -> bool {
+    static SW: OnceLock<bool> = OnceLock::new();
+    *SW.get_or_init(|| {
+        let out = Command::new(example()).args(["--shot", "cost", "--out"]).arg(root().join("shots/golden_probe"))
+            .args(["--size", "64x36", "--settle", "2"]).env("CLAUDECODE", "1").output().expect("run the sky example");
+        let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        log.contains("device_type: Cpu")
+    })
+}
+
+/// True when this gate must not run here: both gates in this file measure against the committed pack, which is Apple Silicon / Metal,
+/// and a software renderer's own difference from it already exceeds the bound. NEPHTHENE_FORCE_GOLDEN=1 runs them anyway, which is how
+/// the skip is shown to be a skip and not a deletion.
+fn skip_on_software(what: &str) -> bool {
+    if std::env::var("NEPHTHENE_FORCE_GOLDEN").as_deref() == Ok("1") || !software() { return false; }
+    println!("GOLDEN {what} skipped: the pack is renderer-specific (Apple Silicon / Metal) and a software renderer does not match it; NEPHTHENE_FORCE_GOLDEN=1 compares anyway");
+    true
+}
+
 #[test]
 fn golden_cloud_sky() {
+    if skip_on_software("still pack") { return; }
     let dir = golden_dir();
     if std::env::var("NEPHTHENE_UPDATE_GOLDEN").is_ok() {
         std::fs::create_dir_all(&dir).unwrap();
@@ -147,6 +173,10 @@ fn golden_cloud_sky() {
 /// Red arm: the same pose with the cloud light gain moved by 20% (the must-catch change) must exceed the bound, or the golden gate does not see look changes.
 #[test]
 fn golden_sees_a_look_change() {
+    // Skipped on a software renderer for the same reason as the pack gate, and for a sharper one: this test asserts the must-catch
+    // change reads ABOVE the bound against the Apple pack, and a software renderer's own difference from that pack is already above it
+    // (0.603 vs bound 0.321 at head 5fa116b). It would pass here without measuring the look change at all.
+    if skip_on_software("red arm") { return; }
     let dir = golden_dir();
     let bound = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(dir.join("noise.json")).unwrap()).unwrap()["bound"].as_f64().unwrap();
     let img = must_catch("golden_red");

@@ -27,12 +27,16 @@ impl Plugin for RainPlugin {
         embedded_asset!(app, "shaders/rain.wesl");
         let cfg = &app.world().resource::<Weather>().cfg.rain;
         let force = cfg.force.inspect(|x| assert!((0.0..=1.0).contains(x), "rain.force = {x}: want 0..=1"));
+        let enabled = cfg.enabled;
         // A forced rain has been falling "for a while": start wet.
-        let wetness = if force.is_some_and(|e| e > cfg.wet_threshold) { 1.0 } else { 0.0 };
+        let wetness = if enabled && force.is_some_and(|e| e > cfg.wet_threshold) { 1.0 } else { 0.0 };
         app.add_plugins(MaterialPlugin::<RainMaterial>::default())
-            .insert_resource(RainState { force, wetness, ..default() })
-            .add_systems(PostStartup, spawn.after(crate::sky::setup))
-            .add_systems(Update, (state.before(crate::NephtheneSet::Drive), drive, wet_ground).chain().after(crate::NephtheneSet::Tick));
+            .insert_resource(RainState { force, wetness, ..default() });
+        // Off: no quads and no rain systems, so nothing runs per frame. RainState stays at rest (intensity 0, wetness 0).
+        if enabled {
+            app.add_systems(PostStartup, spawn.after(crate::sky::setup))
+                .add_systems(Update, (state.before(crate::NephtheneSet::Drive), drive, wet_ground).chain().after(crate::NephtheneSet::Tick));
+        }
     }
 }
 

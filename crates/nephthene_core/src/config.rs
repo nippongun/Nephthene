@@ -62,6 +62,39 @@ impl Config {
         Self::from_json(&s).map_err(|e| format!("{}: {e}", path.display()))
     }
     pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).expect("config serialises") }
+
+    /// Set one leaf by dotted path (`clouds.steps`) to a JSON value. On `Err` the config is unchanged.
+    pub fn set_path(&mut self, path: &str, json: &str) -> Result<(), String> {
+        let val: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("{path}: value {json} is not JSON: {e}"))?;
+        let mut v = serde_json::to_value(&*self).map_err(|e| format!("{path}: {e}"))?;
+        let mut cur = &mut v;
+        for k in path.split('.') {
+            cur = cur.get_mut(k).ok_or_else(|| format!("{path}: no such key {k}"))?;
+        }
+        *cur = val;
+        *self = serde_json::from_value(v).map_err(|e| format!("{path}: {json} does not fit this field: {e}"))?;
+        Ok(())
+    }
+
+    /// Every settable leaf of a default config as (dotted path, default value as JSON), sorted by path. Objects recurse; anything
+    /// else (numbers, bools, strings, nulls, arrays) is a leaf.
+    pub fn paths() -> Vec<(String, String)> {
+        fn walk(prefix: &str, v: &serde_json::Value, out: &mut Vec<(String, String)>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    for (k, c) in m {
+                        let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                        walk(&p, c, out);
+                    }
+                }
+                leaf => out.push((prefix.to_string(), leaf.to_string())),
+            }
+        }
+        let mut out = Vec::new();
+        walk("", &serde_json::to_value(Config::default()).expect("config serialises"), &mut out);
+        out.sort();
+        out
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -347,6 +380,9 @@ impl Default for Shafts {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct RainCfg {
+    /// Host off switch: false spawns no streak or splash quads, accumulates no wetness and adds no rain systems, so off costs nothing.
+    /// Unlike `force`, which overrides the intensity while rain is on.
+    pub enabled: bool,
     /// Camera-following drop volume: half-width (m) in x and z, height (m) above the ground.
     pub half_m: f32, pub height_m: f32,
     /// Streak and splash quads in the mesh; intensity activates the fraction `intensity` of them.
@@ -383,7 +419,7 @@ pub struct RainCfg {
 impl Default for RainCfg {
     fn default() -> Self {
         RainCfg {
-            half_m: 40.0, height_m: 30.0, max_streaks: 24000, max_splashes: 6000, splash_life_s: 0.45, streak_width_m: 0.012, streak_alpha: 0.55, splash_alpha: 0.5,
+            enabled: true, half_m: 40.0, height_m: 30.0, max_streaks: 24000, max_splashes: 6000, splash_life_s: 0.45, streak_width_m: 0.012, streak_alpha: 0.55, splash_alpha: 0.5,
             shutter_s: 1.0 / 20.0, wind_drift: 0.8, wind_drift_max: 12.0, fall_min_mps: 5.0, fall_gain_mps: 4.0,
             precip_lo: 0.1, precip_hi: 0.9, cover_lo: 0.3, cover_hi: 0.6, min_intensity: 0.02,
             wet_up_per_s: 1.0 / 40.0, dry_per_s: 1.0 / 240.0, wet_threshold: 0.05, wet_darken: 0.35, wet_roughness: 0.35, wet_reflectance: 0.5,
@@ -514,5 +550,52 @@ mod tests {
         let p = Config::from_json(r#"{"clouds": {"steps": 99}, "wind": {"speed_mps": 3.0}}"#).unwrap();
         assert_eq!((p.clouds.steps, p.wind.speed_mps, p.clouds.bottom_m), (99, 3.0, 1500.0));
         assert!(Config::from_json(r#"{"clouds": {"stepz": 1}}"#).is_ok(), "unknown keys are ignored (serde default)");
+    }
+    #[test]
+    fn set_path_sets_float_bool_int_nested_array_and_option() {
+        let mut c = Config::default();
+        c.set_path("wind.speed_mps", "3.5").unwrap();
+        assert_eq!(c.wind.speed_mps, 3.5);
+        c.set_path("sky.msaa_fix", "false").unwrap();
+        assert!(!c.sky.msaa_fix);
+        c.set_path("clouds.steps", "99").unwrap();
+        assert_eq!(c.clouds.steps, 99);
+        c.set_path("clouds.look.cov_boost", "2.0").unwrap();
+        assert_eq!(c.clouds.look.cov_boost, 2.0);
+        c.set_path("fog.color", "[0.1,0.2,0.3]").unwrap();
+        assert_eq!(c.fog.color, [0.1, 0.2, 0.3]);
+        c.set_path("rain.force", "0.5").unwrap();
+        assert_eq!(c.rain.force, Some(0.5));
+        c.set_path("rain.force", "null").unwrap();
+        assert_eq!(c.rain.force, None);
+    }
+    #[test]
+    fn set_path_unknown_segment_is_err_and_unchanged() {
+        let mut c = Config::default();
+        let before = c.clone();
+        let e = c.set_path("clouds.stepz", "1").unwrap_err();
+        assert!(e.contains("stepz"), "{e}");
+        assert_eq!(c, before);
+    }
+    #[test]
+    fn set_path_wrong_type_or_bad_json_is_err_and_unchanged() {
+        let mut c = Config::default();
+        let before = c.clone();
+        let e = c.set_path("clouds.steps", "\"many\"").unwrap_err();
+        assert!(e.contains("clouds.steps"), "{e}");
+        assert_eq!(c, before);
+        let e = c.set_path("clouds.steps", "not json").unwrap_err();
+        assert!(e.contains("clouds.steps"), "{e}");
+        assert_eq!(c, before);
+    }
+    #[test]
+    fn every_path_sets_back_to_its_default() {
+        let paths = Config::paths();
+        assert!(paths.len() > 200, "only {} leaves", paths.len());
+        for (path, default) in &paths {
+            let mut c = Config::default();
+            c.set_path(path, default).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(c, Config::default(), "{path} = {default}");
+        }
     }
 }
