@@ -141,7 +141,7 @@ fn terrain_mesh(g: &nephthene::core::rain::HeightGrid) -> Mesh {
 
 fn fly(mut commands: Commands, cfg: Res<Cfg>, cams: Query<Entity, With<Cam>>, mut cam: Query<&mut Transform, With<Cam>>,
     mouse: Res<ButtonInput<MouseButton>>, keys: Res<ButtonInput<KeyCode>>, motion: Res<AccumulatedMouseMotion>, scroll: Res<AccumulatedMouseScroll>,
-    panel: Option<Res<nephthene::Panel>>, time: Res<Time>, mut speed: Local<Option<f32>>) {
+    #[cfg(feature = "panel")] panel: Option<Res<nephthene::Panel>>, time: Res<Time>, mut speed: Local<Option<f32>>) {
     if cams.is_empty() {
         commands.spawn((camera_bundle(&cfg.0), Transform::from_xyz(0.0, 1.7, 0.0).looking_at(Vec3::new(0.0, 400.0, 1000.0), Vec3::Y)));
         return;
@@ -149,7 +149,9 @@ fn fly(mut commands: Commands, cfg: Res<Cfg>, cams: Query<Entity, With<Cam>>, mu
     let Ok(mut t) = cam.single_mut() else { return };
     // ponytail: base speed 20 m/s, 1.2x per wheel line, clamped to 1..2000 m/s; all untuned.
     let base = speed.get_or_insert(20.0);
-    if !panel.is_some_and(|p| p.0.open) { // the panel owns the mouse while open
+    #[cfg(feature = "panel")] let open = panel.is_some_and(|p| p.0.open);
+    #[cfg(not(feature = "panel"))] let open = false;
+    if !open { // the panel owns the mouse while open
         if mouse.pressed(MouseButton::Left) {
             let (mut yaw, mut pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
             yaw -= motion.delta.x * 0.003;
