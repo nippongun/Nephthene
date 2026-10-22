@@ -66,6 +66,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
         s_od_per_m: sr.od_per_m, s_amb_k: sr.amb_k, s_detail_m: sr.detail_m, s_field_floor: sr.field_floor, s_range: sr.range_m, s_steps: sr.steps,
         s_ds_min: sr.ds_min_m, s_near: sr.near_m, s_sun_len: sr.sun_len_m, s_col_len: sr.col_len_m,
         s_core_flare: cfg.storms.core_flare, s_anvil_wide: cfg.storms.anvil_wide, s_anvil_p: cfg.storms.anvil_p, s_shelf_ceil: cfg.storms.shelf_ceil,
+        s_curtain_full: cfg.storms.fx.curtain_full, s_couple: cfg.storms.couple as u32 as f32,
         ..default()
     };
     // Cloud shadows: an R8 image the cloud_shadow pass draws, projected by Bevy's directional light cookie.

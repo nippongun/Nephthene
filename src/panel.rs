@@ -26,14 +26,14 @@ struct DashPanel;
 struct MapView;
 /// Which control an event came from.
 #[derive(Component, Clone, Copy, PartialEq, Debug)]
-pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, Clouds, Shadows, Debug, UpdateDiv, Channel, Giz(usize) }
+pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, StormsOn, StormNow, Clouds, Shadows, Debug, UpdateDiv, Channel, Giz(usize) }
 /// Option index a select currently shows (so a state change elsewhere moves it).
 #[derive(Component)]
 struct SelShown(usize);
 #[derive(Component, Clone, Copy, Default)]
-enum Txt { #[default] Time, Play, Here, Air, Rain, Sun, Frame, Hover, Pin, Fog }
+enum Txt { #[default] Time, Play, Here, Air, Rain, Sun, Frame, Hover, Pin, Fog, Storm }
 #[derive(Component, Clone, Copy, PartialEq)]
-enum Mark { Cam, Heading, Pin }
+enum Mark { Cam, Heading, Pin, Storm(usize) }
 
 pub struct PanelPlugin;
 impl Plugin for PanelPlugin {
@@ -168,6 +168,15 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
     lbl(cm, r, "Wisps (m)");
     slider(cm, r, Wid::FogWisp, 0.0, 120.0);
     cm.spawn_scene(label_dim(String::new())).insert((Txt::Fog, ChildOf(root)));
+    // storms: the switch, a summon, and the readout (nearest cell, storm weather here)
+    heading(cm, root, "Storms");
+    let r = row(cm, root);
+    lbl(cm, r, "Storms");
+    toggle(cm, r, Wid::StormsOn);
+    cm.spawn((Node { flex_grow: 1.0, ..default() }, ChildOf(r)));
+    button(cm, r, Wid::StormNow, "Storm now", None);
+    dim(cm, root, "(Storm now: a mature cell upwind that drifts over you)");
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Storm, ChildOf(root)));
     // view
     heading(cm, root, "View");
     let r = row(cm, root);
@@ -189,11 +198,15 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
     select(cm, r, Wid::Channel, &Channel::ALL.map(Channel::label), dash.0.channel.index());
     let m = cm.spawn((MapView, Node { width: px(MAP_W), height: px(map_h), flex_shrink: 0.0, ..default() }, ChildOf(root))).id();
     cm.spawn((ImageNode::new(handle), Node { position_type: PositionType::Absolute, width: px(MAP_W), height: px(map_h), ..default() }, Pickable::IGNORE, ChildOf(m)));
+    // storm marks first, so the camera mark draws on top of them
+    for i in 0..nephthene_core::storm::MAX_CELLS {
+        cm.spawn((Mark::Storm(i), Node { position_type: PositionType::Absolute, display: Display::None, ..default() }, BackgroundColor(Color::srgb(0.55, 0.35, 0.95)), Pickable::IGNORE, ChildOf(m)));
+    }
     for (k, color, border) in [(Mark::Pin, Color::srgb(1.0, 0.9, 0.2), false), (Mark::Heading, Color::srgb(1.0, 0.25, 0.2), false), (Mark::Cam, Color::srgb(1.0, 0.25, 0.2), false)] {
         let n = Node { position_type: PositionType::Absolute, border: if border { UiRect::all(px(2.0)) } else { default() }, ..default() };
         if border { cm.spawn((k, n, BorderColor::all(color), Pickable::IGNORE, ChildOf(m))); } else { cm.spawn((k, n, BackgroundColor(color), Pickable::IGNORE, ChildOf(m))); }
     }
-    dim(cm, root, "red dot = you (bar = heading), yellow = pinned. north up.");
+    dim(cm, root, "red dot = you (bar = heading), yellow = pinned, violet = storms. north up.");
     cm.spawn_scene(label("hover the map".to_string())).insert((Txt::Hover, ChildOf(root)));
     cm.spawn_scene(label("click the map to pin a point".to_string())).insert((Txt::Pin, ChildOf(root)));
     // gizmos: the legend
@@ -219,12 +232,13 @@ fn input(key: Option<Res<ButtonInput<KeyCode>>>, mut d: ResMut<Panel>) {
 // ---- events from the widgets ----
 fn kind(q: &Query<&Wid>, e: Entity) -> Option<Wid> { q.get(e).ok().copied() }
 
-fn on_activate(ev: On<Activate>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>) {
+fn on_activate(ev: On<Activate>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, storms: Option<ResMut<crate::storms::Storms>>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>) {
     let base = wx.cfg.clock.minutes_per_second / 60.0;
     match kind(&q, ev.entity) {
         Some(Wid::Close) => d.0.open = false,
         Some(Wid::PlayPause) => wx.rate = if wx.rate > 0.0 { 0.0 } else { base },
         Some(Wid::Reset) => d.0.reset_weather(),
+        Some(Wid::StormNow) => if let Some(mut s) = storms && let Some(p) = cam.iter().next().map(|g| g.translation()) { s.cfg.enabled = true; s.summon(&wx, p); },
         _ => {}
     }
 }
@@ -245,11 +259,12 @@ fn on_f32(ev: On<ValueChange<f32>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx
     }
 }
 
-fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>) {
+fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, storms: Option<ResMut<crate::storms::Storms>>) {
     let v = ev.value;
     match kind(&q, ev.source) {
         Some(Wid::Rain) => d.0.rain = v,
         Some(Wid::FogOn) => wx.cfg.ground_fog.enabled = v,
+        Some(Wid::StormsOn) => if let Some(mut s) = storms { s.cfg.enabled = v; },
         Some(Wid::Clouds) => d.0.clouds = v,
         Some(Wid::Shadows) => d.0.shadows = v,
         Some(Wid::Giz(i)) => d.0.gizmos[i] = v,
@@ -318,6 +333,7 @@ fn sync_widgets(
     sliders: Query<(Entity, &Wid, &SliderValue)>, checks: Query<(Entity, &Wid, Has<Checked>), With<Checkbox>>,
     nums: Query<(Entity, &Wid, &NumberInputValue)>, sels: Query<(Entity, &Wid, &SelShown)>, rows: Query<(Entity, &OptionIndex)>, kids: Query<&Children>,
     params: Option<Res<CloudParams>>, map_img: Option<Res<MapImage>>, mut images: ResMut<Assets<Image>>, mut shown_map: Local<Option<(Channel, Option<f32>, bool, bool)>>, fog: Res<crate::fog::FogState>,
+    storms: Option<Res<crate::storms::Storms>>,
 ) {
     for mut n in &mut panels { let want = if d.0.open { Display::Flex } else { Display::None }; if n.display != want { n.display = want; } }
     if !d.0.open { return; }
@@ -331,7 +347,7 @@ fn sync_widgets(
         if (v.0 - want).abs() > 1e-4 { commands.entity(e).insert(SliderValue(want)); }
     }
     for (e, k, on) in &checks {
-        let want = match k { Wid::Rain => d.0.rain, Wid::FogOn => g.enabled, Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
+        let want = match k { Wid::Rain => d.0.rain, Wid::FogOn => g.enabled, Wid::StormsOn => storms.as_ref().is_some_and(|s| s.cfg.enabled), Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
         if want && !on { commands.entity(e).insert(Checked); } else if !want && on { commands.entity(e).remove::<Checked>(); }
     }
     for (e, k, v) in &nums {
@@ -358,10 +374,32 @@ fn sync_widgets(
 
 fn cam_pose(cam: &Query<&GlobalTransform, With<AtmosphereSettings>>) -> Option<(Vec3, Vec3)> { cam.iter().next().map(|g| (g.translation(), g.forward().as_vec3())) }
 
+/// Distance (m) from `p` to the segment `a`..`b`; a == b is a point.
+fn seg_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared().max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
+    (a + ab * t).distance(p)
+}
+
+/// The storms readout: how many are selected, the nearest cell's edge (km, stage) from the camera in the storm frame, and the storm
+/// weather here. `None` (no resource) reads as off.
+fn storm_txt(storms: Option<&crate::storms::Storms>, wx: &Weather, p: Vec3) -> String {
+    let l = &wx.storm;
+    let here = format!("here: rain {:.2}  cover {:.2}  sky {:.2}  gust {:.1} m/s", l.precip, l.cover, l.ambient, l.outflow.length());
+    let Some(s) = storms.filter(|s| s.cfg.enabled) else { return "storms off".into() };
+    let [sx, sz] = wx.cfg.map.world_offset_m;
+    let q = Vec2::new(p.x + sx, p.z + sz);
+    let near = s.sel.iter().map(|(_, n)| ((seg_dist(q, n.a, n.b) - n.core_r).max(0.0), n.stage)).min_by(|x, y| x.0.total_cmp(&y.0));
+    match near {
+        Some((d, stage)) => format!("storms {}   nearest {:.1} km ({stage:?})   {here}", s.sel.len(), d / 1000.0),
+        None => format!("storms 0   {here}"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn refresh_ui(
     d: Res<Panel>, wx: Res<Weather>, rain: Res<RainState>, fog: Res<crate::fog::FogState>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, time: Res<Time>, hover: Res<MapHover>,
-    mut ms: Local<f32>, mut texts: Query<(&Txt, &mut Text)>, mut marks: Query<(&Mark, &mut Node)>,
+    mut ms: Local<f32>, mut texts: Query<(&Txt, &mut Text)>, mut marks: Query<(&Mark, &mut Node)>, storms: Option<Res<crate::storms::Storms>>,
 ) {
     *ms += (time.delta_secs() * 1000.0 - *ms) * 0.1;
     if !d.0.open { return; }
@@ -391,6 +429,7 @@ fn refresh_ui(
             Txt::Sun => format!("sun elevation {el:.1} deg   azimuth {az:.1} deg   heading {:.0}", c::heading_deg(fwd.to_array())),
             Txt::Frame => format!("frame {:.1} ms ({:.0} fps)", *ms, 1000.0 / ms.max(0.1)),
             Txt::Fog => format!("fog amount {:.2}   lift {:.0} m", fog.amount, fog.lift),
+            Txt::Storm => storm_txt(storms.as_deref(), &wx, p),
             Txt::Hover => hover_txt.clone(),
             Txt::Pin => pin_txt.clone(),
         };
@@ -405,6 +444,15 @@ fn refresh_ui(
             Mark::Cam => rect(&mut n, cam_px, Vec2::splat(9.0)),
             Mark::Heading => { let a = c::heading_deg(fwd.to_array()).to_radians(); rect(&mut n, cam_px + Vec2::new(a.sin(), -a.cos()) * 14.0, Vec2::splat(5.0)); }
             Mark::Pin => match ctl.pin { Some([x, z]) => { n.display = Display::Flex; rect(&mut n, at(x, z), Vec2::splat(9.0)); } None => n.display = Display::None },
+            // the storm's axis middle: map frame, back to world, then to the shown map as the camera is
+            Mark::Storm(i) => match storms.as_ref().and_then(|s| s.sel.get(*i)) {
+                Some((_, s)) => {
+                    let c = 0.5 * (s.a + s.b);
+                    let [gx, gz] = w::map_xz(&wx.cfg.map, wx.map_shift, c.x - wx.cfg.map.world_offset_m[0], c.y - wx.cfg.map.world_offset_m[1]);
+                    n.display = Display::Flex; rect(&mut n, at(gx, gz), Vec2::splat(11.0));
+                }
+                None => n.display = Display::None,
+            },
         }
     }
 }

@@ -119,7 +119,8 @@ fn state(time: Res<Time>, wx: Res<Weather>, mut rain: ResMut<RainState>) {
     let force = rain.panel.or(rain.force);
     let c = &wx.cfg.rain;
     rain.intensity = r::intensity(c, &wx.here, force);
-    rain.vel = r::velocity(c, wx.wind, rain.intensity);
+    // The live wind (panel override included) plus the storms' gust front.
+    rain.vel = r::velocity(c, wx.wind + Vec3::new(wx.storm.outflow.x, 0.0, wx.storm.outflow.y), rain.intensity);
     rain.wetness = r::wetness_step(c, rain.wetness, rain.intensity, time.delta_secs());
 }
 

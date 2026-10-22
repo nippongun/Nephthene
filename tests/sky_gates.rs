@@ -42,8 +42,9 @@ fn disc(im: &RgbImage) -> (usize, (f32, f32)) {
 fn g1_sun_disc() {
     let (el, az) = w::sun(&w::Clock::default(), 17.5);
     let d = w::dir(el, az);
-    let clear = still("g1_clear", "sun_disc", &["--hour", "17.5", "--set", "clouds.coverage_override=0.0"]);
-    let overcast = still("g1_overcast", "sun_disc", &["--hour", "17.5", "--set", "clouds.coverage_override=1.0"]);
+    // Storms off: they are on by default and ignore the coverage override, and a cell in front of the 17.5 h sun hides the disc.
+    let clear = still("g1_clear", "sun_disc", &["--hour", "17.5", "--set", "clouds.coverage_override=0.0", "--set", "storms.enabled=false"]);
+    let overcast = still("g1_overcast", "sun_disc", &["--hour", "17.5", "--set", "clouds.coverage_override=1.0", "--set", "storms.enabled=false"]);
     let (iw, ih) = (clear.width() as f32, clear.height() as f32);
     let expect = project(Vec3::new(0.0, 1.7, 0.0), Vec3::new(-926.6, 305.7, 222.6), 10.0, d, iw, ih);
     let exp_diam = SunDisk::EARTH.angular_size / 10f32.to_radians() * ih;

@@ -70,6 +70,8 @@ pub struct CloudGpu {
     pub s_steps: f32, pub s_ds_min: f32, pub s_near: f32, pub s_sun_len: f32,
     pub s_col_len: f32, pub s_core_flare: f32, pub s_anvil_wide: f32, pub s_anvil_p: f32,
     pub s_shelf_ceil: f32,
+    /// storms.fx.curtain_full and storms.couple (1 = rain shafts fall under storm cells).
+    pub s_curtain_full: f32, pub s_couple: f32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.

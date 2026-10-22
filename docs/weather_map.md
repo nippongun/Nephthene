@@ -3,7 +3,7 @@
 The 2D field all the weather is read from: R coverage, G precipitation, B cloud type, A dust, over a world-space rectangle. The
 clouds (march, shadow cookie, rain shafts) sample it on the GPU; the camera's local weather (`Weather.here`, which drives rain, fog
 formation and the dust fog) samples the same image on the CPU. With `map.advect` above 0 the map moves downwind with the mean wind.
-Advection is off by default (`map.advect` 0), which keeps the old fixed map.
+Advection is on by default (`map.advect` 1, with `map.wrap`; owner, 2026-10-22); `map.advect` 0 keeps a fixed map.
 
 Code: map and sampling `crates/nephthene_core/src/lib.rs` (`WeatherMap`, `map_xz`, `advect`), config `MapCfg`
 (`crates/nephthene_core/src/config.rs`), shift state `Weather.map_shift` (`src/sky.rs`), GPU feed `src/clouds.rs` (`drive`),
@@ -27,7 +27,7 @@ sampler `src/clouds/render.rs`, panel marker `src/panel.rs` + `dash::map_uv`, ga
 | A uniform wind moves a field without changing its shape | translation, not resampling: `shift += advect x wind x dt` (`core::advect`) | Advection equation with constant velocity: the exact solution is a translation |
 | Gusts do not move weather systems | the shift follows the mean wind (`core::map_wind`): the gusting wind's direction (gusts only scale its speed while `wind.gust` x the gust weights stays under 1) at `Weather.wind_mean_mps`, so the panel's wind override counts | Same rule as the rain shafts (`shafts.gust_lean` gate) |
 | Weather moves on the weather clock | game seconds (`dt x clock rate x 3600`), so a front crosses the map in game hours whatever the time-lapse; a paused clock (headless shots) freezes it. The cloud *noise* drift stays on real time, so detail motion reads as wind on screen. | Storms already run on game time (`storms.clock_scale`) |
-| Art-directed skies want fixed weather | `map.advect` 0 (the default): only the noise drifts through a fixed coverage | Schneider 2017: "while the noise in the density model is animated, the coverage signal is not ... we only want them to appear to be changing without altering the larger structure of the cloudscape" |
+| Art-directed skies want fixed weather | `map.advect` 0 (the default until 2026-10-22): only the noise drifts through a fixed coverage | Schneider 2017: "while the noise in the density model is animated, the coverage signal is not ... we only want them to appear to be changing without altering the larger structure of the cloudscape" |
 
 `map.advect` 1 is physical (the weather rides the wind at its speed). Values between 0 and 1 are an art call, as are values above 1
 for a faster sky. The value is the owner's call (look and feel); the default keeps the old look.
@@ -42,8 +42,8 @@ map 200 km at 6 m/s: the edge reaches a camera at the centre after about 4.6 gam
   CPU/GPU agreement at the seam is built, not render-gated (G22 runs unwrapped).
 - The shift is kept within one map period (`core::advect`), so f32 keeps its precision over long sessions.
 - `clouds.background` (the weather outside the map) never applies, so the plugin refuses the pair at start.
-- The map must tile. The built-in procedural map (`map.default_*`, a product of two sines) does not, so a wrapped default map shows a
-  seam where the opposite edges meet. Supply a tileable PNG, or leave `wrap` off.
+- The map must tile. The built-in procedural map (`map.default_*`, a product of two sines) tiles while `map.default_cycles` are
+  whole numbers (the default [1, 1]; gate `built_in_map_tiles`, red arm the old 1.13 and 0.84 cycles). A PNG must tile itself.
 - The panel folds the camera marker back onto the map (`dash::map_uv`).
 
 ## Gates
