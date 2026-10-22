@@ -261,6 +261,7 @@
     "gust_lean": false
   },
   "rain": {
+    "enabled": true,
     "half_m": 40.0,
     "height_m": 30.0,
     "max_streaks": 24000,
@@ -301,7 +302,16 @@
     "dim_from": 0.2,
     "dim_to": 0.7,
     "force": null,
-    "wet_epsilon": 0.002
+    "wet_epsilon": 0.002,
+    "kind_force": null,
+    "snow_fall_mps": 1.0,
+    "snow_drift": 1.0,
+    "snow_drift_max": 15.0,
+    "flake_m": 0.025,
+    "flake_alpha": 1.0,
+    "flutter_m": 0.25,
+    "flutter_hz": 0.4,
+    "snow_half_m": 13.3
   },
   "storms": {
     "seed": "nephthene",
