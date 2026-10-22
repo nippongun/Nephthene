@@ -366,8 +366,8 @@ fn refresh_ui(
     if !d.0.open { return; }
     let ctl = &d.0;
     let (p, fwd) = cam_pose(&cam).unwrap_or((Vec3::ZERO, Vec3::Z));
-    let [sx, sz] = wx.cfg.map.world_offset_m;
-    let (gx, gz) = (sx + p.x, sz + p.z);
+    // The camera in the map frame: with map.advect the weather moves downwind, so the marker drifts upwind across the map.
+    let [gx, gz] = w::map_xz(&wx.cfg.map, wx.map_shift, p.x, p.z);
     let map = &wx.map;
     let (el, az) = w::sun(&wx.cfg.clock, wx.hour);
     let pin_txt = match ctl.pin {

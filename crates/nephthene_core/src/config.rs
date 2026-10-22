@@ -163,11 +163,23 @@ pub struct MapCfg {
     pub default_px: u32, pub default_extent_m: f32,
     /// Built-in map values: mean coverage and its swing, precip blob strength, cloud type, dust.
     pub default_coverage: f32, pub default_coverage_swing: f32, pub default_precip: f32, pub default_type: f32, pub default_dust: f32,
+    /// Advection: the map moves downwind at `advect` x the mean wind (gusts never move it), on the game clock (frozen when the
+    /// clock is). 0 = the map stays put: the weather is fixed to the ground and only the cloud noise drifts through it (the old
+    /// behaviour); 1 = the weather rides the wind. Untuned.
+    pub advect: f32,
+    /// Repeat the map past its edges instead of holding the edge texels (an advected map otherwise runs out of weather). Wants a
+    /// tileable map: the built-in procedural one is not, so a wrapped default map shows a seam. Excludes `clouds.background`.
+    pub wrap: bool,
+    /// How far the weather has moved downwind at start (m, world XZ); a host restoring a saved game sets it. Map coordinates =
+    /// world + `world_offset_m` - shift.
+    pub start_shift_m: [f32; 2],
+    /// Test red arm: the clouds keep the unshifted map while the weather here moves with it (clouds and rain disagree).
+    pub static_gpu: bool,
 }
 impl Default for MapCfg {
     fn default() -> Self {
         MapCfg { world_offset_m: [0.0, 0.0], default_px: 64, default_extent_m: 200_000.0, default_coverage: 0.45, default_coverage_swing: 0.2,
-                 default_precip: 0.0, default_type: 0.6, default_dust: 0.1 }
+                 default_precip: 0.0, default_type: 0.6, default_dust: 0.1, advect: 0.0, wrap: false, start_shift_m: [0.0, 0.0], static_gpu: false }
     }
 }
 

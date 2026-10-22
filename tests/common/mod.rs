@@ -16,13 +16,16 @@ pub fn example() -> PathBuf {
 pub fn root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")) }
 
 /// One shot run: `--shot pose --out shots/<label>` plus `args`. Returns the output directory; panics with the log on a nonzero exit.
-pub fn shoot(label: &str, pose: &str, args: &[&str]) -> PathBuf {
+pub fn shoot(label: &str, pose: &str, args: &[&str]) -> PathBuf { shoot_log(label, pose, args).0 }
+
+/// `shoot`, also returning the run's stdout + stderr.
+pub fn shoot_log(label: &str, pose: &str, args: &[&str]) -> (PathBuf, String) {
     let dir = root().join("shots").join(label);
     let _ = std::fs::remove_dir_all(&dir);
     let out = Command::new(example()).args(["--shot", pose, "--out"]).arg(&dir).args(args).env("CLAUDECODE", "1").output().expect("run the sky example");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.status.code(), Some(0), "{label}: `--shot {pose}` exit {:?}\n{log}", out.status.code());
-    dir
+    (dir, log)
 }
 
 pub fn read(dir: &std::path::Path, name: &str) -> RgbImage {

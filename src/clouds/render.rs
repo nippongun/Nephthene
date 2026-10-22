@@ -104,6 +104,8 @@ impl Default for StormGpu { fn default() -> Self { Self { n: 0, pad0: 0, pad1: 0
 pub struct CloudParams {
     pub gpu: CloudGpu,
     pub base: Handle<Image>, pub detail: Handle<Image>, pub map: Handle<Image>,
+    /// The map sampler repeats (config `map.wrap`) instead of clamping at the edge.
+    pub map_wrap: bool,
     pub render_scale: f32, pub temporal_alpha: f32, pub update_div: u32,
     /// Cloud shadow cookie image (R8Unorm), its frame, and whether to redraw it this frame.
     pub shadow: Handle<Image>, pub shadow_gpu: ShadowGpu, pub shadow_draw: bool,
@@ -430,7 +432,7 @@ fn prepare_bind_groups(
             (8, &atmo.transmittance_lut.default_view), (10, &atmo.sky_view_lut.default_view), (12, &**atmo_sampler),
         )));
         let cloud = device.create_bind_group("cloud_data", &cache.get_bind_group_layout(&render.cloud), &BindGroupEntries::sequential((
-            u.clone(), &base.texture_view, &detail.texture_view, &render.repeat, &map.texture_view, &render.clamp, storms.clone(),
+            u.clone(), &base.texture_view, &detail.texture_view, &render.repeat, &map.texture_view, if params.map_wrap { &render.repeat } else { &render.clamp }, storms.clone(),
         )));
         let composite = device.create_bind_group("cloud_composite", &cache.get_bind_group_layout(&render.composite), &BindGroupEntries::sequential((
             &tex.write.default_view, &render.clamp,

@@ -3,7 +3,7 @@
 //! Every tunable is in [`config::Config`]. The Bevy plugin crate `nephthene` is the render half.
 //!
 //! Compass: north = +Z, east = +X, azimuth clockwise from north.
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 pub mod config;
 pub mod rain;
@@ -22,9 +22,9 @@ pub struct Local { pub coverage: f32, pub precip: f32, pub dust: f32 }
 
 /// The weather map: an RGBA8 image (R coverage, G precip, B cloud type, A dust) with its world extent. Map metres, rows
 /// north to south. The GPU samples the same image for the clouds. Load one with `load` (weather_map.png + weather_map.json
-/// in a directory) or take the built-in procedural one from `procedural`.
+/// in a directory) or take the built-in procedural one from `procedural`. `wrap` repeats the map past its edges (the plugin copies config `map.wrap`); false holds the edge texels.
 #[derive(Clone)]
-pub struct WeatherMap { pub width: u32, pub height: u32, pub min_x: f32, pub max_z: f32, pub size_x: f32, pub size_z: f32, pub rgba: Vec<u8> }
+pub struct WeatherMap { pub width: u32, pub height: u32, pub min_x: f32, pub max_z: f32, pub size_x: f32, pub size_z: f32, pub rgba: Vec<u8>, pub wrap: bool }
 
 /// Read and parse a json file; panics with the path on failure.
 pub fn load_json<T: for<'a> Deserialize<'a>>(path: &str) -> T {
@@ -45,7 +45,7 @@ impl WeatherMap {
         rgba.truncate(info.buffer_size());
         assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight), "weather_map.png must be RGBA8");
         assert_eq!((info.width, info.height, rgba.len()), (e.width, e.height, (e.width * e.height * 4) as usize), "weather_map.png vs weather_map.json");
-        WeatherMap { width: e.width, height: e.height, min_x: e.min_x, max_z: e.max_z, size_x: e.size_x, size_z: e.size_z, rgba }
+        WeatherMap { width: e.width, height: e.height, min_x: e.min_x, max_z: e.max_z, size_x: e.size_x, size_z: e.size_z, rgba, wrap: false }
     }
 
     /// Built-in map for [`MapCfg`]: smooth coverage swell around `default_coverage`, one rain blob when `default_precip` > 0.
@@ -65,16 +65,25 @@ impl WeatherMap {
             }
         }
         // Centred on map (0, 0); with a zero world offset the world origin is mid-map.
-        WeatherMap { width: n, height: n, min_x: -ext / 2.0, max_z: ext / 2.0, size_x: ext, size_z: ext, rgba }
+        WeatherMap { width: n, height: n, min_x: -ext / 2.0, max_z: ext / 2.0, size_x: ext, size_z: ext, rgba, wrap: false }
     }
 
-    /// Bilinear RGBA in 0..1 at map (x, z), clamped at the edges.
+    /// Bilinear RGBA in 0..1 at map (x, z), clamped at the edges (wrapped when `wrap`).
     pub fn rgba(&self, x: f32, z: f32) -> [f32; 4] {
-        let fx = ((x - self.min_x) / self.size_x * self.width as f32 - 0.5).clamp(0.0, (self.width - 1) as f32);
-        let fz = ((self.max_z - z) / self.size_z * self.height as f32 - 0.5).clamp(0.0, (self.height - 1) as f32);
-        let (x0, z0) = (fx as u32, fz as u32);
-        let (x1, z1) = ((x0 + 1).min(self.width - 1), (z0 + 1).min(self.height - 1));
-        let (tx, tz) = (fx - x0 as f32, fz - z0 as f32);
+        // Per axis: the two texels to blend and the weight of the second; held at the edge, or wrapped across it.
+        let axis = |f: f32, n: u32| -> (u32, u32, f32) {
+            if self.wrap {
+                let f0 = f.floor();
+                let i = (f0 as i64).rem_euclid(n as i64) as u32;
+                (i, (i + 1) % n, f - f0)
+            } else {
+                let f = f.clamp(0.0, (n - 1) as f32);
+                let i = f as u32;
+                (i, (i + 1).min(n - 1), f - i as f32)
+            }
+        };
+        let (x0, x1, tx) = axis((x - self.min_x) / self.size_x * self.width as f32 - 0.5, self.width);
+        let (z0, z1, tz) = axis((self.max_z - z) / self.size_z * self.height as f32 - 0.5, self.height);
         let px = |x: u32, z: u32, c: usize| self.rgba[((z * self.width + x) * 4) as usize + c] as f32 / 255.0;
         std::array::from_fn(|c| {
             let a = px(x0, z0, c) + (px(x1, z0, c) - px(x0, z0, c)) * tx;
@@ -88,6 +97,24 @@ impl WeatherMap {
         let [coverage, precip, _, dust] = self.rgba(x, z);
         Local { coverage, precip, dust }
     }
+}
+
+/// Map coordinates of world (x, z): the world offset, less how far the weather has moved downwind (`shift`, m).
+pub fn map_xz(m: &config::MapCfg, shift: Vec2, x: f32, z: f32) -> [f32; 2] {
+    [x + m.world_offset_m[0] - shift.x, z + m.world_offset_m[1] - shift.y]
+}
+
+/// The wind the weather map rides (m/s, world XZ): the direction of the live wind `now` (gusts scale its speed, never turn it) at
+/// the mean speed `mean_mps` (no gusts). ponytail: a gust factor below zero (`wind.gust` x the gust weights > 1) would flip it;
+/// take the direction from the config once the wind is a field (Phase 2).
+pub fn map_wind(now: Vec3, mean_mps: f32) -> Vec2 { Vec2::new(now.x, now.z).normalize_or_zero() * mean_mps }
+
+/// One step of weather map advection: the map moves `map.advect` x `wind` (m/s, world XZ; the mean wind, never the gusts) for
+/// `dt_s` game seconds. A uniform wind advects a field by pure translation, so the map is shifted, not resampled. A wrapped map
+/// keeps the shift within one period (the same weather, and f32 keeps its precision over long sessions).
+pub fn advect(m: &config::MapCfg, map: &WeatherMap, shift: Vec2, wind: Vec2, dt_s: f32) -> Vec2 {
+    let s = shift + wind * m.advect * dt_s;
+    if map.wrap { Vec2::new(s.x.rem_euclid(map.size_x), s.y.rem_euclid(map.size_z)) } else { s }
 }
 
 /// Unit vector toward a body at (elevation, azimuth) in degrees.
@@ -219,5 +246,79 @@ mod shadow_tests {
         // Centre of the map lies on the ground along the sun ray; its plane coordinates match the origin.
         let g = shadow_ground(o, r, u, sun, half, [0.0, 0.0]);
         assert!(g.y.abs() < 1e-3 && ((g - o).cross(sun)).length() < 1e-2);
+    }
+}
+
+#[cfg(test)]
+mod map_tests {
+    use super::*;
+    use config::MapCfg;
+
+    // Where the weather has got to after 10 game minutes of steady wind must be within 1 m of where the wind carried it: far under one
+    // texel of any practical map (the built-in one's is 3.1 km), so the clouds and the weather here cannot visibly part.
+    // The loop takes the plugin's path (map_wind of the gusting wind), so a sign flip or a gust leak there fails it too.
+    const DRIFT_BUDGET_M: f32 = 1.0;
+
+    #[test]
+    fn map_rides_the_mean_wind() {
+        let w = config::Wind::default();
+        let v3 = -dir(0.0, w.from_deg) * w.speed_mps;
+        let v = Vec2::new(v3.x, v3.z);
+        // 60 fps at 15 game seconds per real second (the default clock), 600 game seconds.
+        let (dt, frames) = (15.0 / 60.0, 2400);
+        let travel = v * dt * frames as f32;
+        let drift_error = |m: &MapCfg| {
+            let map = WeatherMap::procedural(m);
+            let mut s = Vec2::from(m.start_shift_m);
+            // As the plugin does: the gusting wind of each frame (60 fps real time), at the mean speed.
+            for i in 0..frames { s = advect(m, &map, s, map_wind(wind(&w, i as f32 / 60.0), w.speed_mps), dt); }
+            // The weather seen at world w0 at the start is now seen downwind, at w0 + travel.
+            for w0 in [Vec2::new(0.0, 0.0), Vec2::new(-4000.0, 2500.0), Vec2::new(12000.0, -7000.0)] {
+                let [ax, az] = map_xz(m, Vec2::from(m.start_shift_m), w0.x, w0.y);
+                let [bx, bz] = map_xz(m, s, w0.x + travel.x, w0.y + travel.y);
+                let (a, b) = (map.sample(ax, az), map.sample(bx, bz));
+                if m.advect == 1.0 { assert!((a.coverage - b.coverage).abs() < 1e-3, "coverage at the carried point {} vs {}", b.coverage, a.coverage); }
+            }
+            (s - Vec2::from(m.start_shift_m) - travel).length()
+        };
+        let on = drift_error(&MapCfg { advect: 1.0, ..MapCfg::default() });
+        let red = drift_error(&MapCfg::default());
+        println!("weather drift error after 600 s: advect 1 {on:.4} m, red arm (advect 0) {red:.1} m (budget {DRIFT_BUDGET_M} m)");
+        assert!(on <= DRIFT_BUDGET_M, "advected map is {on} m from where the wind carried it, budget {DRIFT_BUDGET_M} m");
+        assert!(red > DRIFT_BUDGET_M, "red arm must leave the weather behind, got {red} m (budget {DRIFT_BUDGET_M} m)");
+    }
+
+    // One map period away must read the same weather when wrapped: 1e-4 is f32 rounding of the 0..1 channel values.
+    const WRAP_BUDGET: f32 = 1e-4;
+
+    #[test]
+    fn wrap_tiles_the_map() {
+        let m = MapCfg::default();
+        let mut map = WeatherMap::procedural(&m);
+        let worst = |map: &WeatherMap| {
+            let mut d: f32 = 0.0;
+            for i in 0..9 { for j in 0..9 {
+                let (x, z) = (map.min_x + map.size_x * (i as f32 + 0.37) / 9.0, map.max_z - map.size_z * (j as f32 + 0.61) / 9.0);
+                let (a, bx, bz) = (map.rgba(x, z)[0], map.rgba(x + map.size_x, z)[0], map.rgba(x, z - map.size_z)[0]);
+                d = d.max((a - bx).abs()).max((a - bz).abs());
+            }}
+            d
+        };
+        map.wrap = true;
+        let wrapped = worst(&map);
+        // Continuity across the seam: on the map edge, halfway between the last and the first texel centres, the read is their mean.
+        let n = map.width;
+        let z_row0 = map.max_z - 0.5 * map.size_z / map.height as f32;
+        let texel = |i: u32| map.rgba[(i * 4) as usize] as f32 / 255.0;
+        let seam = (map.rgba(map.min_x, z_row0)[0] - 0.5 * (texel(n - 1) + texel(0))).abs();
+        // A long advection keeps a wrapped shift inside one period.
+        let s = advect(&MapCfg { advect: 1.0, ..m.clone() }, &map, Vec2::ZERO, Vec2::new(6.0, -4.0), 1.0e6);
+        map.wrap = false;
+        let clamped = worst(&map);
+        println!("one period away: wrapped {wrapped:.6}, red arm (clamped) {clamped:.4} (budget {WRAP_BUDGET}); seam {seam:.6}; wrapped shift {s:?}");
+        assert!(wrapped <= WRAP_BUDGET, "wrapped map differs {wrapped} one period away, budget {WRAP_BUDGET}");
+        assert!(seam <= WRAP_BUDGET, "seam read {seam} off the mean of the edge texels");
+        assert!(s.x >= 0.0 && s.x < map.size_x && s.y >= 0.0 && s.y < map.size_z, "wrapped shift {s:?} outside one period");
+        assert!(clamped > WRAP_BUDGET, "red arm (clamped) must differ one period away, got {clamped}");
     }
 }

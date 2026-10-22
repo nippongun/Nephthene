@@ -48,6 +48,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
     let map = &wx.map;
     let (cfg, c) = (&wx.cfg, &wx.cfg.clouds);
     let sr = &cfg.storms.render;
+    assert!(!(cfg.map.wrap && c.background.is_some()), "map.wrap repeats the map, so clouds.background (the weather outside it) never applies: unset one");
     let gpu = CloudGpu {
         coverage_override: c.coverage_override.unwrap_or(-1.0), precip_override: -1.0,
         debug: c.debug_view,
@@ -83,7 +84,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
             albedo: sh.albedo, light_od: sh.light_od, steps: sh.steps },
         ground: images.add(crate::rain::ground_image(&grid)), storm: StormGpu::default(),
         gpu, update_div: check_div(c.update_div), render_scale: c.render_scale, temporal_alpha: c.temporal_alpha,
-        resolve: cfg.resolve.clone(), pass_timing: c.pass_timing,
+        resolve: cfg.resolve.clone(), pass_timing: c.pass_timing, map_wrap: cfg.map.wrap,
         base: images.add(noise_3d(n.base_res, &n.base_freqs, Some((n.base_perlin_cells, n.base_perlin_octaves)), n.worley_mix)),
         detail: images.add(noise_3d(n.detail_res, &n.detail_freqs, None, n.worley_mix)),
         map: images.add(Image::new(Extent3d { width: map.width, height: map.height, depth_or_array_layers: 1 }, TextureDimension::D2,
@@ -128,6 +129,9 @@ pub(crate) fn drive(
     if let Some((l, t)) = moon.iter().next() { (m.gpu.moon_dir, m.gpu.moon_color) = body(l, t); }
     // Upwind is where the noise comes from: sampling at p - drift moves the shapes downwind.
     m.gpu.wind = -*drift;
+    // The clouds read the advected map (map.static_gpu, the test red arm, keeps the unshifted one).
+    let shift = if wx.cfg.map.static_gpu { Vec2::ZERO } else { wx.map_shift };
+    m.gpu.world_offset = Vec2::from(wx.cfg.map.world_offset_m) - shift;
     // Mean wind, slewed: gusts never lean the shafts (shafts.gust_lean is the test red arm).
     *slant = w::rain::shaft_slant_step(&wx.cfg.rain, &wx.cfg.shafts, &wx.cfg.wind, wx.wind, *slant, time.delta_secs());
     m.shaft.slant = *slant;

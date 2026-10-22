@@ -135,7 +135,14 @@
     "default_coverage_swing": 0.2,
     "default_precip": 0.0,
     "default_type": 0.6,
-    "default_dust": 0.1
+    "default_dust": 0.1,
+    "advect": 0.0,
+    "wrap": false,
+    "start_shift_m": [
+      0.0,
+      0.0
+    ],
+    "static_gpu": false
   },
   "clouds": {
     "bottom_m": 1500.0,
@@ -237,7 +244,8 @@
     "lean_intensity": 0.7,
     "albedo": 0.6,
     "light_od": 0.03,
-    "steps": 80.0
+    "steps": 80.0,
+    "gust_lean": false
   },
   "rain": {
     "half_m": 40.0,
