@@ -14,7 +14,8 @@ pub mod storm;
 pub mod storm_fx;
 pub mod fog;
 pub mod lightning;
-pub use config::{Clock, Clouds, Config, Fog, MapCfg, Moon, RainCfg, Shafts, Sky, Stars, Wind};
+pub mod air;
+pub use config::{AirCfg, Clock, Clouds, Config, Fog, MapCfg, Moon, RainCfg, Shafts, Sky, Stars, Wind};
 use serde::Deserialize;
 
 /// Weather at one place.
@@ -125,7 +126,7 @@ pub fn dir(el_deg: f32, az_deg: f32) -> Vec3 {
 }
 
 /// Solar declination, degrees (Cooper's approximation).
-fn declination(tilt_deg: f32, day_of_year: f32) -> f32 { -tilt_deg * (std::f32::consts::TAU * (day_of_year + 10.0) / 365.0).cos() }
+pub(crate) fn declination(tilt_deg: f32, day_of_year: f32) -> f32 { -tilt_deg * (std::f32::consts::TAU * (day_of_year + 10.0) / 365.0).cos() }
 
 /// (elevation, azimuth) in degrees of a body at hour angle `h_deg` (0 = on the meridian, + = west) and declination `dec_deg`.
 fn alt_az(lat_deg: f32, dec_deg: f32, h_deg: f32) -> (f32, f32) {

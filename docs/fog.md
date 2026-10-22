@@ -26,9 +26,10 @@ check, not a measurement.
 
 ## Model (nephthene_core::fog)
 
-- `evolve`: amount 0..1 per game hour. Formation = `form_per_h` x night (sun below `night_lo_deg..night_hi_deg`) x (1 - cover_block x
-  cover) x calm x moisture x (1 - amount). Loss = `burn_per_h` x sun height factor x `lit` x (1 - cover_shade x cover) + `mix_per_h` x
-  windiness.
+- `evolve`: amount 0..1 per game hour. Formation = `form_per_h` x saturation (1 - smoothstep(`spread_full_c`, `spread_none_c`, air
+  temperature - dew point), see docs/air.md) x calm x (1 - amount); the red arm `private_cooling` keeps the old formation (night by sun
+  elevation `night_lo_deg..night_hi_deg` x (1 - cover_block x cover) x calm x moisture). Loss = `burn_per_h` x sun height factor x
+  `lit` x (1 - cover_shade x cover) + `mix_per_h` x windiness.
 - `field` (terrain only, once per camera position): ground on a `bake_px`^2 grid over `extent_m`; pool floor = square min filter over
   `pool_radius_m`, carrying the depth of that lowest point (depth grows with how enclosed it is: mean ground around minus its ground,
   up to `relief_m`); floor and depth averaged so the top is level. Shallow mist strength from hollowness (`hollow_radius_m`,

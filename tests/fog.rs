@@ -105,11 +105,11 @@ fn g15_fog_follows_terrain() {
     finish("G15", red);
 }
 
-/// G16 a valley in a mountain's shadow keeps its fog. Formation model (no force), calm clear night, 1.5 h after sunrise: the east
-/// mountain still shades the floor, open ground has burned to about a third. Floor pixels (terrain hit on the valley floor, |x| < 700 m,
+/// G16 a valley in a mountain's shadow keeps its fog. Formation model (no force, on the air's dew point), calm clear night, 1.5 h
+/// after sunrise: the east mountain still shades the floor, open ground has burned to about half. Floor pixels (terrain hit on the valley floor, |x| < 700 m,
 /// below 50 m) must change at least 1.5x as much as in the red arm, ground_fog.ignore_shadow (every texel burns as if sunlit, the
 /// elevation-only model): 1.5x is the smallest gap that still means the shadow held fog the open model lost (pool opacity at amount
-/// 0.88 vs 0.34 differs far more).
+/// 0.89 vs 0.46 differs far more).
 #[test]
 #[ignore = "manual gate"]
 fn g16_mountain_shadow_holds_fog() {

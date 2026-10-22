@@ -34,6 +34,8 @@ pub struct Config {
     pub rain: RainCfg,
     pub storms: StormCfg,
     pub audio: audio::Cfg,
+    /// Air at the surface: temperature, dew point, humidity, freezing level and snow line (ground fog forms on it).
+    pub air: AirCfg,
     /// Terrain-following radiation fog: valley pools under a flat top and shallow mist in hollows (`fog` above is the distance haze).
     pub ground_fog: GroundFog,
     /// Tuning of the ticking systems (smoothing, rebuild thresholds).
@@ -50,7 +52,7 @@ impl Default for Config {
             fog_brightness: vec![[-14.0, 0.01], [-4.0, 0.05], [0.0, 0.35], [10.0, 0.9], [20.0, 1.0]],
             fog: Fog::default(), moon: Moon::default(), stars: Stars::default(), sky: Sky::default(), wind: Wind::default(),
             map: MapCfg::default(), clouds: Clouds::default(), resolve: Resolve::default(), shafts: Shafts::default(),
-            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
+            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), air: AirCfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
         }
     }
 }
@@ -393,10 +395,42 @@ impl Default for RainCfg {
     }
 }
 
-/// Ground fog (nephthene_core::fog, fog.wesl). Formation: clear, calm, moist nights build `amount` 0..1, sunshine burns it off and
-/// lifts its base, wind mixes it out. Shape: cold air drains off slopes into the lowest ground within `pool_radius_m`; the pool top is
-/// level there. Rates, depths and visibilities follow published field ranges (fog 10..300 m deep, ~3 h burn-off at 300 m,
-/// visibility 3.912 / extinction) but every default is UNTUNED.
+/// Air at the surface (nephthene_core::air): temperature by a force-restore model on the clock (sun heating, radiative loss, restore
+/// toward the season's daily mean; clouds shade the sun and block the loss), the air mass's dew point, and temperature with altitude.
+/// Defaults follow published ranges (clear-sky land diurnal range 8-15 K, overcast a third to a half of it; standard lapse rate
+/// 6.5 K/km; snow reaches about 300 m below the freezing level) but every default is UNTUNED.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct AirCfg {
+    /// Annual mean surface temperature (deg C) at `ref_alt_m`, the swing (K) of the season's daily mean about it, and the days the
+    /// season lags the sun (ground and sea store heat). The swing flips south of the equator.
+    pub mean_c: f32, pub season_c: f32, pub lag_days: f32,
+    /// K per game hour: sun heating with the sun overhead, radiative loss (day and night); and the rate (per game hour) at which the
+    /// surface is restored toward the season's daily mean.
+    pub heat_k_per_h: f32, pub cool_k_per_h: f32, pub restore_per_h: f32,
+    /// Share of the sun's heating that full cloud cover shades, and of the radiative loss it blocks (clouds radiate back).
+    pub cloud_shade: f32, pub cloud_block: f32,
+    /// Air mass dew point (deg C) = season's daily mean - dew_below_c + wet_gain_c * ground wetness - dust_dry_c * dust.
+    pub dew_below_c: f32, pub wet_gain_c: f32, pub dust_dry_c: f32,
+    /// Altitude (m) the surface temperature refers to, the environmental lapse rate (K per km), and how far (m) below the freezing
+    /// level snow still reaches the ground (the snow line).
+    pub ref_alt_m: f32, pub lapse_k_per_km: f32, pub melt_m: f32,
+    /// Hours integrated before the start hour (and while the clock is frozen) to reach the state the weather implies.
+    pub spin_up_h: f32,
+}
+impl Default for AirCfg {
+    fn default() -> Self {
+        AirCfg {
+            mean_c: 15.0, season_c: 10.0, lag_days: 30.0, heat_k_per_h: 4.0, cool_k_per_h: 1.5, restore_per_h: 0.25, cloud_shade: 0.7, cloud_block: 0.8,
+            dew_below_c: 4.0, wet_gain_c: 3.0, dust_dry_c: 6.0, ref_alt_m: 0.0, lapse_k_per_km: 6.5, melt_m: 300.0, spin_up_h: 48.0,
+        }
+    }
+}
+
+/// Ground fog (nephthene_core::fog, fog.wesl). Formation: on clear, calm nights the air cools to its dew point (config `air`) and
+/// builds `amount` 0..1; sunshine burns it off and lifts its base, wind mixes it out. Shape: cold air drains off slopes into the
+/// lowest ground within `pool_radius_m`; the pool top is level there. Rates, depths and visibilities follow published field ranges
+/// (fog 10..300 m deep, ~3 h burn-off at 300 m, visibility 3.912 / extinction) but every default is UNTUNED.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct GroundFog {
@@ -408,16 +442,21 @@ pub struct GroundFog {
     pub ignore_terrain: bool,
     /// Test switch (red arm): burn-off ignores the terrain shadow (every texel burns as if sunlit, as an elevation-only model would).
     pub ignore_shadow: bool,
+    /// Test switch (red arm): formation uses its old private night cooling (sun elevation, cover, moisture) instead of the air's dew
+    /// point spread (config `air`).
+    pub private_cooling: bool,
     /// Amount per game hour: gained at full formation potential, burnt at full insolation, mixed out at full wind.
     pub form_per_h: f32, pub burn_per_h: f32, pub mix_per_h: f32,
-    /// Sun elevation (deg) band over which nocturnal cooling fades out (full below `night_lo_deg`), and the elevation of full burn.
+    /// Sun elevation (deg) band over which nocturnal cooling fades out (full below `night_lo_deg`; `private_cooling` only), and the elevation of full burn.
     pub night_lo_deg: f32, pub night_hi_deg: f32, pub burn_full_deg: f32,
-    /// Share of the cooling that full cloud cover blocks (clouds radiate back), and of the burn it blocks (shade).
+    /// Share of the cooling that full cloud cover blocks (`private_cooling` only; the air's `cloud_block` otherwise), and of the burn it blocks (shade).
     pub cover_block: f32, pub cover_shade: f32,
     /// Wind (m/s): fog forms fully below `wind_lo_mps`, none above `wind_hi_mps`; above `wind_hi_mps` it is mixed out.
     pub wind_lo_mps: f32, pub wind_hi_mps: f32,
-    /// Moisture 0..1 = base + wet_gain * ground wetness - dust_dry * dust.
+    /// Moisture 0..1 = base + wet_gain * ground wetness - dust_dry * dust (`private_cooling` only; the air's dew point otherwise).
     pub moisture_base: f32, pub wet_gain: f32, pub dust_dry: f32,
+    /// Dew point spread (K, air temperature - dew point): fog forms fully at or below `spread_full_c`, none above `spread_none_c`.
+    pub spread_full_c: f32, pub spread_none_c: f32,
     /// Hours integrated before the start hour (and while the clock is frozen) to reach the state the weather implies.
     pub spin_up_h: f32,
     /// Pool depth (m) at amount 1: `depth_flat_m` on open ground, up to `depth_max_m` where the basin is `relief_m` deep or more.
@@ -477,9 +516,9 @@ pub struct GroundFog {
 impl Default for GroundFog {
     fn default() -> Self {
         GroundFog {
-            enabled: false, force: None, ignore_terrain: false, ignore_shadow: false,
+            enabled: false, force: None, ignore_terrain: false, ignore_shadow: false, private_cooling: false,
             form_per_h: 0.5, burn_per_h: 1.2, mix_per_h: 2.0, night_lo_deg: -4.0, night_hi_deg: 4.0, burn_full_deg: 20.0,
-            cover_block: 0.8, cover_shade: 0.6, wind_lo_mps: 2.5, wind_hi_mps: 6.0, moisture_base: 0.55, wet_gain: 0.45, dust_dry: 1.0, spin_up_h: 24.0,
+            cover_block: 0.8, cover_shade: 0.6, wind_lo_mps: 2.5, wind_hi_mps: 6.0, moisture_base: 0.55, wet_gain: 0.45, dust_dry: 1.0, spread_full_c: 0.5, spread_none_c: 2.5, spin_up_h: 24.0,
             depth_flat_m: 25.0, depth_max_m: 160.0, relief_m: 120.0, pool_radius_m: 2500.0,
             top_soft_m: 12.0, edge_m: 25.0, top_wave_m: 8.0, wave_tile_m: 900.0,
             shallow_e_m: 5.0, hollow_radius_m: 400.0, hollow_m: 15.0, slope_lo: 0.12, slope_hi: 0.35, flat_share: 0.3,

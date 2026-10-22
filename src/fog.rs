@@ -76,14 +76,14 @@ fn depth_readable(mut cams: Query<&mut Camera3d, With<AtmosphereSettings>>) {
 
 /// A bake: new fields if the camera left the old ones (or the config changed), then the amounts (spun up for a frozen clock, the first
 /// bake or a config change, else stepped by the game hours since the last bake; none with the fog off), then the map.
-fn job(c: &GroundFog, grid: &HeightGrid, clock: &w::Clock, hour: f32, air: Air, at: Vec2, old: Option<(Arc<Field>, Vec<f32>)>, spin: bool, dt_h: f32) -> Baked {
+fn job(c: &GroundFog, ac: &w::AirCfg, grid: &HeightGrid, clock: &w::Clock, hour: f32, air: Air, at: Vec2, old: Option<(Arc<Field>, Vec<f32>)>, spin: bool, dt_h: f32) -> Baked {
     let (el, az) = w::sun(clock, hour);
     let sun = w::dir(el, az);
     let fresh = spin || old.as_ref().is_none_or(|(o, _)| at.distance(Vec2::new(o.min_x, o.max_z) + Vec2::new(0.5, -0.5) * c.extent_m) > c.rebake_m);
     let field = if fresh { Arc::new(f::field(c, grid, [at.x, at.y])) } else { old.as_ref().unwrap().0.clone() };
-    let mut m = if !c.enabled { vec![0.0; field.ground.len()] } else if spin { f::spin_up_local(c, clock, hour, &air, grid, &field) } else {
+    let mut m = if !c.enabled { vec![0.0; field.ground.len()] } else if spin { f::spin_up_local(c, ac, clock, hour, &air, grid, &field) } else {
         let (o, om) = old.unwrap();
-        if fresh { f::resample(&o, &om, &field, f::spin_up(c, clock, hour, &air)) } else { om }
+        if fresh { f::resample(&o, &om, &field, f::spin_up(c, ac, clock, hour, &air)) } else { om }
     };
     let alt = if spin || !c.enabled { f::sun_alt(c, grid, &field, sun) } else { f::step(c, grid, &field, &mut m, dt_h, el, &air, sun) };
     let map = f::map(c, &field, &m, &alt);
@@ -115,7 +115,7 @@ fn bake(
         return;
     }
     let Some(at) = cam.iter().next().map(|g| g.translation().xz()) else { return };
-    let air = Air { coverage: wx.here.coverage, wind_mps: wx.wind_mean_mps, wetness: rain.map_or(0.0, |r| r.wetness), dust: wx.here.dust };
+    let air = Air { coverage: wx.here.coverage, wind_mps: wx.wind_mean_mps, wetness: rain.map_or(0.0, |r| r.wetness), dust: wx.here.dust, spread_c: wx.air.temp_c - wx.air.dew_c };
     let frozen = wx.rate <= 0.0 || c.force.is_some();
     b.pending_h += time.delta_secs() * wx.rate;
     b.since += time.delta_secs();
@@ -127,12 +127,12 @@ fn bake(
     if b.task.is_none() && due {
         let spin = frozen || b.field.is_none() || changed;
         let old = b.field.clone().map(|o| (o, b.m.clone()));
-        let (cfg, grid, clock, hour, dt_h) = (c.clone(), b.grid.clone(), wx.cfg.clock.clone(), wx.hour, b.pending_h);
+        let (cfg, ac, grid, clock, hour, dt_h) = (c.clone(), wx.cfg.air.clone(), b.grid.clone(), wx.cfg.clock.clone(), wx.hour, b.pending_h);
         if b.field.is_none() {
-            let r = job(&cfg, &grid, &clock, hour, air, at, old, spin, dt_h);
+            let r = job(&cfg, &ac, &grid, &clock, hour, air, at, old, spin, dt_h);
             done(r, &mut b, &mut params);
         } else {
-            b.task = Some(AsyncComputeTaskPool::get().spawn(async move { job(&cfg, &grid, &clock, hour, air, at, old, spin, dt_h) }));
+            b.task = Some(AsyncComputeTaskPool::get().spawn(async move { job(&cfg, &ac, &grid, &clock, hour, air, at, old, spin, dt_h) }));
         }
         (b.pending_h, b.since, b.key, b.cfg) = (0.0, 0.0, Some(key), Some(c.clone()));
     }

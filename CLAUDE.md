@@ -1,6 +1,7 @@
 # Claude Code in this repo
 
 Read `AGENTS.md` first; its rules apply. This file adds how a session works.
+@AGENTS.md
 
 ## Use the graph (owner's standing opt-in)
 - Implementation runs through the `graph` workflow (`.claude/workflows/graph.js`, skill `graph`): the owner has opted in to
@@ -19,3 +20,13 @@ Read `AGENTS.md` first; its rules apply. This file adds how a session works.
   over one. `main` is protected: changes land through PRs.
 - Before starting, check open branches and PRs for work in flight on the same files; do not collide with another session.
 - Push the branch when the final verdict passes; open the PR when the owner asks (they usually do).
+
+## Reporting
+- Intermediate messages: terse or none. No narration of steps.
+- Only the final result is reported, labelled (e.g. **Result**), and kept short.
+
+## GPU testing
+- GPU checks (Metal timing, goldens, look) run locally on the owner's machine, not in the cloud.
+- Each change that needs one leaves a handover in `docs/handover.md`: the commands to run and what to look for.
+- The owner marks an item done or deletes it once approved; otherwise sends it back with feedback, and the item stays open.
+

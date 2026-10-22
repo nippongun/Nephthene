@@ -2,28 +2,38 @@
 //! (src/fog.rs) keeps a [`Field`] and per-texel amounts around the camera, bakes them with [`map`] into a texture and fog.wesl marches
 //! [`density`] through it.
 //!
-//! Formation ([`evolve`]): a clear, calm, moist night cools the ground and builds the amount 0..1; wind mixes it out. Burn-off is local:
-//! a texel burns only while the sun reaches its fog top over the terrain ([`lit`] against the baked sunlit altitude), so a valley in a
-//! mountain's shadow keeps its fog after the open ground has cleared, and its base lifts only once the sun is on it. Shape ([`field`]):
-//! cold air drains off slopes into the lowest ground within `pool_radius_m`, so the pool top is that floor plus a depth that grows
-//! with the amount and with how enclosed the floor is. Hilltops above it stay clear; steep slopes drain their mist.
+//! Formation ([`evolve`]): on a clear, calm night the air cools to its dew point (crate::air) and builds the amount 0..1; wind mixes
+//! it out. Burn-off is local: a texel burns only while the sun reaches its fog top over the terrain ([`lit`] against the baked
+//! sunlit altitude), so a valley in a mountain's shadow keeps its fog after the open ground has cleared, and its base lifts only
+//! once the sun is on it. Shape ([`field`]): cold air drains off slopes into the lowest ground within `pool_radius_m`, so the
+//! pool top is that floor plus a depth that grows with the amount and with how enclosed the floor is. Hilltops above it stay clear;
+//! steep slopes drain their mist.
 use glam::Vec3;
 
-use crate::{Clock, config::GroundFog, rain::{Ground, HeightGrid, smoothstep}};
+use crate::{Clock, air, config::{AirCfg, GroundFog}, rain::{Ground, HeightGrid, smoothstep}};
 
-/// Formation inputs at the camera: cloud cover 0..1, wind speed m/s, ground wetness 0..1, dust 0..1.
+/// Formation inputs at the camera: cloud cover 0..1, wind speed m/s, ground wetness 0..1, dust 0..1, and the air's dew point spread
+/// (K, temperature - dew point; [`spin_up`] and [`spin_up_local`] integrate their own from the other inputs).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Air { pub coverage: f32, pub wind_mps: f32, pub wetness: f32, pub dust: f32 }
+pub struct Air { pub coverage: f32, pub wind_mps: f32, pub wetness: f32, pub dust: f32, pub spread_c: f32 }
 
 /// Moisture 0..1: wet ground evaporates into the cooling air, dust marks dry air.
 pub fn moisture(c: &GroundFog, a: &Air) -> f32 { (c.moisture_base + c.wet_gain * a.wetness - c.dust_dry * a.dust).clamp(0.0, 1.0) }
 
+/// `a` with the dew point spread of surface air at `temp_c`.
+fn with_spread(ac: &AirCfg, clock: &Clock, temp_c: f32, a: &Air) -> Air { Air { spread_c: temp_c - air::state(ac, clock, temp_c, a.wetness, a.dust).dew_c, ..*a } }
+
 /// One step of `dt_h` game hours from `amount` at sun elevation `el` (deg); `lit` 0..1 is how much of the sun reaches the fog
-/// (terrain shadow: 0 burns nothing).
+/// (terrain shadow: 0 burns nothing). Formation follows the air's dew point spread `a.spread_c` unless `private_cooling`.
 pub fn evolve(c: &GroundFog, amount: f32, dt_h: f32, el: f32, a: &Air, lit: f32) -> f32 {
-    let night = 1.0 - smoothstep(c.night_lo_deg, c.night_hi_deg, el);
     let windy = smoothstep(c.wind_lo_mps, c.wind_hi_mps, a.wind_mps);
-    let form = c.form_per_h * night * (1.0 - c.cover_block * a.coverage) * (1.0 - windy) * moisture(c, a);
+    // The air's dew point spread; the red arm keeps the old private cooling (night by sun elevation, cover, moisture).
+    let form = if c.private_cooling {
+        let night = 1.0 - smoothstep(c.night_lo_deg, c.night_hi_deg, el);
+        c.form_per_h * night * (1.0 - c.cover_block * a.coverage) * (1.0 - windy) * moisture(c, a)
+    } else {
+        c.form_per_h * (1.0 - smoothstep(c.spread_full_c, c.spread_none_c, a.spread_c)) * (1.0 - windy)
+    };
     let burn = c.burn_per_h * smoothstep(0.0, c.burn_full_deg, el) * lit * (1.0 - c.cover_shade * a.coverage) + c.mix_per_h * windy;
     (amount + dt_h * (form * (1.0 - amount) - burn * amount)).clamp(0.0, 1.0)
 }
@@ -31,22 +41,29 @@ pub fn evolve(c: &GroundFog, amount: f32, dt_h: f32, el: f32, a: &Air, lit: f32)
 /// Spin-up step (game hours): the night needs no terrain shadow, daylight steps recompute it.
 const SPIN_STEP_H: f32 = 0.25;
 
-/// The amount on open sunlit ground at `hour` after `spin_up_h` hours of this weather from none; `force` replaces it.
-pub fn spin_up(c: &GroundFog, clock: &Clock, hour: f32, a: &Air) -> f32 {
+/// The amount on open sunlit ground at `hour` after `spin_up_h` hours of this weather from none, the air integrated alongside; `force` replaces it.
+pub fn spin_up(c: &GroundFog, ac: &AirCfg, clock: &Clock, hour: f32, a: &Air) -> f32 {
     if let Some(f) = c.force { return f.clamp(0.0, 1.0); }
     let n = (c.spin_up_h / SPIN_STEP_H).ceil() as u32;
-    (0..n).fold(0.0, |m, i| evolve(c, m, SPIN_STEP_H, crate::sun(clock, hour - c.spin_up_h + SPIN_STEP_H * (i + 1) as f32).0, a, 1.0))
+    let mut t = air::spin_up(ac, clock, hour - c.spin_up_h, a.coverage);
+    (0..n).fold(0.0, |m, i| {
+        let h = hour - c.spin_up_h + SPIN_STEP_H * (i + 1) as f32;
+        t = air::step(ac, clock, t, h - SPIN_STEP_H, SPIN_STEP_H, a.coverage);
+        evolve(c, m, SPIN_STEP_H, crate::sun(clock, h).0, &with_spread(ac, clock, t, a), 1.0)
+    })
 }
 
 /// Per-texel amounts at `hour` after `spin_up_h` hours of this weather, each texel burning only while the sun reaches its fog top.
 /// `force` sets every texel.
-pub fn spin_up_local<G: Ground + ?Sized>(c: &GroundFog, clock: &Clock, hour: f32, a: &Air, g: &G, f: &Field) -> Vec<f32> {
+pub fn spin_up_local<G: Ground + ?Sized>(c: &GroundFog, ac: &AirCfg, clock: &Clock, hour: f32, a: &Air, g: &G, f: &Field) -> Vec<f32> {
     if let Some(v) = c.force { return vec![v.clamp(0.0, 1.0); f.ground.len()]; }
     let mut m = vec![0.0; f.ground.len()];
+    let mut t = air::spin_up(ac, clock, hour - c.spin_up_h, a.coverage);
     for i in 0..(c.spin_up_h / SPIN_STEP_H).ceil() as u32 {
         let h = hour - c.spin_up_h + SPIN_STEP_H * (i + 1) as f32;
+        t = air::step(ac, clock, t, h - SPIN_STEP_H, SPIN_STEP_H, a.coverage);
         let (el, az) = crate::sun(clock, h);
-        step(c, g, f, &mut m, SPIN_STEP_H, el, a, crate::dir(el, az));
+        step(c, g, f, &mut m, SPIN_STEP_H, el, &with_spread(ac, clock, t, a), crate::dir(el, az));
     }
     m
 }
@@ -277,29 +294,46 @@ mod tests {
     use super::*;
     use crate::rain::HeightGrid;
 
-    fn calm() -> Air { Air { coverage: 0.1, wind_mps: 1.0, wetness: 0.0, dust: 0.1 } }
+    // spread_c: a morning air 5 K above its dew point (direct evolve calls form nothing); spin-ups integrate their own.
+    fn calm() -> Air { Air { coverage: 0.1, wind_mps: 1.0, wetness: 0.0, dust: 0.1, spread_c: 5.0 } }
     fn sunrise(k: &Clock) -> f32 { (0..2400).map(|i| i as f32 * 0.01).find(|&h| crate::sun(k, h).0 > 0.0).unwrap() }
 
     #[test]
     fn clear_calm_nights_make_fog_that_burns_off_by_midday() {
         let (c, k) = (GroundFog::default(), Clock::default());
-        let dawn = spin_up(&c, &k, 5.5, &calm());
-        let noon = spin_up(&c, &k, 12.0, &calm());
+        let dawn = spin_up(&c, &AirCfg::default(), &k, 5.5, &calm());
+        let noon = spin_up(&c, &AirCfg::default(), &k, 12.0, &calm());
         assert!(dawn > 0.6, "dawn {dawn}");
         assert!(noon < 0.05, "noon {noon}");
-        assert!(spin_up(&c, &k, 22.0, &calm()) < dawn, "fog builds through the night, peaks near sunrise");
+        assert!(spin_up(&c, &AirCfg::default(), &k, 22.0, &calm()) < dawn, "fog builds through the night, peaks near sunrise");
     }
 
     #[test]
     fn wind_cloud_and_dry_air_suppress_it_rain_helps() {
         let (c, k) = (GroundFog::default(), Clock::default());
-        let at = |a: Air| spin_up(&c, &k, 5.5, &a);
+        let at = |a: Air| spin_up(&c, &AirCfg::default(), &k, 5.5, &a);
         let base = at(calm());
         assert!(at(Air { wind_mps: 8.0, ..calm() }) < 0.02, "wind mixes it out");
         assert!(at(Air { coverage: 0.9, ..calm() }) < base * 0.6, "cloud blocks the cooling");
         assert!(at(Air { dust: 0.6, ..calm() }) < base * 0.5, "dry air");
         assert!(at(Air { wetness: 1.0, ..calm() }) > base, "wet ground after rain");
-        assert_eq!(spin_up(&GroundFog { force: Some(0.3), ..c.clone() }, &k, 12.0, &calm()), 0.3);
+        assert_eq!(spin_up(&GroundFog { force: Some(0.3), ..c.clone() }, &AirCfg::default(), &k, 12.0, &calm()), 0.3);
+    }
+
+    /// Fog forms where the air cools to its dew point, not on every clear calm night. Budget: fog is visibility under 1 km (WMO); the
+    /// pool's visibility at amount a is visibility_m / smoothstep(0, 0.5, a) ([`density`]'s amount factor). A humid air mass (the
+    /// default: dew point 4 K under the daily mean) reaches it by dawn, a dry one (12 K under) does not. Red arm `private_cooling` (the
+    /// old night cooling, blind to the dew point) makes fog in the dry air mass.
+    #[test]
+    fn fog_waits_for_the_dew_point() {
+        let (c, k) = (GroundFog::default(), Clock::default());
+        let dry = AirCfg { dew_below_c: 12.0, ..AirCfg::default() };
+        let vis = |c: &GroundFog, ac: &AirCfg| c.visibility_m / smoothstep(0.0, 0.5, spin_up(c, ac, &k, 5.5, &calm())).max(1e-6);
+        let (humid, dry_v) = (vis(&c, &AirCfg::default()), vis(&c, &dry));
+        assert!(humid < 1000.0, "humid air mass: dawn visibility {humid} m is not fog");
+        assert!(dry_v >= 1000.0, "dry air mass: dawn visibility {dry_v} m is fog");
+        let red = vis(&GroundFog { private_cooling: true, ..c.clone() }, &dry);
+        assert!(red < 1000.0, "red arm (private_cooling) visibility {red} m: the gate cannot fail");
     }
 
     #[test]
@@ -370,12 +404,12 @@ mod tests {
         let ff = field(&c, &flat, [0.0, 0.0]);
         // The east ridge hides the morning sun from the floor until it is ~20 deg up, about 1.75 h after sunrise.
         let h = sunrise(&k) + 1.5;
-        let (m, open) = (spin_up_local(&c, &k, h, &calm(), &g, &f), spin_up_local(&c, &k, h, &calm(), &flat, &ff));
+        let (m, open) = (spin_up_local(&c, &AirCfg::default(), &k, h, &calm(), &g, &f), spin_up_local(&c, &AirCfg::default(), &k, h, &calm(), &flat, &ff));
         let floor = f.texel(0.0, 0.0).unwrap();
         let o = ff.texel(0.0, 0.0).unwrap();
-        assert!((open[o] - spin_up(&c, &k, h, &calm())).abs() < 1e-5, "flat ground is all sunlit: {} vs {}", open[o], spin_up(&c, &k, h, &calm()));
+        assert!((open[o] - spin_up(&c, &AirCfg::default(), &k, h, &calm())).abs() < 1e-5, "flat ground is all sunlit: {} vs {}", open[o], spin_up(&c, &AirCfg::default(), &k, h, &calm()));
         assert!(m[floor] > open[o] + 0.4, "1.5 h after sunrise the shaded valley floor keeps {} vs open ground {}", m[floor], open[o]);
-        let red = spin_up_local(&GroundFog { ignore_shadow: true, ..c.clone() }, &k, h, &calm(), &g, &f);
+        let red = spin_up_local(&GroundFog { ignore_shadow: true, ..c.clone() }, &AirCfg::default(), &k, h, &calm(), &g, &f);
         assert!((red[floor] - open[o]).abs() < 0.05, "red arm (ignore_shadow) burns the floor like open ground: {} vs {}", red[floor], open[o]);
         let fm = map(&c, &f, &m, &sun_alt(&c, &g, &f, crate::dir(crate::sun(&k, h).0, crate::sun(&k, h).1)));
         assert_eq!(fm.at(0.0, 0.0)[3], m[floor], "the map carries the amount");
