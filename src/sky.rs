@@ -123,6 +123,7 @@ pub(crate) fn tick(
     mut sun: Query<(&mut DirectionalLight, &mut Transform), (With<NephtheneSun>, Without<Moon>)>, mut moon: Query<(&mut DirectionalLight, &mut Transform), With<Moon>>,
     mut exposure: Query<&mut Exposure>, mut fog: Query<&mut DistanceFog>, mut sky: Query<&mut Skybox>, rain: Option<Res<crate::rain::RainState>>,
     ground: Option<Res<crate::rain::Ground>>, mut spun: Local<Option<(f32, w::AirCfg, w::Clock, w::ClimateCfg)>>, mut pending: Local<Option<(f32, f32)>>,
+    oro: Option<Res<crate::orographic::Orographic>>,
 ) {
     let dt = time.delta_secs();
     let h0 = wx.hour;
@@ -141,6 +142,8 @@ pub(crate) fn tick(
     if let Some(p) = p {
         let [x, z] = w::map_xz(&wx.cfg.map, wx.map_shift, p.x, p.z);
         let mut target = wx.map.sample(x, z);
+        // The terrain's share (orographic tile, world frame, fixed to the terrain) before the storms'.
+        if let Some(t) = oro.as_ref().and_then(|o| o.tile.as_ref()) { target = w::orographic::combine(&wx.cfg.orographic, target, t.sample(p.x, p.z)); }
         (target.precip, target.coverage) = (target.precip.max(s.precip), target.coverage.max(s.cover));
         wx.here = w::smooth(wx.here, target, dt, wx.cfg.sim.here_tau_s);
     }
