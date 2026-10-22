@@ -100,7 +100,7 @@ fn flash(
 ) {
     let c = &st.cfg.lightning;
     let fl = &mut *fl;
-    if !c.enabled || st.hide { (fl.live, fl.t_prev) = (vec![], None); return; }
+    if !c.enabled || st.hide { (fl.live, fl.thunder, fl.t_prev) = (vec![], vec![], None); return; }
     let Some(cam) = cam.iter().next().map(|g| g.translation()) else { return };
     let now = time.elapsed_secs_f64();
     // Storms live in the map frame (world + map.world_offset_m, the unshifted map; see storms.rs).
@@ -126,9 +126,6 @@ fn flash(
                 fresh.push(fl.live.len() - 1);
             }
         }
-        let over = fl.live.len().saturating_sub(c.max_live as usize);
-        fl.live.drain(..over);
-        fresh = fresh.into_iter().filter_map(|i| i.checked_sub(over)).collect();
     }
     for i in fresh {
         let l = &mut fl.live[i];
@@ -140,6 +137,9 @@ fn flash(
         strikes.write(LightningStrike { top: k.top, end: k.end, cg: k.cg, energy: k.energy, distance_m: d });
         fl.thunder.push((now + storm_fx::thunder_delay_s(&st.cfg, d) as f64, Thunder { distance_m: d, energy: k.energy, cg: k.cg }));
     }
+    // Every new flash was reported; only the newest `max_live` stay drawn and lit.
+    let over = fl.live.len().saturating_sub(c.max_live as usize);
+    fl.live.drain(..over);
     fl.live.retain(|l| now - l.born_s < c.life_s as f64);
     for l in &mut fl.live { l.light = l.strike.energy * lt::envelope(c, l.strike.seed, (now - l.born_s) as f32); }
     fl.thunder.retain(|(due, t)| {

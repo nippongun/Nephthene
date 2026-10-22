@@ -169,6 +169,7 @@ pub fn envelope(c: &Lightning, seed: u32, age_s: f32) -> f32 {
 /// Distance (m) from `p` to the straight line of the strike, the path the thunder takes first.
 pub fn distance_m(k: &Strike, p: Vec3) -> f32 {
     let ab = k.end - k.top;
+    // ponytail: 1e-6 m^2 only guards a zero-length strike against a division by zero.
     let t = if ab.length_squared() < 1e-6 { 0.0 } else { ((p - k.top).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) };
     p.distance(k.top + ab * t)
 }
