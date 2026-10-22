@@ -437,6 +437,9 @@ pub struct RainCfg {
     /// Flake window half-width (m) in x and z. At full intensity flakes fall 9x slower than drops (1 vs 9 m/s), so the same precipitation
     /// holds 9x more of them in the air; the same quads give that density in a window sqrt(9) = 3x narrower than `half_m` (40 / 3 = 13.3 m).
     pub snow_half_m: f32,
+    /// Prefix meshes: the pass draws the smallest of the `count >> k` quad meshes (k = 0..=draw_levels) that holds the falling quads
+    /// (`intensity x count`), so vertex work follows intensity within 2x. 0 draws every quad at any intensity (the cost gate's red arm).
+    pub draw_levels: u32,
 }
 impl Default for RainCfg {
     fn default() -> Self {
@@ -448,7 +451,7 @@ impl Default for RainCfg {
             wet_up_per_s: 1.0 / 40.0, dry_per_s: 1.0 / 240.0, wet_threshold: 0.05, wet_darken: 0.35, wet_roughness: 0.35, wet_reflectance: 0.5,
             light_gain: 1.0, sun_share: 0.65, sky_share: 0.35, night_floor: 0.04, cloud_dim: 0.8, level_scale: 1.2, light_color: [1.0, 0.98, 0.95],
             day_from_deg: -6.0, day_to_deg: 10.0, dim_from: 0.2, dim_to: 0.7, force: None, wet_epsilon: 0.002,
-            kind_force: None, snow_fall_mps: 1.0, snow_drift: 1.0, snow_drift_max: 15.0, flake_m: 0.025, flake_alpha: 1.0, flutter_m: 0.25, flutter_hz: 0.4, snow_half_m: 13.3,
+            kind_force: None, snow_fall_mps: 1.0, snow_drift: 1.0, snow_drift_max: 15.0, flake_m: 0.025, flake_alpha: 1.0, flutter_m: 0.25, flutter_hz: 0.4, snow_half_m: 13.3, draw_levels: 6,
         }
     }
 }
