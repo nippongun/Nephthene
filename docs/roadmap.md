@@ -56,8 +56,12 @@ Done when: rain vs snow, fog formation and dust lifting all read one air state, 
   cooling, and snow has no trigger. Fog formation moves onto the shared air state (red arm: its old private cooling).
 - Precipitation type from the air state: rain, snow, sleet, hail (`precip_kind` 0..1 blends, not a switch, so a front can turn
   rain to snow over minutes). Exposed on `Weather` for the host.
-- **Weather map advects with the wind** (ping-pong compute or fragment pass on the GPU, CPU copy for `Weather.here`). The map's
-  RGBA8 is full (coverage, precip, type, dust): a second map holds temperature offset, humidity, ground snow and ground wetness.
+- **Weather map advects with the wind**. Step 1 done: under today's one global wind the map is translated, not resampled
+  (`map.advect`, off by default; `map.wrap`; `map.start_shift_m` for save/restore; gates `map_tests` and G22; `docs/weather_map.md`).
+  Step 2, with the wind field below: a non-uniform wind cannot be a translation, so the map becomes a ping-pong compute or fragment
+  pass on the GPU (semi-Lagrangian), with a CPU copy for `Weather.here`. Owner: the default `advect`, and a tileable map before wrap
+  goes on. The map's RGBA8 is full (coverage, precip, type, dust): a second map holds temperature offset, humidity, ground snow and
+  ground wetness.
 - **Wind field**: replace the one global vector (`lib.rs` ponytail) with a coarse 2D field (mean + gusts + storm outflow), sampled
   by clouds, rain angle, fog drift, dust lift and audio, and readable by the host (foliage, cloth, gameplay).
 - Weather states over time (calm clear nights, fronts, showers, cold snaps, dry windy spells) on the seeded clock, plus a host

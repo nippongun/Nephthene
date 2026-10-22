@@ -29,6 +29,8 @@ pub struct Weather {
     pub wind_local: Vec3,
     /// Mean wind speed at the camera, m/s, without gusts: the config's, or the panel's override.
     pub wind_mean_mps: f32,
+    /// How far the weather map has moved downwind (m, world XZ; config `map.advect`). Map coordinates = world + `map.world_offset_m` - this.
+    pub map_shift: Vec2,
     pub stars: Option<Handle<Image>>, pub cfg: Config, pub map: WeatherMap,
 }
 
@@ -40,11 +42,13 @@ impl Weather {
 #[derive(Component)]
 pub struct Moon;
 
-pub(crate) fn build(app: &mut App, cfg: &Config, map: WeatherMap) {
+pub(crate) fn build(app: &mut App, cfg: &Config, mut map: WeatherMap) {
     if cfg.sky.msaa_fix { msaa::override_render_sky(app); }
-    let [x, z] = cfg.map.world_offset_m;
+    map.wrap = cfg.map.wrap;
+    let map_shift = Vec2::from(cfg.map.start_shift_m);
+    let [x, z] = w::map_xz(&cfg.map, map_shift, 0.0, 0.0);
     let here = map.sample(x, z);
-    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, wind_mean_mps: cfg.wind.speed_mps, stars: None, cfg: cfg.clone(), map })
+    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, wind_mean_mps: cfg.wind.speed_mps, map_shift, stars: None, cfg: cfg.clone(), map })
         .add_systems(PostStartup, setup)
         .add_systems(Update, (tick.in_set(crate::NephtheneSet::Tick), stars_follow_atmosphere))
         .add_systems(PostUpdate, ambient_follows_exposure);
@@ -66,6 +70,7 @@ pub(crate) fn setup(mut commands: Commands, mut wx: ResMut<Weather>, mut media: 
     wx.stars = Some(images.add(star_cubemap(&wx.cfg.stars)));
     let (el, az) = w::sun(&wx.cfg.clock, wx.hour);
     println!("WEATHER hour {:.2} sun el {el:.1} az {az:.1} ev100 {:.2}", wx.hour, w::curve(&wx.cfg.exposure, el));
+    println!("MAP shift ({:.0}, {:.0}) m advect {} wrap {} here coverage {:.3}", wx.map_shift.x, wx.map_shift.y, wx.cfg.map.advect, wx.cfg.map.wrap, wx.here.coverage);
 }
 
 /// Look at a body: a light at `to` shines along -to.
@@ -80,12 +85,17 @@ pub(crate) fn tick(
     let h = wx.hour + dt * wx.rate;
     if h >= 24.0 { wx.day += 1; }
     wx.hour = h.rem_euclid(24.0);
+    // The map rides last frame's mean wind (the gusting wind's direction, which gusts never turn, at the mean speed, panel override
+    // included), on the game clock: frozen when the clock is.
+    let mean = Vec2::new(wx.wind.x, wx.wind.z).normalize_or_zero() * wx.wind_mean_mps;
+    let shift = w::advect(&wx.cfg.map, &wx.map, wx.map_shift, mean, dt * wx.rate * 3600.0);
+    wx.map_shift = shift;
     wx.wind = w::wind(&wx.cfg.wind, time.elapsed_secs());
     wx.wind_local = wx.wind;
     wx.wind_mean_mps = wx.cfg.wind.speed_mps;
     if let Some(p) = cam.iter().next().map(|g| g.translation()) {
-        let [x, z] = wx.cfg.map.world_offset_m;
-        let target = wx.map.sample(x + p.x, z + p.z);
+        let [x, z] = w::map_xz(&wx.cfg.map, wx.map_shift, p.x, p.z);
+        let target = wx.map.sample(x, z);
         wx.here = w::smooth(wx.here, target, dt, wx.cfg.sim.here_tau_s);
     }
     let (d, hour, here) = (&wx.cfg, wx.hour, wx.here);
