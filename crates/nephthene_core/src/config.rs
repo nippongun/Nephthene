@@ -38,6 +38,8 @@ pub struct Config {
     pub air: AirCfg,
     /// Climate: what a place is like (temperature offset, humidity, ground snow and wetness), a second map fixed to the world.
     pub climate: ClimateCfg,
+    /// Orographic precipitation: rain and cloud from the wind over the terrain (a tile fixed to the terrain, combined where it is read).
+    pub orographic: OroCfg,
     /// Terrain-following radiation fog: valley pools under a flat top and shallow mist in hollows (`fog` above is the distance haze).
     pub ground_fog: GroundFog,
     /// Tuning of the ticking systems (smoothing, rebuild thresholds).
@@ -54,7 +56,7 @@ impl Default for Config {
             fog_brightness: vec![[-14.0, 0.01], [-4.0, 0.05], [0.0, 0.35], [10.0, 0.9], [20.0, 1.0]],
             fog: Fog::default(), moon: Moon::default(), stars: Stars::default(), sky: Sky::default(), wind: Wind::default(),
             map: MapCfg::default(), clouds: Clouds::default(), resolve: Resolve::default(), shafts: Shafts::default(),
-            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), air: AirCfg::default(), climate: ClimateCfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
+            rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), air: AirCfg::default(), climate: ClimateCfg::default(), orographic: OroCfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
         }
     }
 }
@@ -531,6 +533,36 @@ pub struct ClimateCfg {
 impl Default for ClimateCfg {
     fn default() -> Self {
         ClimateCfg { uniform: [0.0; 4], temp_range_k: 25.0, dry_dew_below_c: 20.0, wet_dew_below_c: 3.5, bare_albedo: 0.2, snow_albedo: 0.7, ignore: false }
+    }
+}
+
+/// Orographic precipitation (nephthene_core::orographic, Smith & Barstad 2004): rain and cloud from air forced up the terrain, baked over
+/// `Ground` around the camera into a tile fixed to the terrain and combined with the weather map where it is read. Slice 1 is CPU
+/// only (`Weather.here`: rain, fog, panel); the cloud shader does not read it yet, so it is off by default. Every default is UNTUNED
+/// (docs/orographic.md).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct OroCfg {
+    /// On: bake the tile and add it to the weather read on the CPU.
+    pub enabled: bool,
+    /// Multiplier on the uplift sensitivity Cw computed from the air (Cw = rho_s Gamma_m / gamma). Red arm: 0.
+    pub gain: f32,
+    /// Moist stability N_m (1/s), moist layer depth H_w (m), cloud-water conversion and fallout times tau_c, tau_f (s).
+    pub n_moist: f32, pub h_w: f32, pub tau_c: f32, pub tau_f: f32,
+    /// Precipitation rate (mm/h) that reads as the map's precip 1; the cloud source rate maps to cover the same way.
+    pub full_mm_h: f32,
+    /// Weight of the tile's cover added to the map's coverage (at most 1).
+    pub cover_weight: f32,
+    /// The tile: cells per side and cell size (m), centred on the camera.
+    pub tile_px: u32, pub cell_m: f32,
+    /// Rebake when the camera is over `rebake_m` from the tile centre, the mean wind turns over `rebake_deg` or changes speed by over
+    /// `rebake_frac`, or the air at the camera changes over `rebake_k`.
+    pub rebake_m: f32, pub rebake_deg: f32, pub rebake_frac: f32, pub rebake_k: f32,
+}
+impl Default for OroCfg {
+    fn default() -> Self {
+        OroCfg { enabled: false, gain: 1.0, n_moist: 0.005, h_w: 2500.0, tau_c: 1000.0, tau_f: 1000.0, full_mm_h: 7.6, cover_weight: 1.0,
+            tile_px: 128, cell_m: 200.0, rebake_m: 3200.0, rebake_deg: 22.5, rebake_frac: 0.2, rebake_k: 2.0 }
     }
 }
 
