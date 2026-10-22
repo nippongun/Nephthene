@@ -43,11 +43,36 @@ check, not a measurement.
 ## Rendering (fog.wesl)
 
 Full-screen pass after the main pass (where Bevy's volumetric fog runs), premultiplied over the view target, reading the scene depth.
+The march runs at `render_scale` (default 0.25) into a fog target and a surface-distance target (the scene depth stops each ray at the
+first surface); a full-resolution composite upsamples both depth-aware.
 The ray is clipped to the altitude band holding fog and marched in `steps` jittered steps. Light per sample: sun x atmosphere
 transmittance x cloud shadow cookie x terrain shadow (`sun_alt`) x multiple-scattering octaves over the optical depth to the pool top;
 moon the same without terrain shadow; sky light = mean sky-view radiance over the hemisphere x `ambient_scale`, half from above
 (dimmed by `ambient_od` x optical depth above) and half reflected from below (two-stream: the fog layer under the sample over ground of
 `ground_albedo`). Aerial perspective as the rain shafts.
+
+Noise comes from a baked 64^3 tiling lattice texture (`nephthene_core::fog::noise_lattice`): one trilinear fetch per lookup.
+`ground_fog.hash_noise` restores the old per-step hashing (about 70 hashes per step at full resolution), a test switch for the cost
+gate. Timing: `clouds.pass_timing` prints `FOGMS` (march, composite and total; mean of 60 frames, ms).
+
+## Knobs
+
+Look and cost knobs (all defaults untuned):
+
+- `top_billow_m`, `billow_tile_m`: the pool top billows over `billow_tile_m`, lit and self-shadowed by the local top; 0 = flat.
+- `top_fade_m`: haze above the pool top, e-folding over this height; with `wisp_m` 0, the hard top.
+- `wisp_m`, `wisp_erode`: the pool top within `wisp_m` below it is eroded by the breakup noise, up to `wisp_erode` at the top; `wisp_m` 0 = the hard top.
+- `diffuse_sun`: the sun's two-stream diffuse light inside the fog; 0 = direct beam only.
+- `cloud_diffuse`, `ignore_cloud_sky`: cloud-covered sky light moves toward the sun's diffuse light through cloud; `ignore_cloud_sky` = clear-sky light (red arm).
+- `step_power`: march step spacing (i/steps)^power, dense near the eye; 1 = uniform.
+- `render_scale`: march resolution as a share of the view (default 0.25 = a sixteenth of the pixels); 1 = full resolution.
+- `hash_noise`: test switch, per-step hashed noise (cost gate red arm).
+- `sky.sun_occlusion`, `sky.occlusion_keep`, `sky.occlusion_steps`: with terrain, the share of a view ray in the terrain's shadow loses its aerial sun in-scatter except `occlusion_keep` (0.2), sampled at `occlusion_steps` (8); `sun_occlusion` false = Bevy's own (red arm).
+
+## Why no fog by default
+
+The formation model forms none above `wind_hi_mps` (6 m/s), and the default wind is 6 m/s: radiation fog needs light wind. At 2.5 m/s
+or less the model reaches about 0.73 by 5 h on a clear night. To see fog, use the panel's wind speed or Fog controls, or a calm weather state.
 
 ## Verify locally
 
@@ -56,14 +81,21 @@ cargo test --release -p nephthene_core fog                                   # m
 cargo run --release --example sky -- --shot fog_valley --terrain --hour 5.6 --out shots --set ground_fog.enabled=true --set wind.speed_mps=1.0
 cargo run --release --example sky -- --shot fog_floor  --terrain --hour 6.0 --out shots --set ground_fog.enabled=true --set wind.speed_mps=1.0
 cargo run --release --example sky -- --shot fog_basin  --terrain --hour 6.5 --out shots --set ground_fog.enabled=true --set wind.speed_mps=1.0
-cargo test --release --test fog -- --ignored --nocapture --test-threads=1   # G15, G16
+cargo test --release --test fog -- --ignored --nocapture --test-threads=1   # G15-G19
 ```
 
 The default wind (6 m/s) is too strong for radiation fog; the model correctly forms none. Use `wind.speed_mps` <= 2.5, or
 `ground_fog.force`. Interactive: `cargo run --release --example sky -- --terrain --set ground_fog.enabled=true --set wind.speed_mps=1`.
 
-Gates: G15 (fog follows terrain; red arm `ground_fog.ignore_terrain`), G16 (mountain shadow holds fog; red arm
-`ground_fog.ignore_shadow`). Thresholds are budgets with the reason in the test doc comments.
+Gates (`tests/fog.rs`, manual):
+
+- G15 fog follows the terrain (red arm `ground_fog.ignore_terrain`).
+- G16 a mountain's shadow holds fog (red arm `ground_fog.ignore_shadow`).
+- G17 terrain hides the sun glow (red arm `sky.sun_occlusion=false`).
+- G18 the pool top is soft (red arm `ground_fog.wisp_m=0` + `top_fade_m=0`).
+- G19 cost at most 1.5 ms per frame at 1080p on the reference GPU (red arm `render_scale=1` + `hash_noise=true`); skips on software renderers.
+
+Thresholds are budgets with the reason in the test doc comments.
 
 ## Known limits / next steps
 
@@ -72,8 +104,8 @@ Gates: G15 (fog follows terrain; red arm `ground_fog.ignore_terrain`), G16 (moun
 - No fog beyond `extent_m` / 2 (fades over `edge_fade`); far valleys rely on `DistanceFog`. Upgrade: a coarse far field.
 - No bounce from sunlit slopes into shaded fog.
 - Moonlight has no terrain shadow; trees and buildings neither shadow the fog nor drain it (terrain only).
-- The march is full resolution with per-frame jitter and no temporal resolve; thin mist seen at grazing angles can be noisy.
-  Upgrade: half resolution with the clouds' resolve.
+- The march is quarter resolution (`render_scale`) with per-frame jitter and no temporal resolve (edge speckle at the pool top); thin mist seen at grazing angles can be noisy.
+  Upgrade: the clouds' temporal resolve.
 - Formation uses one regional amount history per texel with camera-local weather (`Weather.here`); weather map variation across the
   field is not used.
 - Advection and steam fog (over water) are not modelled.

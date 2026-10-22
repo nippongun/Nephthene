@@ -27,6 +27,8 @@ pub struct Weather {
     pub day: u32,
     /// Wind at the camera: today `wind`; storm outflow may add to it. Cloud drift stays on `wind`.
     pub wind_local: Vec3,
+    /// Mean wind speed at the camera, m/s, without gusts: the config's, or the panel's override.
+    pub wind_mean_mps: f32,
     pub stars: Option<Handle<Image>>, pub cfg: Config, pub map: WeatherMap,
 }
 
@@ -42,7 +44,7 @@ pub(crate) fn build(app: &mut App, cfg: &Config, map: WeatherMap) {
     if cfg.sky.msaa_fix { msaa::override_render_sky(app); }
     let [x, z] = cfg.map.world_offset_m;
     let here = map.sample(x, z);
-    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, stars: None, cfg: cfg.clone(), map })
+    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, wind_mean_mps: cfg.wind.speed_mps, stars: None, cfg: cfg.clone(), map })
         .add_systems(PostStartup, setup)
         .add_systems(Update, (tick.in_set(crate::NephtheneSet::Tick), stars_follow_atmosphere))
         .add_systems(PostUpdate, ambient_follows_exposure);
@@ -80,6 +82,7 @@ pub(crate) fn tick(
     wx.hour = h.rem_euclid(24.0);
     wx.wind = w::wind(&wx.cfg.wind, time.elapsed_secs());
     wx.wind_local = wx.wind;
+    wx.wind_mean_mps = wx.cfg.wind.speed_mps;
     if let Some(p) = cam.iter().next().map(|g| g.translation()) {
         let [x, z] = wx.cfg.map.world_offset_m;
         let target = wx.map.sample(x + p.x, z + p.z);

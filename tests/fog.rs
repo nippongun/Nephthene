@@ -1,4 +1,4 @@
-//! Ground fog gates G15-G18 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
+//! Ground fog gates G15-G19 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
 //! `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`. Metrics print before asserting.
 //! Pixels are classed on the CPU: each pose ray is cast into the test valley and marched through nephthene_core::fog's own density
 //! (no noise), so "pooled" and "clear" pixels come from the model, not from hand-picked image regions.
@@ -7,6 +7,7 @@ use common::*;
 use image::RgbImage;
 use nephthene::core::{self as w, config::GroundFog, fog, rain::{Ground, HeightGrid}};
 use bevy::math::Vec3;
+use std::process::Command;
 
 /// A camera pose of examples/poses.json; `name` is the `sky --shot` pose name.
 struct Pose { name: &'static str, pos: Vec3, look: Vec3, fov_deg: f32 }
@@ -222,7 +223,56 @@ fn g18_pool_top_is_soft() {
         assert!(kept >= 30, "{label}: {kept} columns with a fog top (need 30)");
         width
     };
-    let green = arm("g18_green", &c, &[]);
-    let red = arm("g18_red", &red_cfg, &["ground_fog.wisp_m=0", "ground_fog.top_fade_m=0"]);
+    // Both arms at full resolution: the gate tests the density profile at the top, and the upsample of a lower render_scale blurs
+    // even the hard top (at 0.25 the red arm measured 3.67 rows).
+    let green = arm("g18_green", &c, &["ground_fog.render_scale=1"]);
+    let red = arm("g18_red", &red_cfg, &["ground_fog.render_scale=1", "ground_fog.wisp_m=0", "ground_fog.top_fade_m=0"]);
     finish("G18", if green >= 1.5 * red { vec![] } else { vec![format!("green width {green:.3} < 1.5x red {red:.3}")] });
+}
+
+/// `FOGMS march a | composite b | total c` lines of a run's output as (march, composite, total) in ms.
+fn fogms(log: &str) -> Vec<(f32, f32, f32)> {
+    log.lines().filter_map(|l| {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() != 9 || f[0] != "FOGMS" || f[1] != "march" || f[4] != "composite" || f[7] != "total" { return None; }
+        Some((f[2].parse().ok()?, f[5].parse().ok()?, f[8].parse().ok()?))
+    }).collect()
+}
+
+/// G19 the fog is cheap on the GPU. Manual, and measured on the reference GPU only: software renderers (lavapipe, llvmpipe) and runs
+/// without timestamp queries print a skip line and pass. Pose fog_valley, hour 5.6, fog forced to 0.9, 1920x1080, clouds off, clouds.pass_timing
+/// on. The last `FOGMS` total (mean of 60 frames, ms) must be at most 1.5 ms. Budget reason: a 60 fps frame is 16.7 ms and the fog may take
+/// about a tenth of it next to the clouds; Retina's 2x pixels then stay near 3 ms. Red arm: render_scale=1 with hash_noise=true (the
+/// full-resolution hashed-noise pass the owner measured at about 30 fps on Retina) must exceed 1.5 ms, else the gate cannot fail.
+#[test]
+#[ignore = "manual gate"]
+fn g19_fog_cost() {
+    let run = |arm: &str, extra: &[&str]| -> Option<(f32, f32, f32)> {
+        let dir = root().join("shots").join(format!("g19_{arm}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut cmd = Command::new(example());
+        cmd.args(["--shot", "fog_valley", "--terrain", "--hour", "5.6", "--size", "1920x1080", "--settle", "200", "--out"]).arg(&dir);
+        cmd.args(["--set", "ground_fog.enabled=true", "--set", "ground_fog.force=0.9", "--set", "clouds.enabled=false", "--set", "clouds.pass_timing=true"]);
+        for s in extra { cmd.args(["--set", s]); }
+        let out = cmd.env("CLAUDECODE", "1").output().expect("run the sky example");
+        let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        if log.contains("llvmpipe") || log.contains("lavapipe") { return None; }
+        assert_eq!(out.status.code(), Some(0), "g19_{arm}: `--shot fog_valley` exit {:?}\n{log}", out.status.code());
+        let last = fogms(&log).last().copied();
+        if let Some((m, c, t)) = last { println!("G19 {arm}: march {m:.3} ms | composite {c:.3} ms | total {t:.3} ms"); }
+        last
+    };
+    let Some(green) = run("on", &[]) else {
+        println!("G19 skipped: software renderer or no timestamp queries (cost is measured on the reference GPU)");
+        return;
+    };
+    let red = run("red", &["ground_fog.render_scale=1", "ground_fog.hash_noise=true"]);
+    let mut list = vec![];
+    if green.2 > 1.5 { list.push(format!("fog total {:.3} ms > 1.5 ms", green.2)); }
+    match red {
+        Some((_, _, rt)) if rt > 1.5 => {}
+        Some((_, _, rt)) => list.push(format!("red arm (render_scale=1, hash_noise) total {rt:.3} ms <= 1.5 ms: the gate cannot fail")),
+        None => list.push("red arm produced no FOGMS line: the gate cannot be checked".into()),
+    }
+    finish("G19", list);
 }

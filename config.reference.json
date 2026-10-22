@@ -478,7 +478,9 @@
     "steps": 48,
     "max_m": 6000.0,
     "edge_fade": 0.15,
-    "step_power": 2.0
+    "step_power": 2.0,
+    "render_scale": 0.25,
+    "hash_noise": false
   },
   "sim": {
     "here_tau_s": 5.0,

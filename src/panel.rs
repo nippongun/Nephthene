@@ -305,6 +305,7 @@ fn apply(mut d: ResMut<Panel>, mut wx: ResMut<Weather>, mut rain: ResMut<RainSta
     if d.0.wind_from.is_some() || d.0.wind_speed.is_some() {
         wx.wind = w::wind(&c::wind_with(&wx.cfg.wind, d.0.wind_from, d.0.wind_speed), time.elapsed_secs());
     }
+    if let Some(s) = d.0.wind_speed { wx.wind_mean_mps = s; }
     if d.0.rain { wx.here.precip = c::RAIN_PRECIP; }
     rain.panel = c::precip_override(d.0.rain);
 }

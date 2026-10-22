@@ -234,6 +234,27 @@ pub fn density(c: &GroundFog, texel: [f32; 4], ground: f32, y: f32, sun_k: f32, 
     (sig.0 * pool + sig.1 * mist) * base
 }
 
+/// IEEE half-float bits of `v`, rounded to nearest even; beyond the half range it saturates to infinity (callers clamp first).
+pub fn f16_bits(v: f32) -> u16 {
+    let b = v.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let (exp, man) = (((b >> 23) & 0xff) as i32, b & 0x7f_ffff);
+    if exp == 255 { return sign | 0x7c00 | if man != 0 { 0x200 } else { 0 }; }
+    let e = exp - 127 + 15;
+    if e >= 31 { return sign | 0x7c00; }
+    let (m, shift) = if e <= 0 { (man | 0x80_0000, (14 - e) as u32) } else { (man, 13) };
+    if shift > 24 { return sign; }
+    let base = if e <= 0 { m >> shift } else { ((e as u32) << 10) | (m >> shift) };
+    let (rem, mid) = (m & ((1 << shift) - 1), 1 << (shift - 1));
+    sign | (base + (rem > mid || rem == mid && base & 1 == 1) as u32) as u16
+}
+
+/// Tiling value-noise lattice, `n`^3 bytes (x fastest), one random value per cell; the shader samples it with repeat and a
+/// smoothstep-warped coordinate, so one fetch gives smooth value noise.
+pub fn noise_lattice(n: u32) -> Vec<u8> {
+    (0..n * n * n).map(|k| { let mut h = k.wrapping_mul(747796405).wrapping_add(2891336453); h = ((h >> ((h >> 28) + 4)) ^ h).wrapping_mul(277803737); ((h >> 22) ^ h) as u8 }).collect()
+}
+
 /// A test valley (24 km square, 50 m cells): a north-south valley falling 10 m/km to the south between 260 m walls, a mountain ridge
 /// east of it (900 m above the wall, crest at x 2600: the morning sun reaches the floor ~20 deg up), rolling hills on the walls and a closed
 /// basin in the west hills (centre (-3500, 2500), 800 m radius, 140 m deep). The floor at (0, 0) is 0 m.
@@ -358,6 +379,22 @@ mod tests {
         assert!((red[floor] - open[o]).abs() < 0.05, "red arm (ignore_shadow) burns the floor like open ground: {} vs {}", red[floor], open[o]);
         let fm = map(&c, &f, &m, &sun_alt(&c, &g, &f, crate::dir(crate::sun(&k, h).0, crate::sun(&k, h).1)));
         assert_eq!(fm.at(0.0, 0.0)[3], m[floor], "the map carries the amount");
+    }
+
+    #[test]
+    fn f16_bits_round_trip_known_values() {
+        for (v, h) in [(1.0, 0x3c00), (-2.0, 0xc000), (0.5, 0x3800), (65504.0, 0x7bff), (0.0, 0), (1e-8, 0), (6.1035156e-5, 0x0400), (1.0 + 1.0 / 2048.0, 0x3c00), (1.0 + 3.0 / 2048.0, 0x3c02), (1e6, 0x7c00)] {
+            assert_eq!(f16_bits(v), h, "{v}");
+        }
+    }
+
+    #[test]
+    fn noise_lattice_is_spread_and_deterministic() {
+        let (a, b) = (noise_lattice(16), noise_lattice(16));
+        assert_eq!((a.len(), &a), (4096, &b));
+        let mean = a.iter().map(|&v| v as f32).sum::<f32>() / a.len() as f32;
+        assert!((mean - 127.5).abs() < 8.0, "mean {mean}");
+        assert!(a.iter().any(|&v| v < 16) && a.iter().any(|&v| v > 240), "covers the range");
     }
 
     #[test]
