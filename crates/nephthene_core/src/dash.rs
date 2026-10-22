@@ -42,8 +42,11 @@ pub fn effective_rgba(map: &WeatherMap, ctl: &Ctl) -> Vec<u8> {
         .flat_map(|(i, j)| ctl.channel.pixel(effective_texel(map, ctl, i, j))).collect()
 }
 
-/// Map (x, z) metres -> (u, v) in 0..1 across the map image, v down from the north edge (rows run north to south); unclamped.
-pub fn map_uv(map: &WeatherMap, x: f32, z: f32) -> [f32; 2] { [(x - map.min_x) / map.size_x, (map.max_z - z) / map.size_z] }
+/// Map uv (0..1 across, rows north to south) of map (x, z); wrapped into the map when it repeats (`WeatherMap::wrap`).
+pub fn map_uv(map: &WeatherMap, x: f32, z: f32) -> [f32; 2] {
+    let uv = [(x - map.min_x) / map.size_x, (map.max_z - z) / map.size_z];
+    if map.wrap { uv.map(|c| c.rem_euclid(1.0)) } else { uv }
+}
 
 /// Texel (column, row) containing map (x, z), clamped onto the map.
 pub fn texel_at(map: &WeatherMap, x: f32, z: f32) -> [u32; 2] {
@@ -116,7 +119,7 @@ mod tests {
     fn map() -> WeatherMap {
         // 2 x 2 texels, 100 m each, NW corner at (-100, 100): rows north to south.
         WeatherMap { width: 2, height: 2, min_x: -100.0, max_z: 100.0, size_x: 200.0, size_z: 200.0,
-            rgba: vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160] }
+            rgba: vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160], wrap: false }
     }
     #[test]
     fn channels_pick_their_byte() {
@@ -135,6 +138,9 @@ mod tests {
         assert_eq!(texel_at(&m, 50.0, 50.0), [1, 0]);
         assert_eq!(texel_at(&m, 5000.0, -5000.0), [1, 1]);
         assert_eq!(texel_bounds(&m, 1, 0), [0.0, 100.0, 0.0, 100.0]);
+        // A wrapped map folds a point one period east and one south back onto the same uv.
+        let w = WeatherMap { wrap: true, ..map() };
+        assert_eq!(map_uv(&w, -50.0 + 200.0, 50.0 - 200.0), map_uv(&m, -50.0, 50.0));
     }
     #[test]
     fn compass_heading() {
