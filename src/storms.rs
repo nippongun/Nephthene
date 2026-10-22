@@ -1,9 +1,10 @@
 //! Storm fronts, the host half. Evaluates `nephthene_core::storm` (authored + the seeded timetable) at the camera and the monotonic
 //! storm clock, selects K, packs them into `CloudParams.storm` (clouds binding 6) and prints `STORMS n=<k>` when the count changes.
 //! Config: `storms.enabled`; `storms.force = "<authored name>"` forces that authored storm alone (timetable off).
-//! Storm time = monotonic game seconds x storms.clock_scale.
+//! Storm time = monotonic game seconds x storms.clock_scale. The selected storms' rain, cover, gust front and sky light at the camera
+//! go to `Weather.storm` (`nephthene_core::storm_fx::local`; `storms.couple` false leaves the weather alone).
 use bevy::{pbr::AtmosphereSettings, prelude::*};
-use nephthene_core::{rain::smoothstep, storm::{self, Now, Storm, StormCfg}};
+use nephthene_core::{rain::smoothstep, storm::{self, Now, Storm, StormCfg}, storm_fx};
 use crate::{clouds::{CloudParams, StormGpu}, sky::Weather};
 
 pub struct StormPlugin;
@@ -27,18 +28,24 @@ pub struct Storms {
     all: Vec<Storm>, pub sel: Vec<(Storm, Now)>, pub t: f64,
     /// World-frame scene centre for authored bearings (latched at the first camera), and what `all` was built for.
     centre: Option<Vec2>, built: Option<(f64, Vec2)>, logged: Option<usize>,
+    /// The storm weather at the camera last printed (tenths of precip, cover, sky light).
+    here_logged: Option<[i32; 3]>,
 }
 
 pub(crate) fn select_storms(
-    wx: Res<Weather>, mut st: ResMut<Storms>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, params: Option<ResMut<CloudParams>>,
+    mut wx: ResMut<Weather>, mut st: ResMut<Storms>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>, params: Option<ResMut<CloudParams>>,
 ) {
     let st = &mut *st;
     if !st.cfg.enabled {
         if st.logged.replace(0).is_none() { println!("STORMS off"); }
+        if let Some(mut m) = params { m.storm = StormGpu::default(); }
+        wx.storm = default();
+        st.sel.clear();
         return;
     }
     if st.hide {
         if let Some(mut m) = params { m.storm = StormGpu::default(); }
+        wx.storm = default();
         return;
     }
     let Some(p) = cam.iter().next().map(|g| g.translation()) else { return };
@@ -78,4 +85,11 @@ pub(crate) fn select_storms(
         }
         m.storm = g;
     }
+    // The weather the storms make at the camera (storm frame; at the ground, or the camera's height above it).
+    let l = storm_fx::local(&st.cfg, &st.sel, Vec3::new(pos.x, p.y.max(0.0), pos.y));
+    let key = [l.precip, l.cover, l.ambient].map(|v| (v * 10.0).round() as i32);
+    if st.here_logged.replace(key) != Some(key) {
+        println!("STORMHERE precip {:.2} cover {:.2} sky {:.2} gust {:.1} m/s", l.precip, l.cover, l.ambient, l.outflow.length());
+    }
+    wx.storm = l;
 }

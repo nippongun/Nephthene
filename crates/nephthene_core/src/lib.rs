@@ -49,7 +49,8 @@ impl WeatherMap {
         WeatherMap { width: e.width, height: e.height, min_x: e.min_x, max_z: e.max_z, size_x: e.size_x, size_z: e.size_z, rgba, wrap: false }
     }
 
-    /// Built-in map for [`MapCfg`]: smooth coverage swell around `default_coverage`, one rain blob when `default_precip` > 0.
+    /// Built-in map for [`MapCfg`]: smooth coverage swell around `default_coverage`, one rain blob when `default_precip` > 0. Texel
+    /// centres sit at u = i / n, so whole `default_cycles` tile and the blob's distance wraps.
     /// ponytail: product of two sines is a placeholder; supply a PNG for a real map.
     pub fn procedural(m: &config::MapCfg) -> Self {
         let n = m.default_px.max(2);
@@ -57,10 +58,12 @@ impl WeatherMap {
         let mut rgba = Vec::with_capacity((n * n * 4) as usize);
         for j in 0..n {
             for i in 0..n {
-                let (u, v) = (i as f32 / (n - 1) as f32, j as f32 / (n - 1) as f32);
-                let swell = (u * 7.1 + 0.4).sin() * (v * 5.3 + 1.1).sin();
+                let (u, v) = (i as f32 / n as f32, j as f32 / n as f32);
+                let (cy, ph, bl) = (m.default_cycles, m.default_phase, m.default_blob);
+                let swell = (std::f32::consts::TAU * cy[0] * u + ph[0]).sin() * (std::f32::consts::TAU * cy[1] * v + ph[1]).sin();
                 let cov = (m.default_coverage + m.default_coverage_swing * swell).clamp(0.0, 1.0);
-                let blob = (1.0 - ((u - 0.7).powi(2) + (v - 0.3).powi(2)).sqrt() * 4.0).clamp(0.0, 1.0);
+                let wrap = |d: f32| d - d.round();
+                let blob = (1.0 - wrap(u - bl[0]).hypot(wrap(v - bl[1])) / bl[2]).clamp(0.0, 1.0);
                 let b = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
                 rgba.extend_from_slice(&[b(cov), b(m.default_precip * blob), b(m.default_type), b(m.default_dust)]);
             }
@@ -282,11 +285,38 @@ mod map_tests {
             }
             (s - Vec2::from(m.start_shift_m) - travel).length()
         };
-        let on = drift_error(&MapCfg { advect: 1.0, ..MapCfg::default() });
-        let red = drift_error(&MapCfg::default());
+        // Unwrapped, so the shift is the plain distance travelled (a wrapped shift folds into one period).
+        let on = drift_error(&MapCfg { advect: 1.0, wrap: false, ..MapCfg::default() });
+        let red = drift_error(&MapCfg { advect: 0.0, wrap: false, ..MapCfg::default() });
         println!("weather drift error after 600 s: advect 1 {on:.4} m, red arm (advect 0) {red:.1} m (budget {DRIFT_BUDGET_M} m)");
         assert!(on <= DRIFT_BUDGET_M, "advected map is {on} m from where the wind carried it, budget {DRIFT_BUDGET_M} m");
         assert!(red > DRIFT_BUDGET_M, "red arm must leave the weather behind, got {red} m (budget {DRIFT_BUDGET_M} m)");
+    }
+
+    // The built-in map tiles: across the wrap seam (last column to first, last row to first) the coverage steps no more than the
+    // largest step between neighbours inside the map, plus one 8-bit level for rounding. A seam steeper than any texture step is a
+    // visible line in the sky once the map wraps. Red arm: the old non-whole cycle counts (7.1 and 5.3 rad over the map).
+    const SEAM_LEVELS: f32 = 1.0;
+
+    #[test]
+    fn built_in_map_tiles() {
+        let steps = |m: &MapCfg| {
+            let map = WeatherMap::procedural(m);
+            let (w, h) = (map.width as usize, map.height as usize);
+            let at = |i: usize, j: usize| map.rgba[(j * w + i) * 4] as f32;
+            let (mut inner, mut seam) = (0f32, 0f32);
+            for j in 0..h { for i in 0..w {
+                let (dx, dy) = ((at(i, j) - at((i + 1) % w, j)).abs(), (at(i, j) - at(i, (j + 1) % h)).abs());
+                if i + 1 < w { inner = inner.max(dx) } else { seam = seam.max(dx) }
+                if j + 1 < h { inner = inner.max(dy) } else { seam = seam.max(dy) }
+            }}
+            (inner, seam)
+        };
+        let (inner, seam) = steps(&MapCfg::default());
+        let (red_inner, red_seam) = steps(&MapCfg { default_cycles: [7.1 / std::f32::consts::TAU, 5.3 / std::f32::consts::TAU], ..MapCfg::default() });
+        println!("built-in map, coverage levels: seam step {seam} vs inner {inner}; red arm (old cycles) seam {red_seam} vs inner {red_inner} (budget inner + {SEAM_LEVELS})");
+        assert!(seam <= inner + SEAM_LEVELS, "the built-in map does not tile: seam step {seam} > inner {inner} + {SEAM_LEVELS}");
+        assert!(red_seam > red_inner + SEAM_LEVELS, "red arm tiles: seam {red_seam} vs inner {red_inner}");
     }
 
     // One map period away must read the same weather when wrapped: 1e-4 is f32 rounding of the 0..1 channel values.

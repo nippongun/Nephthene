@@ -49,7 +49,7 @@ pub struct Lightning {
 }
 impl Default for Lightning {
     fn default() -> Self {
-        Lightning { enabled: false, strike_r_frac: 0.6, ic_alt_frac: [0.35, 0.8], ic_len_m: [3000.0, 15000.0], levels: 7, displace: 0.22,
+        Lightning { enabled: true, strike_r_frac: 0.6, ic_alt_frac: [0.35, 0.8], ic_len_m: [3000.0, 15000.0], levels: 7, displace: 0.22,
                     branch_p: 0.3, branch_len: 0.4, branch_levels: 4, branch_bright: 0.35, branch_spread: 0.6,
                     strokes: [2, 5], stroke_gap_s: [0.03, 0.1], stroke_decay_s: 0.02, glow: 0.25, glow_decay_s: 0.12, life_s: 1.0,
                     width_m: 3.0, min_px: 1.5, radiance: 1.0e6, color: [0.85, 0.9, 1.0], base_fade_m: 400.0,

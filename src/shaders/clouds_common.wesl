@@ -75,6 +75,8 @@ struct Clouds {
     s_steps: f32, s_ds_min: f32, s_near: f32, s_sun_len: f32,
     s_col_len: f32, s_core_flare: f32, s_anvil_wide: f32, s_anvil_p: f32,
     s_shelf_ceil: f32,
+    s_curtain_full: f32,
+    s_couple: f32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).
@@ -221,6 +223,13 @@ fn storm_nearest(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> vec2<f32> {
 }
 
 // Metres from the cell's axis midpoint beyond which the profile is zero (bounding circle for culling).
+// nephthene_core::storm_fx::precip_at: the rain curtain under a cell, full inside s_curtain_full x core_r, from the base down.
+fn storm_precip(cl: Clouds, c: StormCell, g: vec2<f32>, y: f32) -> f32 {
+    if (c.precip <= 0.0 || c.core_r < 1.0 || y < 0.0 || y > c.base) { return 0.0; }
+    let d = distance(g, storm_nearest(c.a, c.b, g));
+    return c.precip * (1.0 - smoothstep(cl.s_curtain_full * c.core_r, c.core_r, d));
+}
+
 fn storm_reach(c: StormCell) -> f32 {
     return 0.5 * length(c.b - c.a) + max(c.core_r * 1.5, max(c.anvil_r, c.gust_r));
 }

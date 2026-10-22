@@ -5,12 +5,12 @@
 use bevy::{
     asset::RenderAssetUsages,
     camera::Exposure,
-    light::{Atmosphere, Skybox, SunDisk, atmosphere::{Falloff, PhaseFunction, ScatteringMedium, ScatteringTerm}, light_consts::lux},
+    light::{Atmosphere, AtmosphereEnvironmentMapLight, Skybox, SunDisk, atmosphere::{Falloff, PhaseFunction, ScatteringMedium, ScatteringTerm}, light_consts::lux},
     pbr::AtmosphereSettings,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension},
 };
-use nephthene_core::{self as w, Config, Local as Here, WeatherMap};
+use nephthene_core::{self as w, Config, Local as Here, WeatherMap, storm_fx::StormLocal};
 
 mod msaa;
 
@@ -25,8 +25,11 @@ pub struct Weather {
     pub hour: f32, pub rate: f32, pub here: Here, pub wind: Vec3,
     /// Whole days elapsed (`hour` wraps at 24); the monotonic game clock is `game_s()`.
     pub day: u32,
-    /// Wind at the camera: today `wind`; storm outflow may add to it. Cloud drift stays on `wind`.
+    /// Wind at the camera: `wind` plus the storms' gust front. Cloud drift stays on `wind`.
     pub wind_local: Vec3,
+    /// What the selected storms do at the camera (storms.rs, last frame): their rain and cover raise `here`, their gust front
+    /// adds to `wind_local`, their columns dim the sky light.
+    pub storm: StormLocal,
     /// Mean wind speed at the camera, m/s, without gusts: the config's, or the panel's override.
     pub wind_mean_mps: f32,
     /// How far the weather map has moved downwind (m, world XZ; config `map.advect`). Map coordinates = world + `map.world_offset_m` - this.
@@ -48,7 +51,7 @@ pub(crate) fn build(app: &mut App, cfg: &Config, mut map: WeatherMap) {
     let map_shift = Vec2::from(cfg.map.start_shift_m);
     let [x, z] = w::map_xz(&cfg.map, map_shift, 0.0, 0.0);
     let here = map.sample(x, z);
-    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, wind_mean_mps: cfg.wind.speed_mps, map_shift, stars: None, cfg: cfg.clone(), map })
+    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, storm: StormLocal::default(), wind_mean_mps: cfg.wind.speed_mps, map_shift, stars: None, cfg: cfg.clone(), map })
         .add_systems(PostStartup, setup)
         .add_systems(Update, (tick.in_set(crate::NephtheneSet::Tick), stars_follow_atmosphere))
         .add_systems(PostUpdate, ambient_follows_exposure);
@@ -90,11 +93,13 @@ pub(crate) fn tick(
     let shift = w::advect(&wx.cfg.map, &wx.map, wx.map_shift, mean, dt * wx.rate * 3600.0);
     wx.map_shift = shift;
     wx.wind = w::wind(&wx.cfg.wind, time.elapsed_secs());
-    wx.wind_local = wx.wind;
+    let s = wx.storm;
+    wx.wind_local = wx.wind + Vec3::new(s.outflow.x, 0.0, s.outflow.y);
     wx.wind_mean_mps = wx.cfg.wind.speed_mps;
     if let Some(p) = cam.iter().next().map(|g| g.translation()) {
         let [x, z] = w::map_xz(&wx.cfg.map, wx.map_shift, p.x, p.z);
-        let target = wx.map.sample(x, z);
+        let mut target = wx.map.sample(x, z);
+        (target.precip, target.coverage) = (target.precip.max(s.precip), target.coverage.max(s.cover));
         wx.here = w::smooth(wx.here, target, dt, wx.cfg.sim.here_tau_s);
     }
     let (d, hour, here) = (&wx.cfg, wx.hour, wx.here);
@@ -123,10 +128,19 @@ pub(crate) fn tick(
 }
 
 /// Ambient light is authored for daylight (`ambient_day_brightness`). Scaled by the exposure drop from `daylight_ev100`,
-/// it stays put by day and stops flooding the night.
-fn ambient_follows_exposure(wx: Res<Weather>, mut global: ResMut<GlobalAmbientLight>, mut cams: Query<(&mut AmbientLight, &Exposure)>) {
+/// it stays put by day and stops flooding the night. Under a storm both the ambient and the atmosphere's environment light are
+/// dimmed by the sky light the storm columns leave (`Weather.storm.ambient`; the environment light's own intensity is read once).
+fn ambient_follows_exposure(
+    wx: Res<Weather>, mut global: ResMut<GlobalAmbientLight>, mut cams: Query<(&mut AmbientLight, &Exposure)>,
+    mut env: Query<(Entity, &mut AtmosphereEnvironmentMapLight)>, mut base: Local<std::collections::HashMap<Entity, f32>>,
+) {
     let s = |ev: f32| 2f32.powf((ev - wx.cfg.daylight_ev100).min(0.0));
-    global.brightness = wx.cfg.ambient_day_brightness * s(w::curve(&wx.cfg.exposure, w::sun(&wx.cfg.clock, wx.hour).0));
+    global.brightness = wx.cfg.ambient_day_brightness * s(w::curve(&wx.cfg.exposure, w::sun(&wx.cfg.clock, wx.hour).0)) * wx.storm.ambient;
+    for (e, mut l) in &mut env {
+        let i0 = *base.entry(e).or_insert(l.intensity);
+        let i = i0 * wx.storm.ambient;
+        if l.intensity != i { l.intensity = i; }
+    }
     for (mut a, e) in &mut cams { a.brightness *= s(e.ev100); }
 }
 
