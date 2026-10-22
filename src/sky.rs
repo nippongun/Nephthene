@@ -10,7 +10,7 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension},
 };
-use nephthene_core::{self as w, Config, Local as Here, WeatherMap, storm_fx::StormLocal};
+use nephthene_core::{self as w, Config, Local as Here, WeatherMap, air, storm_fx::StormLocal};
 
 mod msaa;
 
@@ -34,6 +34,9 @@ pub struct Weather {
     pub wind_mean_mps: f32,
     /// How far the weather map has moved downwind (m, world XZ; config `map.advect`). Map coordinates = world + `map.world_offset_m` - this.
     pub map_shift: Vec2,
+    /// Air at the camera (config `air`): surface temperature, dew point, humidity, freezing level and snow line. Integrated on the game
+    /// clock with the cover overhead; a frozen clock spins it up for the hour instead.
+    pub air: air::State,
     pub stars: Option<Handle<Image>>, pub cfg: Config, pub map: WeatherMap,
 }
 
@@ -51,7 +54,8 @@ pub(crate) fn build(app: &mut App, cfg: &Config, mut map: WeatherMap) {
     let map_shift = Vec2::from(cfg.map.start_shift_m);
     let [x, z] = w::map_xz(&cfg.map, map_shift, 0.0, 0.0);
     let here = map.sample(x, z);
-    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, storm: StormLocal::default(), wind_mean_mps: cfg.wind.speed_mps, map_shift, stars: None, cfg: cfg.clone(), map })
+    let air = air::state(&cfg.air, &cfg.clock, air::spin_up(&cfg.air, &cfg.clock, cfg.clock.start_hour, here.coverage), 0.0, here.dust);
+    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, storm: StormLocal::default(), wind_mean_mps: cfg.wind.speed_mps, map_shift, air, stars: None, cfg: cfg.clone(), map })
         .add_systems(PostStartup, setup)
         .add_systems(Update, (tick.in_set(crate::NephtheneSet::Tick), stars_follow_atmosphere))
         .add_systems(PostUpdate, ambient_follows_exposure);
@@ -74,6 +78,7 @@ pub(crate) fn setup(mut commands: Commands, mut wx: ResMut<Weather>, mut media: 
     let (el, az) = w::sun(&wx.cfg.clock, wx.hour);
     println!("WEATHER hour {:.2} sun el {el:.1} az {az:.1} ev100 {:.2}", wx.hour, w::curve(&wx.cfg.exposure, el));
     println!("MAP shift ({:.0}, {:.0}) m advect {} wrap {} here coverage {:.3}", wx.map_shift.x, wx.map_shift.y, wx.cfg.map.advect, wx.cfg.map.wrap, wx.here.coverage);
+    println!("AIR temp {:.1} C dew {:.1} C rh {:.2} freezing {:.0} m snow line {:.0} m", wx.air.temp_c, wx.air.dew_c, wx.air.rh, wx.air.freezing_m, wx.air.snow_line_m);
 }
 
 /// Look at a body: a light at `to` shines along -to.
@@ -82,9 +87,10 @@ fn facing(to: Vec3) -> Transform { Transform::IDENTITY.looking_to(-to, if to.y.a
 pub(crate) fn tick(
     time: Res<Time>, mut wx: ResMut<Weather>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>,
     mut sun: Query<(&mut DirectionalLight, &mut Transform), (With<NephtheneSun>, Without<Moon>)>, mut moon: Query<(&mut DirectionalLight, &mut Transform), With<Moon>>,
-    mut exposure: Query<&mut Exposure>, mut fog: Query<&mut DistanceFog>, mut sky: Query<&mut Skybox>,
+    mut exposure: Query<&mut Exposure>, mut fog: Query<&mut DistanceFog>, mut sky: Query<&mut Skybox>, rain: Option<Res<crate::rain::RainState>>,
 ) {
     let dt = time.delta_secs();
+    let h0 = wx.hour;
     let h = wx.hour + dt * wx.rate;
     if h >= 24.0 { wx.day += 1; }
     wx.hour = h.rem_euclid(24.0);
@@ -102,6 +108,10 @@ pub(crate) fn tick(
         (target.precip, target.coverage) = (target.precip.max(s.precip), target.coverage.max(s.cover));
         wx.here = w::smooth(wx.here, target, dt, wx.cfg.sim.here_tau_s);
     }
+    // The air rides the game clock with the cover overhead (last frame's ground wetness); a frozen clock spins it up for the hour.
+    let (wet, cov, dust) = (rain.map_or(0.0, |r| r.wetness), wx.here.coverage, wx.here.dust);
+    let t = if wx.rate > 0.0 { air::step(&wx.cfg.air, &wx.cfg.clock, wx.air.temp_c, h0, dt * wx.rate, cov) } else { air::spin_up(&wx.cfg.air, &wx.cfg.clock, wx.hour, cov) };
+    wx.air = air::state(&wx.cfg.air, &wx.cfg.clock, t, wet, dust);
     let (d, hour, here) = (&wx.cfg, wx.hour, wx.here);
     // No fade below the horizon: the Atmosphere occludes the disc for surfaces, and twilight needs the light to scatter.
     let (el, az) = w::sun(&d.clock, hour);
