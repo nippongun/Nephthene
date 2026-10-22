@@ -423,9 +423,22 @@ pub struct RainCfg {
     pub force: Option<f32>,
     /// Wetness epsilon below which the ground material is left alone.
     pub wet_epsilon: f32,
+    /// Precipitation kind 0 rain .. 1 snow (sleet between: a mix of drops and flakes) used instead of the air state's `precip_kind`;
+    /// None = the air. Some(0.0) is the red arm of gate G27 (cold air still falls as rain).
+    pub kind_force: Option<f32>,
+    /// Snow: flake fall speed (m/s, real flakes 0.5..1.5), fraction of the wind speed a flake drifts at, and the cap on that drift (m/s).
+    pub snow_fall_mps: f32, pub snow_drift: f32, pub snow_drift_max: f32,
+    /// Flake sprite diameter (m, a wet aggregate near 0 C is 1..3 cm) and peak alpha (1: an aggregate is opaque, a drop is not).
+    pub flake_m: f32, pub flake_alpha: f32,
+    /// Flutter: radius (m) and turns per second of each flake's swirl about its fall line.
+    pub flutter_m: f32, pub flutter_hz: f32,
+    /// Flake window half-width (m) in x and z. At full intensity flakes fall 9x slower than drops (1 vs 9 m/s), so the same precipitation
+    /// holds 9x more of them in the air; the same quads give that density in a window sqrt(9) = 3x narrower than `half_m` (40 / 3 = 13.3 m).
+    pub snow_half_m: f32,
 }
 impl Default for RainCfg {
     fn default() -> Self {
+        // Snow values: untuned.
         RainCfg {
             enabled: true, half_m: 40.0, height_m: 30.0, max_streaks: 24000, max_splashes: 6000, splash_life_s: 0.45, streak_width_m: 0.012, streak_alpha: 0.55, splash_alpha: 0.5,
             shutter_s: 1.0 / 20.0, wind_drift: 0.8, wind_drift_max: 12.0, fall_min_mps: 5.0, fall_gain_mps: 4.0,
@@ -433,6 +446,7 @@ impl Default for RainCfg {
             wet_up_per_s: 1.0 / 40.0, dry_per_s: 1.0 / 240.0, wet_threshold: 0.05, wet_darken: 0.35, wet_roughness: 0.35, wet_reflectance: 0.5,
             light_gain: 1.0, sun_share: 0.65, sky_share: 0.35, night_floor: 0.04, cloud_dim: 0.8, level_scale: 1.2, light_color: [1.0, 0.98, 0.95],
             day_from_deg: -6.0, day_to_deg: 10.0, dim_from: 0.2, dim_to: 0.7, force: None, wet_epsilon: 0.002,
+            kind_force: None, snow_fall_mps: 1.0, snow_drift: 1.0, snow_drift_max: 15.0, flake_m: 0.025, flake_alpha: 1.0, flutter_m: 0.25, flutter_hz: 0.4, snow_half_m: 13.3,
         }
     }
 }
