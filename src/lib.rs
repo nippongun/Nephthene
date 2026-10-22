@@ -38,12 +38,14 @@ pub struct NephthenePlugin {
     pub config: Config,
     /// The weather map; None = the built-in procedural one from `config.map`.
     pub map: Option<WeatherMap>,
+    /// The climate map (`WeatherMap::load_named(dir, "climate_map")`, fixed to the world); None = `config.climate.uniform` everywhere.
+    pub climate: Option<WeatherMap>,
 }
 impl Default for NephthenePlugin {
-    fn default() -> Self { Self { config: Config::default(), map: None } }
+    fn default() -> Self { Self { config: Config::default(), map: None, climate: None } }
 }
 impl NephthenePlugin {
-    pub fn new(config: Config) -> Self { Self { config, map: None } }
+    pub fn new(config: Config) -> Self { Self { config, map: None, climate: None } }
 }
 
 impl Plugin for NephthenePlugin {
@@ -51,7 +53,7 @@ impl Plugin for NephthenePlugin {
         // Drive reads what Tick and the overrides wrote this frame; a host system in Drive is ordered too, not only the plugin's own (which also say .after(Tick)).
         app.configure_sets(Update, (NephtheneSet::Tick, NephtheneSet::Drive).chain());
         let map = self.map.clone().unwrap_or_else(|| WeatherMap::procedural(&self.config.map));
-        sky::build(app, &self.config, map);
+        sky::build(app, &self.config, map, self.climate.clone());
         if self.config.clouds.enabled { app.add_plugins(clouds::CloudPlugin); }
         app.add_plugins((rain::RainPlugin, storms::StormPlugin, lightning::LightningPlugin));
         app.add_plugins(fog::FogPlugin);

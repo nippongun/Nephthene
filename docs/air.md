@@ -16,7 +16,7 @@ The panel's Here section shows the air under the camera (`air ... precip rain|sl
 - A cell holds the temperature reduced to `ref_alt_m`. The altitude of the place read applies the lapse rates there:
   `Field::state(x, z, y, ...)`. The plugin reads it at the `Ground` height under the camera (0 m without a `Ground`). Air carried
   over a ridge therefore reads colder on the ridge, not with the valley's temperature.
-- Today every cell restores to the season's mean. The climate field (next) sets each cell's restore target and dew point.
+- Each cell restores to the climate under it: the climate map sets its restore target, its dew point and its sun heating (`docs/climate.md`).
 
 ## Model
 
@@ -92,8 +92,8 @@ Core unit tests in `air::tests` (run by `cargo test --release`). Budgets are in 
 - The equator takes the north's season (signum of 0 is 1); set `season_c` near 0 in the tropics.
 - Wind does not mix the surface temperature yet. Fog still uses wind for mixing.
 - One sun for the whole field (a 200 km map spans about 2 degrees of sun).
-- The dew point does not vary across the map yet: the ground wetness and the dust it reads are the camera's. The climate field adds
-  humidity per place.
+- The dew point comes from the climate at the place read (humidity, ground wetness); the rain's ground wetness and the dust are the
+  camera's.
 - Under a frozen clock, a host edit of `Weather.map` reaches the field only when the hour or the config changes.
 - Fog formation reads the air at `ref_alt_m` (its spin-ups integrate there), not at the pool floor.
 - Saturation is over water at every temperature (no frost point below 0 C).

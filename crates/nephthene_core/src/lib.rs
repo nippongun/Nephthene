@@ -15,7 +15,8 @@ pub mod storm_fx;
 pub mod fog;
 pub mod lightning;
 pub mod air;
-pub use config::{AirCfg, Clock, Clouds, Config, Fog, MapCfg, Moon, RainCfg, Shafts, Sky, Stars, Wind};
+pub mod climate;
+pub use config::{AirCfg, Clock, ClimateCfg, Clouds, Config, Fog, MapCfg, Moon, RainCfg, Shafts, Sky, Stars, Wind};
 use serde::Deserialize;
 
 /// Weather at one place.
@@ -38,15 +39,21 @@ pub fn load_json<T: for<'a> Deserialize<'a>>(path: &str) -> T {
 struct Extent { width: u32, height: u32, min_x: f32, max_z: f32, size_x: f32, size_z: f32 }
 
 impl WeatherMap {
+    /// <dir>/weather_map.png + .json.
     pub fn load(dir: &str) -> Self {
-        let e: Extent = load_json(&format!("{dir}/weather_map.json"));
-        let png = std::fs::read(format!("{dir}/weather_map.png")).expect("weather_map.png");
-        let mut r = png::Decoder::new(std::io::Cursor::new(png)).read_info().expect("decode weather_map.png");
-        let mut rgba = vec![0; r.output_buffer_size().expect("weather_map.png size")];
-        let info = r.next_frame(&mut rgba).expect("weather_map.png pixels");
+        Self::load_named(dir, "weather_map")
+    }
+
+    /// An RGBA8 map `<dir>/<stem>.png` with its extent in `<dir>/<stem>.json` (the climate map, `climate_map`, uses the same format).
+    pub fn load_named(dir: &str, stem: &str) -> Self {
+        let e: Extent = load_json(&format!("{dir}/{stem}.json"));
+        let png = std::fs::read(format!("{dir}/{stem}.png")).unwrap_or_else(|e| panic!("{stem}.png: {e}"));
+        let mut r = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap_or_else(|e| panic!("decode {stem}.png: {e}"));
+        let mut rgba = vec![0; r.output_buffer_size().unwrap_or_else(|| panic!("{stem}.png size"))];
+        let info = r.next_frame(&mut rgba).unwrap_or_else(|e| panic!("{stem}.png pixels: {e}"));
         rgba.truncate(info.buffer_size());
-        assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight), "weather_map.png must be RGBA8");
-        assert_eq!((info.width, info.height, rgba.len()), (e.width, e.height, (e.width * e.height * 4) as usize), "weather_map.png vs weather_map.json");
+        assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight), "{stem}.png must be RGBA8");
+        assert_eq!((info.width, info.height, rgba.len()), (e.width, e.height, (e.width * e.height * 4) as usize), "{stem}.png vs {stem}.json");
         WeatherMap { width: e.width, height: e.height, min_x: e.min_x, max_z: e.max_z, size_x: e.size_x, size_z: e.size_z, rgba, wrap: false }
     }
 

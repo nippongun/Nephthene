@@ -10,7 +10,7 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension},
 };
-use nephthene_core::{self as w, Config, Local as Here, WeatherMap, air, rain::Ground as _};
+use nephthene_core::{self as w, Config, Local as Here, WeatherMap, air, climate, rain::Ground as _};
 
 mod msaa;
 
@@ -37,6 +37,11 @@ pub struct Weather {
     /// The temperature field over the weather map, in the map's frame (read it at `map_xz`). Integrated on the game clock under the
     /// map's cover; a frozen clock spins it up for the hour instead.
     pub air_field: air::Field,
+    /// The climate map (config `climate`), fixed to the world: read at world + `map.world_offset_m`, never shifted. None =
+    /// `climate.uniform` everywhere.
+    pub climate: Option<WeatherMap>,
+    /// The climate at the camera: temperature offset, humidity, ground snow and ground wetness.
+    pub climate_here: climate::Place,
     pub stars: Option<Handle<Image>>, pub cfg: Config, pub map: WeatherMap,
 }
 
@@ -48,15 +53,17 @@ impl Weather {
 #[derive(Component)]
 pub struct Moon;
 
-pub(crate) fn build(app: &mut App, cfg: &Config, mut map: WeatherMap) {
+pub(crate) fn build(app: &mut App, cfg: &Config, mut map: WeatherMap, climate: Option<WeatherMap>) {
     if cfg.sky.msaa_fix { msaa::override_render_sky(app); }
     map.wrap = cfg.map.wrap;
     let map_shift = Vec2::from(cfg.map.start_shift_m);
     let [x, z] = w::map_xz(&cfg.map, map_shift, 0.0, 0.0);
     let here = map.sample(x, z);
-    let air_field = air::Field::spin_up(&cfg.air, &cfg.clock, &map, cfg.clock.start_hour);
-    let air = air_field.state(&cfg.air, &cfg.clock, x, z, 0.0, 0.0, here.dust);
-    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, wind_mean_mps: cfg.wind.speed_mps, map_shift, air, air_field, stars: None, cfg: cfg.clone(), map })
+    let air_field = air::Field::spin_up(cfg, &map, climate.as_ref(), map_shift, cfg.clock.start_hour);
+    let air = air_field.state(cfg, climate.as_ref(), map_shift, x, z, 0.0, 0.0, here.dust);
+    let [cx, cz] = w::map_xz(&cfg.map, Vec2::ZERO, 0.0, 0.0);
+    let climate_here = climate::place(&cfg.climate, climate.as_ref(), cx, cz);
+    app.insert_resource(Weather { hour: cfg.clock.start_hour, day: 0, rate: cfg.clock.minutes_per_second / 60.0, here, wind: Vec3::ZERO, wind_local: Vec3::ZERO, wind_mean_mps: cfg.wind.speed_mps, map_shift, air, air_field, climate, climate_here, stars: None, cfg: cfg.clone(), map })
         .add_systems(PostStartup, setup)
         .add_systems(Update, (tick.in_set(crate::NephtheneSet::Tick), stars_follow_atmosphere))
         .add_systems(PostUpdate, ambient_follows_exposure);
@@ -66,7 +73,13 @@ pub(crate) fn build(app: &mut App, cfg: &Config, mut map: WeatherMap) {
 fn air_here(wx: &Weather, ground: Option<&crate::rain::Ground>, p: Vec3, wetness: f32) -> air::State {
     let [x, z] = w::map_xz(&wx.cfg.map, wx.map_shift, p.x, p.z);
     let y = ground.map_or(0.0, |g| g.0.height(p.x, p.z));
-    wx.air_field.state(&wx.cfg.air, &wx.cfg.clock, x, z, y, wetness, wx.here.dust)
+    wx.air_field.state(&wx.cfg, wx.climate.as_ref(), wx.map_shift, x, z, y, wetness, wx.here.dust)
+}
+
+/// The climate at world (x, z): the climate map is read at world + `map.world_offset_m` (no shift).
+fn climate_at(wx: &Weather, p: Vec3) -> climate::Place {
+    let [x, z] = w::map_xz(&wx.cfg.map, Vec2::ZERO, p.x, p.z);
+    climate::place(&wx.cfg.climate, wx.climate.as_ref(), x, z)
 }
 
 pub(crate) fn setup(
@@ -75,6 +88,7 @@ pub(crate) fn setup(
 ) {
     let p = cam.iter().next().map_or(Vec3::ZERO, |g| g.translation());
     wx.air = air_here(&wx, ground.as_deref(), p, 0.0);
+    wx.climate_here = climate_at(&wx, p);
     let s = &wx.cfg.sky;
     let mut m = ScatteringMedium::earth(256, 256).with_label("nephthene_atmosphere");
     // earth(): [Rayleigh, Mie, ozone]; the Mie term is the dust.
@@ -94,6 +108,8 @@ pub(crate) fn setup(
     let a = &wx.air;
     println!("AIR temp {:.1} C dew {:.1} C rh {:.2} freezing {:.0} m snow line {:.0} m precip_kind {:.2} (ground {:.0} m)", a.temp_c, a.dew_c, a.rh, a.freezing_m, a.snow_line_m, a.precip_kind,
         ground.as_deref().map_or(0.0, |g| g.0.height(p.x, p.z)));
+    let k = wx.climate_here;
+    println!("CLIMATE offset {:+.1} K humidity {:+.2} snow {:.2} wetness {:.2}", k.temp_k, k.humidity, k.snow, k.wetness);
 }
 
 /// Look at a body: a light at `to` shines along -to.
@@ -103,7 +119,7 @@ pub(crate) fn tick(
     time: Res<Time>, mut wx: ResMut<Weather>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>,
     mut sun: Query<(&mut DirectionalLight, &mut Transform), (With<NephtheneSun>, Without<Moon>)>, mut moon: Query<(&mut DirectionalLight, &mut Transform), With<Moon>>,
     mut exposure: Query<&mut Exposure>, mut fog: Query<&mut DistanceFog>, mut sky: Query<&mut Skybox>, rain: Option<Res<crate::rain::RainState>>,
-    ground: Option<Res<crate::rain::Ground>>, mut spun: Local<Option<(f32, w::AirCfg, w::Clock)>>,
+    ground: Option<Res<crate::rain::Ground>>, mut spun: Local<Option<(f32, w::AirCfg, w::Clock, w::ClimateCfg)>>,
 ) {
     let dt = time.delta_secs();
     let h0 = wx.hour;
@@ -124,17 +140,20 @@ pub(crate) fn tick(
         wx.here = w::smooth(wx.here, target, dt, wx.cfg.sim.here_tau_s);
     }
     // The air field rides the game clock under the map's cover; a frozen clock spins it up when the hour or the config changes.
-    // ponytail: a host editing `Weather.map` under a frozen clock is not seen until the hour changes; a map revision counter is the upgrade.
+    // ponytail: a host editing `Weather.map` or `Weather.climate` under a frozen clock is not seen until the hour changes; a map revision counter is the upgrade.
     let wx = &mut *wx;
     if wx.rate > 0.0 {
-        wx.air_field.step(&wx.cfg.air, &wx.cfg.clock, &wx.map, h0, dt * wx.rate);
+        wx.air_field.step(&wx.cfg, &wx.map, wx.climate.as_ref(), wx.map_shift, h0, dt * wx.rate);
         *spun = None;
-    } else if spun.as_ref().is_none_or(|(h, a, c)| *h != wx.hour || *a != wx.cfg.air || *c != wx.cfg.clock) {
-        wx.air_field = air::Field::spin_up(&wx.cfg.air, &wx.cfg.clock, &wx.map, wx.hour);
-        *spun = Some((wx.hour, wx.cfg.air.clone(), wx.cfg.clock.clone()));
+    } else if spun.as_ref().is_none_or(|(h, a, c, k)| *h != wx.hour || *a != wx.cfg.air || *c != wx.cfg.clock || *k != wx.cfg.climate) {
+        wx.air_field = air::Field::spin_up(&wx.cfg, &wx.map, wx.climate.as_ref(), wx.map_shift, wx.hour);
+        *spun = Some((wx.hour, wx.cfg.air.clone(), wx.cfg.clock.clone(), wx.cfg.climate.clone()));
     }
     // The air at the ground under the camera, with last frame's ground wetness.
-    if let Some(p) = p { wx.air = air_here(wx, ground.as_deref(), p, rain.map_or(0.0, |r| r.wetness)); }
+    if let Some(p) = p {
+        wx.climate_here = climate_at(wx, p);
+        wx.air = air_here(wx, ground.as_deref(), p, rain.map_or(0.0, |r| r.wetness));
+    }
     let (d, hour, here) = (&wx.cfg, wx.hour, wx.here);
     // No fade below the horizon: the Atmosphere occludes the disc for surfaces, and twilight needs the light to scatter.
     let (el, az) = w::sun(&d.clock, hour);

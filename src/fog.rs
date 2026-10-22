@@ -117,9 +117,11 @@ fn bake(
     let Some(at) = cam.iter().next().map(|g| g.translation().xz()) else { return };
     // Formation reads the air field at the camera at `ref_alt_m`, the altitude its spin-ups integrate. ponytail: the pool floor's
     // altitude is the upgrade (the spread widens with height: the dew point lapses slower than the temperature).
-    let wet = rain.map_or(0.0, |r| r.wetness);
+    // The camera's climate localises the air config (and the ground wetness) for the spread and for the bake's spin-ups.
+    let ac = w::climate::air(&wx.cfg.air, &wx.cfg.climate, &wx.climate_here);
+    let wet = w::climate::wetness(&wx.climate_here, rain.map_or(0.0, |r| r.wetness));
     let [mx, mz] = w::map_xz(&wx.cfg.map, wx.map_shift, at.x, at.y);
-    let a0 = w::air::state(&wx.cfg.air, &wx.cfg.clock, wx.air_field.temp_at(mx, mz), wet, wx.here.dust);
+    let a0 = w::air::state(&ac, &wx.cfg.clock, wx.air_field.temp_at(mx, mz), wet, wx.here.dust);
     let air = Air { coverage: wx.here.coverage, wind_mps: wx.wind_mean_mps, wetness: wet, dust: wx.here.dust, spread_c: a0.temp_c - a0.dew_c };
     let frozen = wx.rate <= 0.0 || c.force.is_some();
     b.pending_h += time.delta_secs() * wx.rate;
@@ -132,7 +134,7 @@ fn bake(
     if b.task.is_none() && due {
         let spin = frozen || b.field.is_none() || changed;
         let old = b.field.clone().map(|o| (o, b.m.clone()));
-        let (cfg, ac, grid, clock, hour, dt_h) = (c.clone(), wx.cfg.air.clone(), b.grid.clone(), wx.cfg.clock.clone(), wx.hour, b.pending_h);
+        let (cfg, ac, grid, clock, hour, dt_h) = (c.clone(), ac.clone(), b.grid.clone(), wx.cfg.clock.clone(), wx.hour, b.pending_h);
         if b.field.is_none() {
             let r = job(&cfg, &ac, &grid, &clock, hour, air, at, old, spin, dt_h);
             done(r, &mut b, &mut params);
