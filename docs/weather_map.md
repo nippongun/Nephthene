@@ -52,7 +52,15 @@ map 200 km at 6 m/s: about 9 game hours to cross from the centre). `map.wrap` re
 |---|---|---|---|
 | `map_tests::map_rides_the_mean_wind` (core, automatic) | After 600 game seconds of steady wind the weather seen at a point is seen where the wind carried it | `map.advect` 0 | 1 m (one texel of the built-in map is 3.1 km) |
 | `map_tests::wrap_tiles_the_map` (core, automatic) | One period away reads the same weather; the seam reads the mean of the edge texels; a wrapped shift stays in one period | `map.wrap` false | 1e-4 (f32 rounding) |
-| G22 (`tests/weather.rs`, manual render gate) | The clouds and the weather here ride the same shifted map: shifting the map by S renders the same sky as moving the world offset by -S, and both differ from the unshifted sky | `map.static_gpu` (the clouds keep the unshifted map) | see `tests/weather.rs` |
+| G22 (`tests/weather.rs`, manual render gate) | The clouds and the weather here ride the same shifted map: shifting the map by S renders the same sky as moving the world offset by -S, and both differ from the unshifted sky | `map.static_gpu` (the clouds keep the unshifted map) | shift vs offset <= run-to-run noise + 0.5 levels; shift vs unshifted >= 5 levels (a visible cover change); CPU coverage equal within print rounding |
+
+G22 on lavapipe (2026-10-22, sky_up 480x270, 14 h, shift (67, 36) km into the built-in map's clear trough):
+- Run-to-run noise was 0.453 levels, and shift vs offset measured 0.301, inside the 0.953 budget.
+- Shift vs unshifted measured 12.77 levels, above the 5-level minimum.
+- The red arm (shift with `static_gpu`) read 12.40 levels from the offset sky, so the gate catches a static GPU map.
+- CPU coverage at the camera fell from 0.532 unshifted to 0.251, the same in the shift, offset and red-arm runs.
+
+Metal run pending.
 
 ## Open
 
