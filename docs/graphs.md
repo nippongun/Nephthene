@@ -14,6 +14,48 @@ Each executor scores out of 10, from the verifier's report and the planner's rea
 
 Tokens are input (with cache reads) / output.
 
+## 2026-10-22: orographic precipitation, slice 1 (branch `claude/orographic`)
+
+Goal: bake Smith & Barstad (2004) over `Ground` around the camera into a tile fixed to the terrain and fold it into `Weather.here`
+(CPU only, off by default). Research first: the paper's parameters, the AMS rain-intensity classes, and a scratch run of `compute`
+for magnitudes. Three runs.
+
+### Run 1 (`wf_6891d4d2-a4a`): every node passed; the verifier refuted the gate
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| N1-config | config.rs, core lib.rs | 0m42 | 10 | 225k / 12k | `OroCfg`, `Config.orographic` | 10 |
+| N2-core | orographic.rs | 1m02 | 9 | 417k / 21k | Cw, `Tile`, `bake`, `sample`, `stale`, `combine` and the tests as specified. Cw(10 C) 0.00759. It noted unprompted that the lee read 0.000, so the 1.5x clause passed trivially, which was the first sign of the gate's flaw. | 10 |
+| N3-plugin | src/orographic.rs, lib.rs, sky.rs, panel.rs | 4m29 | 11 | 626k / 23k | all as specified; the shot prints `OROGRAPHIC tile (-1500, 600) wind (4.2, 4.2) m/s air 27.0 C: max precip 0.57 cover 1.00` | 10 |
+| N4-docs | docs, README, config.reference.json | 0m28 | 9 | 233k / 16k | docs as specified; the reference was regenerated and matched | 10 |
+| Final verifier | (read-only) | 6m31 | 15 | 798k / 16k | **refuted**. It flipped the wind mapping in `bake` in a scratch copy, and the gate still passed. | - |
+
+**Planner error (mine):** the gate `windward_slope_rains_lee_stays_drier` sampled 1.5 km before and 6 km past the crest of a
+symmetric ridge. With the paper's 1000 s fallout delays, the rain peaks just past the crest, so a reversed wind still wets the
+"windward" point. The gate could not tell the wind's direction. The fix: test properties that depend on direction. The cap cloud forms
+on the ascent (cover 3 km upwind of the crest above the cover 3 km downwind), and the rain drifts downwind (4.5 km downwind at least
+1.5x 4.5 km upwind, 3.1x measured). Lesson: when a gate claims to pin a sign or an axis, the planner mutates that sign in a scratch
+copy before handing the gate out.
+
+### Run 2 (`wf_5d5bb5bb-8eb`): the replacement gate passed, but the node reported `blocked`
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| G1-gate | orographic.rs | 1m29 | 9 | 339k / 13k | `rain_condenses_upwind_and_drifts_downwind` passes (0.187 upwind under cover 1.0; 0.156 vs 0.050 drift). It ran both axis mutations in a scratch copy, and both fail. It then reported `blocked` because the docs still named the old test, which was the next node's job, so G2 was skipped. | 8 (check 0: `blocked` with its check passing) |
+
+**Planner error (mine, the second time):** the same failure mode as the climate run's N3. When the task leaves a mismatch for a
+later node, the task must say so ("the docs are G2's job; this is not a block").
+
+### Run 3 (`wf_294524d9-50c`): pass
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| G2-docs | docs/orographic.md, roadmap.md | 0m13 | 9 | 157k / 10k | the gate section, the research row and the limits updated; the old name gone | 10 |
+| Final verifier | (read-only) | 5m27 | 11 | 491k / 11k | pass. It redid both axis mutations itself (both fail), checked that the red arm fails, ran the shots (one OROGRAPHIC line when enabled, none by default), and probed the profile independently (1.42 / 3.40 / 2.70 mm/h at -3 km / crest / +3 km; the downwind half 1.49x the upwind half). | - |
+
+**Executor average:** 9.7 / 10 over 6 scored nodes. The two defects were in the planner's specs, not the executors' work: a gate that
+could not fail on the property it claimed, and a node not told that a later node would fix the docs.
+
 ## 2026-10-22: climate field (branch `claude/climate`)
 
 Goal: a second RGBA8 map fixed to the world (temperature offset, humidity, ground snow, ground wetness) that localises the air config
