@@ -1,6 +1,6 @@
 //! Clouds, render world: `clouds_march` renders the cloud layer (clouds_march.wesl) into a per-view buffer before the
 //! opaque pass, `CloudComposite` blends it over the sky-view LUT sky as the first Transparent3d item (after Bevy's
-//! render_sky, before glass), depth-tested per MSAA sample so only sky samples take cloud. 
+//! render_sky, before glass), depth-tested per MSAA sample at the cloud front's depth (clouds.over_terrain), so clouds cover terrain behind them and terrain hides clouds behind it.
 //! The march runs at `render_scale` with a per-frame jitter; `clouds_resolve` reprojects last frame's resolved buffer with the
 //! previous view and blends it in (EMA, 3x3 clamp); the composite upsamples the resolved buffer. The composite needs no viewport
 //! handling: the transparent pass sets the camera viewport (with MainPassResolutionOverride), so the fullscreen uv spans the drawn area.
@@ -76,6 +76,9 @@ pub struct CloudGpu {
     pub oro_origin: Vec2, pub oro_size: f32, pub oro_weight: f32,
     /// clouds.air_guard (1 = guard the air transmittance in front of clouds and shafts, see clouds_common.wesl `air_segment`).
     pub air_guard: u32,
+    /// clouds.over_terrain (1 = clouds drawn in front of terrain, the march ends at it) and the terrain grid the march reads at cloud
+    /// binding 10 (rain::HeightGrid: NW cell corner x and z, cell m, columns, rows).
+    pub over_terrain: u32, pub g_min: Vec2, pub g_cell: f32, pub g_w: u32, pub g_h: u32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.
@@ -203,9 +206,11 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
         uniform_buffer::<CloudGpu>(false), texture_3d(TextureSampleType::default()), texture_3d(TextureSampleType::default()),
         sampler(SamplerBindingType::Filtering), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
         uniform_buffer::<StormGpu>(false), uniform_buffer::<FlashGpu>(false), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
+        texture_2d(TextureSampleType::Float { filterable: false }),
     )));
     let composite = BindGroupLayoutDescriptor::new("cloud_composite", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
         texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering), texture_2d(TextureSampleType::default()),
+        texture_2d(TextureSampleType::Float { filterable: false }), uniform_buffer::<CloudGpu>(false),
     )));
     let resolve = BindGroupLayoutDescriptor::new("cloud_resolve", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
         uniform_buffer::<ResolveGpu>(false), texture_2d(TextureSampleType::default()),
@@ -365,14 +370,14 @@ fn queue_composite(
             None => {
                 let p = cache.queue_render_pipeline(RenderPipelineDescriptor {
                     label: Some("cloud_composite".into()),
-                    layout: vec![render.composite.clone()],
+                    layout: vec![render.atmo.clone(), render.composite.clone()],
                     vertex: render.fullscreen.to_vertex_state(),
                     fragment: Some(FragmentState {
                         shader: render.composite_shader.clone(),
                         targets: vec![Some(ColorTargetState { format: key.1, blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: ColorWrites::ALL })],
                         ..default()
                     }),
-                    // Reverse-Z: the fullscreen triangle sits at depth 0, so only still-clear (sky) samples pass.
+                    // Reverse-Z: the shader writes the cloud front's depth (0, the far plane, with no cloud depth or over_terrain off, so only sky samples pass); nearer scene samples fail.
                     depth_stencil: Some(DepthStencilState {
                         format: CORE_3D_DEPTH_FORMAT, depth_write_enabled: Some(false), depth_compare: Some(CompareFunction::GreaterEqual),
                         stencil: default(), bias: default(),
@@ -452,10 +457,10 @@ fn prepare_bind_groups(
         )));
         let cloud = device.create_bind_group("cloud_data", &cache.get_bind_group_layout(&render.cloud), &BindGroupEntries::sequential((
             u.clone(), &base.texture_view, &detail.texture_view, &render.repeat, &map.texture_view, if params.map_wrap { &render.repeat } else { &render.clamp }, storms.clone(), flash.clone(),
-            &oro.texture_view, &render.clamp,
+            &oro.texture_view, &render.clamp, &ground.texture_view,
         )));
         let composite = device.create_bind_group("cloud_composite", &cache.get_bind_group_layout(&render.composite), &BindGroupEntries::sequential((
-            &tex.write.default_view, &render.clamp, &tex.flash.default_view,
+            &tex.write.default_view, &render.clamp, &tex.flash.default_view, &tex.t.default_view, u.clone(),
         )));
         let Some(ru) = ubo.0.binding() else { continue };
         let resolve = device.create_bind_group("cloud_resolve", &cache.get_bind_group_layout(&render.resolve), &BindGroupEntries::sequential((
@@ -609,10 +614,11 @@ fn transparent_end(view: ViewQuery<&ViewTarget>, timing: Option<Res<PassTiming>>
 struct DrawCloudComposite;
 impl<P: PhaseItem> RenderCommand<P> for DrawCloudComposite {
     type Param = ();
-    type ViewQuery = Read<CloudBindGroups>;
+    type ViewQuery = (Read<CloudBindGroups>, Read<DynamicUniformIndex<GpuAtmosphere>>, Read<DynamicUniformIndex<GpuAtmosphereSettings>>, Read<AtmosphereTransformsOffset>, Read<ViewUniformOffset>);
     type ItemQuery = ();
-    fn render<'w>(_: &P, bg: ROQueryItem<'w, '_, Self::ViewQuery>, _: Option<ROQueryItem<'w, '_, Self::ItemQuery>>, _: SystemParamItem<'w, '_, Self::Param>, pass: &mut TrackedRenderPass<'w>) -> RenderCommandResult {
-        pass.set_bind_group(0, &bg.composite, &[]);
+    fn render<'w>(_: &P, (bg, atmo_i, settings_i, transforms_i, view_i): ROQueryItem<'w, '_, Self::ViewQuery>, _: Option<ROQueryItem<'w, '_, Self::ItemQuery>>, _: SystemParamItem<'w, '_, Self::Param>, pass: &mut TrackedRenderPass<'w>) -> RenderCommandResult {
+        pass.set_bind_group(0, &bg.atmo, &[atmo_i.index(), settings_i.index(), transforms_i.index(), view_i.offset]);
+        pass.set_bind_group(1, &bg.composite, &[]);
         pass.draw(0..3, 0..1);
         RenderCommandResult::Success
     }

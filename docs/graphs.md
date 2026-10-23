@@ -185,3 +185,15 @@ prototyped the heightmap (numpy hillshade, then the Rust function in a scratch c
 | | Final verifier | pass, no shots: core tests, warning on HEAD, exit codes 0/4/5, spawn diff, pose heights 29/45/73 m under 250/250/4500, no game names | - |
 
 **Planner error:** a "no warnings" check without first building HEAD for warnings already there. Build the base first.
+
+## 2026-10-23: horizon speckle and clouds meet terrain (collected into `claude/mountains`, PR #24)
+
+| Run | Node | Result | Score |
+|---|---|---|---|
+| `wf_d7feaa8b-535` (on main, moved to #24) | N1-config, N2-gpu, N3-docs | `air_segment` guard, `clouds.air_guard`; both settings compile; reference regenerated | 10, 10, 10 |
+| | Final verifier | pass; argued the lower-bound maths per branch; noted the unused `sample_transmittance_lut_segment` imports | - |
+| `wf_96d80c9c-645` | T1-config, T2-rust, T3-shaders, T4-plane, T5-docs | all as specified, each check passed | 10 each |
+| | Final verifier | **refuted**: `layout_pins::march_flash_mirrors_rust` pins the composite's `return vec4(c.rgb + f.rgb, c.a);`, which T3's rewrite (planner-written code) dropped | - |
+| fix + fresh verifier | planner: `with_flash` helper keeps the pinned form | pass: full `cargo test`, pins unedited, five compile shots, binding orders, config | - |
+
+**Planner errors:** (1) the composite rewrite I specified broke a pin I had not read; read the pins on every file a node rewrites. (2) T2's check ran layout_pins before T3 changed the shader, so no node ran the full suite after the last edit; give the last code node `cargo test --release` as its check.

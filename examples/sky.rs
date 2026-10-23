@@ -135,7 +135,8 @@ fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
     let ground = surf.add(SurfaceMaterial { base: StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() }, extension: WeatherSurface::default() });
     // Under the terrain the plane sits just below its lowest point, so it shows only past the terrain's edge.
     let below = terrain.as_ref().map_or(0.0, |t| t.0.y.iter().cloned().fold(f32::MAX, f32::min) - 10.0);
-    commands.spawn((Name::new("Ground"), Mesh3d(meshes.add(Plane3d::default().mesh().size(60_000.0, 60_000.0))), MeshMaterial3d(ground.clone()), Transform::from_xyz(0.0, below, 0.0)));
+    // 1000 km: from a few km up the horizon is over 200 km away, and a 60 km plane's edge showed as a line with the planet's ground beyond.
+    commands.spawn((Name::new("Ground"), Mesh3d(meshes.add(Plane3d::default().mesh().size(1_000_000.0, 1_000_000.0))), MeshMaterial3d(ground.clone()), Transform::from_xyz(0.0, below, 0.0)));
     if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(ground))); }
     commands.spawn((
         NephtheneSun, DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },

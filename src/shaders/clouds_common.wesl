@@ -85,6 +85,13 @@ struct Clouds {
     oro_weight: f32,
     // clouds.air_guard: 1 = guard the air transmittance (air_segment), 0 = Bevy's unguarded ratio (test switch).
     air_guard: u32,
+    // clouds.over_terrain: 1 = clouds drawn in front of terrain and the march ends at it, 0 = sky samples only (test switch).
+    over_terrain: u32,
+    // Terrain grid (rain::HeightGrid) at cloud binding 10: NW corner x and z (m), cell (m), columns, rows.
+    g_min: vec2<f32>,
+    g_cell: f32,
+    g_w: u32,
+    g_h: u32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).
