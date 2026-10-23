@@ -148,6 +148,7 @@ pub(crate) fn drive(
                 *shown = bakes;
             }
             (m.gpu.oro_origin, m.gpu.oro_size, m.gpu.oro_weight) = (Vec2::new(t.min_x, t.max_z), t.n as f32 * t.cell_m, wx.cfg.orographic.cover_weight);
+            m.gpu.oro_type = wx.cfg.orographic.type_weight;
         }
         None => m.gpu.oro_size = 0.0,
     }

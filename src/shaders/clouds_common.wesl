@@ -92,6 +92,8 @@ struct Clouds {
     g_cell: f32,
     g_w: u32,
     g_h: u32,
+    // Orographic tile's weight added to the map's cloud type (config orographic.type_weight). 0 = the map's type alone.
+    oro_type: f32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).
@@ -185,7 +187,8 @@ fn base_shape_at(u: Clouds, base_tex: texture_3d<f32>, ns: sampler, p: vec3<f32>
 }
 
 // The weather map at world xz (shifted by the world offset), with the orographic tile's share like nephthene_core::orographic::combine:
-// cover = min(1, map + oro_weight x tile cover), precip = max(map, tile). The tile is R cover, G precip, and adds nothing outside it.
+// cover = min(1, map + oro_weight x tile cover), precip = max(map, tile), type = map + oro_type x min(1, tile cover) so terrain
+// cloud can grow a tower (the depth curve is keyed on type). The tile is R cover, G precip, and adds nothing outside it.
 fn map_sample(u: Clouds, map_tex: texture_2d<f32>, ms: sampler, oro_tex: texture_2d<f32>, os: sampler, xz: vec2<f32>) -> vec4<f32> {
     let c = u.world_offset + xz;
     let uv = vec2((c.x - u.map_origin.x) / u.map_size.x, (u.map_origin.y - c.y) / u.map_size.y);
@@ -198,7 +201,7 @@ fn map_sample(u: Clouds, map_tex: texture_2d<f32>, ms: sampler, oro_tex: texture
     let ou = vec2(xz.x - u.oro_origin.x, u.oro_origin.y - xz.y) / u.oro_size;
     if any(ou < vec2(0.0)) || any(ou > vec2(1.0)) { return m; }
     let o = textureSampleLevel(oro_tex, os, ou, 0.0);
-    return vec4(min(m.r + u.oro_weight * o.r, 1.0), max(m.g, o.g), m.b, m.a);
+    return vec4(min(m.r + u.oro_weight * o.r, 1.0), max(m.g, o.g), min(m.b + u.oro_type * o.r, 1.0), m.a);
 }
 
 // Tower depth (m) for cloud type `kind`: the piecewise-linear curve of the 4 stops (clamped outside).
@@ -229,7 +232,9 @@ fn density_at(u: Clouds, base_tex: texture_3d<f32>, detail_tex: texture_3d<f32>,
     let lo = 1.0 - min(cov * u.cov_boost, 1.0);
     // Tier-2 towers (plan 5.1): the column's depth is the type's curve times sqrt(blob strength); the height fraction is relative to it.
     var h = h_shell;
+    if tower {
     if tower { h = (alt - u.bottom) / max(tower_depth(u, m.b) * sqrt(saturate((bs_col - lo) / max(1.0 - lo, 1e-4))), 50.0); }
+    }
     var c = saturate(remap(bs * gradient(h, m.b), lo, 1.0, 0.0, 1.0));
     h = saturate(h);
     if detail && c > 0.0 {

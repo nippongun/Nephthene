@@ -560,6 +560,7 @@
     "fetch_m": 25600.0,
     "tile_base": false,
     "cover_weight": 1.0,
+    "type_weight": 0.0,
     "tile_px": 128,
     "cell_m": 200.0,
     "rebake_m": 3200.0,

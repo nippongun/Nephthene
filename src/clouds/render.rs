@@ -79,6 +79,8 @@ pub struct CloudGpu {
     /// clouds.over_terrain (1 = clouds drawn in front of terrain, the march ends at it) and the terrain grid the march reads at cloud
     /// binding 10 (rain::HeightGrid: NW cell corner x and z, cell m, columns, rows).
     pub over_terrain: u32, pub g_min: Vec2, pub g_cell: f32, pub g_w: u32, pub g_h: u32,
+    /// Orographic tile's weight added to the map's cloud type (orographic.type_weight). See clouds_common.wesl `Clouds`.
+    pub oro_type: f32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.

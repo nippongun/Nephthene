@@ -569,6 +569,9 @@ pub struct OroCfg {
     pub tile_base: bool,
     /// Weight of the tile's cover added to the map's coverage (at most 1).
     pub cover_weight: f32,
+    /// Weight of the tile's cloud source added to the map's cloud type, so terrain-forced convection grows tall and not only dense
+    /// (the tower depth curve is keyed on type). 0 = the map's type alone (the red arm, and today's behaviour). UNTUNED.
+    pub type_weight: f32,
     /// The tile: cells per side and cell size (m), centred on the camera.
     pub tile_px: u32, pub cell_m: f32,
     /// Rebake when the camera is over `rebake_m` from the tile centre, the mean wind turns over `rebake_deg` or changes speed by over
@@ -577,7 +580,7 @@ pub struct OroCfg {
 }
 impl Default for OroCfg {
     fn default() -> Self {
-        OroCfg { enabled: false, gain: 1.0, n_moist: 0.005, h_w: 2500.0, tau_c: 1000.0, tau_f: 1000.0, full_mm_h: 7.6, lcl_m_per_k: 125.0, fetch_m: 25600.0, tile_base: false, cover_weight: 1.0,
+        OroCfg { enabled: false, gain: 1.0, n_moist: 0.005, h_w: 2500.0, tau_c: 1000.0, tau_f: 1000.0, full_mm_h: 7.6, lcl_m_per_k: 125.0, fetch_m: 25600.0, tile_base: false, cover_weight: 1.0, type_weight: 0.0,
             tile_px: 128, cell_m: 200.0, rebake_m: 3200.0, rebake_deg: 22.5, rebake_frac: 0.2, rebake_k: 2.0 }
     }
 }
