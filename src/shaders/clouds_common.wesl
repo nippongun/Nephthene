@@ -82,6 +82,14 @@ struct Clouds {
     oro_origin: vec2<f32>,
     oro_size: f32,
     oro_weight: f32,
+    // Edge LOD (config clouds.edge_lod, nephthene_core EdgeLod): on (1) / off (0), step-reduction radii in screen units (x and y -1..1),
+    // step multiplier at full reduction, radii over which the share of rays without detail erosion goes 0 -> 1.
+    edge_on: f32,
+    edge_r0: f32,
+    edge_r1: f32,
+    edge_step_scale: f32,
+    edge_detail_r0: f32,
+    edge_detail_r1: f32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).

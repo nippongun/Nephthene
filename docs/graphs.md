@@ -14,6 +14,24 @@ Each executor scores out of 10, from the verifier's report and the planner's rea
 
 Tokens are input (with cache reads) / output.
 
+## 2026-10-23: cloud edge LOD (branch `claude/cloud-edge-lod`)
+
+Goal: a toggle that reduces cloud march steps and detail erosion by screen radius, off by default. Two runs.
+
+| Node | Files | Result |
+|---|---|---|
+| N1-config | config.rs | `EdgeLod` and its unit test |
+| N2-uniform | render.rs, clouds_common.wesl, clouds.rs | six fields at the uniform tail, filled every frame; layout pins pass |
+| N3-march | clouds_march.wesl | correct on run 1, but blocked by the planner's check: `grep error` matched the URL in Bevy's software-renderer WARN. Run 2 filtered that line out |
+| N4-panel | panel.rs | the "Cloud edge LOD" toggle |
+| N5-gate | tests/edge_lod.rs | G32 green on lavapipe: centre 0.000, edge 2.490, red arm 26.223 |
+| N6-cost | tests/cost.rs | `cost_clouds_edge_lod` (Mac) |
+| N7-reference | config.reference.json, README.md | regenerated; README rows |
+
+Verifier: pass. The default render is byte-identical to main's (built from main, same shot). Notes: the edge half's red arm is
+only the off pair; at the defaults the edges turn grainy rather than soft (the owner's look call).
+Learned: a check that greps logs for "error" must exclude Bevy's software-renderer WARN.
+
 ## 2026-10-22: orographic precipitation, slice 2 (branch `claude/orographic-clouds`)
 
 Goal: the cloud march, shadow and shafts read the orographic tile (a second texture, combined in `map_sample`), with a render gate.

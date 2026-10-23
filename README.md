@@ -36,6 +36,7 @@ The scene provides a camera with `AtmosphereSettings` (add `Exposure` / `Distanc
 - Manual lightning gates G23-G24 (channel reads as a line, flash lights the ground): `cargo test --release --test lightning -- --ignored --nocapture --test-threads=1`.
 - Manual fog gates G15-G16 (terrain, mountain shadow): `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`.
 - Manual cloud gates G7-G14 (a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
+- Manual edge LOD gate G32 (the switch changes the screen edges, not the centre): `cargo test --release --test edge_lod -- --ignored --nocapture --test-threads=1`.
 - Regenerate goldens after an approved look change: `NEPHTHENE_UPDATE_GOLDEN=1 cargo test --release --test golden golden_cloud_sky`.
 - Python metric tools: `tools/README.md`.
 
@@ -52,7 +53,7 @@ starting values and **untuned**. Sections:
 | `air` | the temperature field over the weather map (force-restore per cell on the clock: sun, season, latitude, the cell's cloud cover; moves with the map), dew point and humidity, lapse rates, freezing level, snow line, precipitation type (`snow_c`..`rain_c`); `Weather.air` is the air at the ground under the camera, `Weather.air_field` the field. See `docs/air.md` |
 | `climate` | what a place is like: a second map fixed to the world (`climate_map.png`; R temperature offset, G humidity, B ground snow, A ground wetness) or `uniform` without one; it sets each place's restore target, dew point and snow albedo for the air; test switch `ignore`. See `docs/climate.md` |
 | `orographic` | rain and cloud from the wind over the terrain (Smith & Barstad 2004): a tile fixed to the terrain, baked around the camera from `Ground`, combined with the weather map where it is read (precip max, cover weighted add); CPU only so far, off by default via `enabled`; red arm `gain` 0. See `docs/orographic.md` |
-| `clouds` (+ `look`, `noise`) | layer heights, march steps, light, shoulder, render scale, update div, shadow cookie, towers, probe view, coverage override |
+| `clouds` (+ `look`, `noise`, `edge_lod`) | layer heights, march steps, light, shoulder, render scale, update div, shadow cookie, towers, probe view, coverage override, edge LOD (fewer march steps and less detail toward the screen edges; off by default, panel toggle) |
 | `resolve` | temporal resolve: reject gain, still box, fresh confidence, cut thresholds, jitter, the `wide_upsample` switch, and the test switches `no_reproject`, `light_jitter_shared`, `motion_half_px` |
 | `shafts` | rain-shaft pass |
 | `ground_fog` | terrain-following radiation fog: formation from the air's dew point spread (`air`) and wind; burn-off and base lift; valley pooling depth, shallow mist, optics, bake and march (`render_scale`, half resolution by default, depth-aware composite); test switches `ignore_terrain`, `ignore_shadow`, `private_cooling`, `hash_noise`; on by default (`enabled`; the panel's Fog section switches it at runtime). See `docs/fog.md` |

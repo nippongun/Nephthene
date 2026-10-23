@@ -115,6 +115,30 @@ fn cost_clouds() {
     finish("COST cloud march+resolve", f);
 }
 
+// ---------------------------------------------------------------- cloud edge LOD
+
+/// Share 0.9: with `clouds.edge_lod` on, cloud march+resolve at 1080p costs at most 0.9 x the same run with it off. A saving under 10%
+/// is within the noise of a 60-frame mean and would not pay for the softer edges.
+const EDGE_LOD_SHARE: f64 = 0.9;
+
+/// Edge LOD earns its cost. Red arm: on, with no reduction (`step_scale` 1, detail radii past the corners at 1.41), must read above
+/// 0.9 x off; if it does not, the gate cannot fail: delete it and log it (roadmap rule).
+#[test]
+#[ignore = "manual gate"]
+fn cost_clouds_edge_lod() {
+    if software() && std::env::var("NEPHTHENE_COST_ON_CPU").is_err() { println!("COST skipped: software renderer"); return; }
+    let clouds = |m: &HashMap<String, f64>| m["march"] + m["resolve"];
+    let off = clouds(&run("cost_edge_off", &[], false));
+    let on = clouds(&run("cost_edge_on", &["clouds.edge_lod.enabled=true"], false));
+    let red = clouds(&run("cost_edge_red", &["clouds.edge_lod.enabled=true", "clouds.edge_lod.step_scale=1.0", "clouds.edge_lod.detail_r0=2.0", "clouds.edge_lod.detail_r1=2.1"], false));
+    println!("COST cloud edge LOD: off {off:.3} ms, on {on:.3} ms (budget <= {EDGE_LOD_SHARE} x off = {:.3}); red arm (no reduction) {red:.3}", EDGE_LOD_SHARE * off);
+    if software() { return; }
+    let mut f = vec![];
+    if on > EDGE_LOD_SHARE * off { f.push(format!("edge LOD on {on:.3} ms > {EDGE_LOD_SHARE} x off {off:.3}")); }
+    if red <= EDGE_LOD_SHARE * off { f.push(format!("red arm {red:.3} not above {EDGE_LOD_SHARE} x off: the gate cannot fail, delete it and log it (roadmap rule)")); }
+    finish("COST cloud edge LOD", f);
+}
+
 // ---------------------------------------------------------------- rain shafts
 
 /// Budget 0.3 ms: the roadmap's split for the rain shafts (shaft_march plus shaft_resolve, owner's call).

@@ -74,6 +74,9 @@ pub struct CloudGpu {
     pub s_curtain_full: f32, pub s_couple: f32,
     /// Orographic tile: world NW corner (m), side (m, 0 = none) and cover weight. See clouds_common.wesl `Clouds`.
     pub oro_origin: Vec2, pub oro_size: f32, pub oro_weight: f32,
+    /// clouds.edge_lod: on (1) / off (0), step-reduction radii, step multiplier at full reduction, detail-skip radii. See clouds_march.wesl.
+    pub edge_on: f32, pub edge_r0: f32, pub edge_r1: f32, pub edge_step_scale: f32,
+    pub edge_detail_r0: f32, pub edge_detail_r1: f32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.

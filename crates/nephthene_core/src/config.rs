@@ -264,6 +264,8 @@ pub struct Clouds {
     pub pass_timing: bool,
     /// Look constants that were shader literals.
     pub look: CloudLook,
+    /// Fewer march steps and less detail toward the screen edges (off by default).
+    pub edge_lod: EdgeLod,
     /// Procedural noise textures.
     pub noise: CloudNoise,
 }
@@ -276,7 +278,7 @@ impl Default for Clouds {
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
             shadow_step_m: 120.0, shadow_samples_max: 48, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
             enabled: true, coverage_override: None, debug_view: 0, pass_timing: false,
-            look: CloudLook::default(), noise: CloudNoise::default(),
+            look: CloudLook::default(), edge_lod: EdgeLod::default(), noise: CloudNoise::default(),
         }
     }
 }
@@ -303,6 +305,25 @@ impl Default for CloudLook {
         CloudLook { cov_boost: 1.5, tower_vsq: 0.3, tower_billow: 0.5, background_blend: 0.05, vary_tile_mul: 2.3,
                     horizon_step_boost: 3.0, horizon_step_y: 0.5, cheap_empty_steps: 6 }
     }
+}
+
+/// Cloud edge LOD: toward the screen edges the eye march takes fewer steps and a dithered share of the rays skips the detail erosion
+/// (the temporal resolve averages the dither). A rectilinear view spends more pixels per degree at the edges, so they show the loss least.
+/// Radii are in screen units: x and y each run -1..1 across the render, so 1 is the middle of a side and the corners are about 1.41.
+/// Off by default (the look is unchanged); every value untuned.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct EdgeLod {
+    pub enabled: bool,
+    /// Step reduction starts at radius `r0` and is full at `r1` (smoothstep; want r0 < r1).
+    pub r0: f32, pub r1: f32,
+    /// Eye-march step multiplier at full reduction (0 < step_scale <= 1; 1 = no step reduction).
+    pub step_scale: f32,
+    /// Share of rays without detail erosion: 0 inside `detail_r0`, all of them past `detail_r1` (smoothstep; want detail_r0 < detail_r1).
+    pub detail_r0: f32, pub detail_r1: f32,
+}
+impl Default for EdgeLod {
+    fn default() -> Self { EdgeLod { enabled: false, r0: 0.5, r1: 1.2, step_scale: 0.5, detail_r0: 0.8, detail_r1: 1.2 } }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -700,6 +721,15 @@ mod tests {
         let p = Config::from_json(r#"{"clouds": {"steps": 99}, "wind": {"speed_mps": 3.0}}"#).unwrap();
         assert_eq!((p.clouds.steps, p.wind.speed_mps, p.clouds.bottom_m), (99, 3.0, 1500.0));
         assert!(Config::from_json(r#"{"clouds": {"stepz": 1}}"#).is_ok(), "unknown keys are ignored (serde default)");
+    }
+    #[test]
+    fn edge_lod_is_off_by_default_and_its_ranges_are_ordered() {
+        let e = EdgeLod::default();
+        assert!(!e.enabled);
+        assert!(e.r0 < e.r1 && e.detail_r0 < e.detail_r1, "{e:?}");
+        assert!(e.step_scale > 0.0 && e.step_scale <= 1.0, "{e:?}");
+        let c = Config::from_json(r#"{"clouds": {"edge_lod": {"enabled": true}}}"#).unwrap();
+        assert!(c.clouds.edge_lod.enabled && c.clouds.edge_lod.r1 == e.r1);
     }
     #[test]
     fn set_path_sets_float_bool_int_nested_array_and_option() {
