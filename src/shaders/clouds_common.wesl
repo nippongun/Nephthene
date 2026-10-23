@@ -2,7 +2,8 @@
 // uses group 0, the others group 1), so textures and the uniform come in as arguments. Every constant here is untuned.
 import bevy_pbr::atmosphere::{
     bindings::atmosphere,
-    functions::sample_transmittance_lut,
+    bruneton_functions::{ray_intersects_ground, sample_transmittance_lut_segment},
+    functions::{sample_transmittance_lut, get_local_r},
 };
 
 struct Clouds {
@@ -82,6 +83,8 @@ struct Clouds {
     oro_origin: vec2<f32>,
     oro_size: f32,
     oro_weight: f32,
+    // clouds.air_guard: 1 = guard the air transmittance (air_segment), 0 = Bevy's unguarded ratio (test switch).
+    air_guard: u32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).
@@ -142,6 +145,28 @@ fn atmo_transmittance(r: f32, mu: f32) -> vec3<f32> {
     // Below the planet's horizon from here: the body is shadowed by the ground.
     if mu < -sqrt(max(1.0 - (R / r) * (R / r), 0.0)) { return vec3(0.0); }
     return sample_transmittance_lut(r, mu);
+}
+
+// ponytail: f16 normals start at 6.1e-5; a LUT sample under 1e-4 has lost most of its precision. A numeric floor, not a look value.
+const AIR_FLOOR: f32 = 1e-4;
+
+// The air's transmittance over `t` m from radius `r` along `mu` (eye to cloud or shaft). Bevy's sample_transmittance_lut_segment
+// divides two transmittance-LUT samples; on long grazing rays near the horizon the far one underflows in the f16 LUT, so the ratio
+// is 0/0 (NaN, drawn black) or x/0 (clamped to 1: a far cloud with no haze, drawn white): black-and-white speckle on distant clouds
+// at the horizon. Where the far sample is under AIR_FLOOR, the near one stands in: the transmittance to space (or, for a ray that
+// meets the ground, from the far point back up), a lower bound on the segment's, so the haze wins. `guard` 0 = Bevy's (red arm).
+fn air_segment(r: f32, mu: f32, t: f32, guard: u32) -> vec3<f32> {
+    if guard == 0u { return sample_transmittance_lut_segment(r, mu, t); }
+    let r_t = get_local_r(r, mu, t);
+    let mu_t = clamp((r * mu + t) / r_t, -1.0, 1.0);
+    var near = sample_transmittance_lut(r, mu);
+    var far = sample_transmittance_lut(r_t, mu_t);
+    if ray_intersects_ground(r, mu) {
+        near = sample_transmittance_lut(r_t, -mu_t);
+        far = sample_transmittance_lut(r, -mu);
+    }
+    let ratio = min(near / max(far, vec3(AIR_FLOOR)), vec3(1.0));
+    return select(near, ratio, far > vec3(AIR_FLOOR));
 }
 
 // Base shape 0..1 (uniform): the 128^3 Perlin-Worley tile sampled at two incommensurate scales, the second rotated 37 deg about

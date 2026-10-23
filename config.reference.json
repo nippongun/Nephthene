@@ -193,6 +193,7 @@
     "coverage_override": null,
     "debug_view": 0,
     "pass_timing": false,
+    "air_guard": true,
     "look": {
       "cov_boost": 1.5,
       "tower_vsq": 0.3,

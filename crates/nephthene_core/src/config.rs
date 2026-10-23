@@ -262,6 +262,10 @@ pub struct Clouds {
     pub debug_view: u32,
     /// Print GPU pass timings every 60 frames (needs TIMESTAMP_QUERY).
     pub pass_timing: bool,
+    /// Guard the air's transmittance between the eye and a cloud or rain shaft: where the far LUT sample underflows (long grazing rays
+    /// at the horizon) the transmittance to space stands in. Test switch (red arm): false uses Bevy's unguarded ratio, which shows as
+    /// black-and-white speckle on distant clouds at the horizon.
+    pub air_guard: bool,
     /// Look constants that were shader literals.
     pub look: CloudLook,
     /// Procedural noise textures.
@@ -275,7 +279,7 @@ impl Default for Clouds {
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
             shadow_step_m: 120.0, shadow_samples_max: 48, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
-            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false,
+            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true,
             look: CloudLook::default(), noise: CloudNoise::default(),
         }
     }

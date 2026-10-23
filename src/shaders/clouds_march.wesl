@@ -18,7 +18,7 @@ import bevy_pbr::atmosphere::{
     functions::{sample_transmittance_lut, sample_sky_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, get_view_position},
 };
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
-import super::clouds_common::{Clouds, Storms, PI, F16_MAX, remap, hg, phase, gradient, pcg, ign, atmo_transmittance, base_shape_at, map_sample, density_at, StormCell, storm_unpack, storm_reach, storm_profile, storm_col_cell};
+import super::clouds_common::{Clouds, Storms, PI, F16_MAX, remap, hg, phase, gradient, pcg, ign, atmo_transmittance, base_shape_at, map_sample, density_at, StormCell, storm_unpack, storm_reach, storm_profile, storm_col_cell, air_segment};
 
 @group(1) @binding(0) var<uniform> u: Clouds;
 @group(1) @binding(1) var base_tex: texture_3d<f32>;
@@ -411,7 +411,7 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
     let c = get_view_position();
     let rc = length(c);
     let mu = dot(d, c / rc);
-    let t_air = sample_transmittance_lut_segment(rc, mu, tc);
+    let t_air = air_segment(rc, mu, tc, u.air_guard);
     let t_inf = sample_transmittance_lut(rc, mu);
     let s_sky = sample_sky_view_lut(rc, direction_world_to_atmosphere(d));
     let s_air = min(s_sky * (vec3(1.0) - t_air) / max(vec3(1.0) - t_inf, vec3(1e-4)), s_sky);

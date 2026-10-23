@@ -74,6 +74,8 @@ pub struct CloudGpu {
     pub s_curtain_full: f32, pub s_couple: f32,
     /// Orographic tile: world NW corner (m), side (m, 0 = none) and cover weight. See clouds_common.wesl `Clouds`.
     pub oro_origin: Vec2, pub oro_size: f32, pub oro_weight: f32,
+    /// clouds.air_guard (1 = guard the air transmittance in front of clouds and shafts, see clouds_common.wesl `air_segment`).
+    pub air_guard: u32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.

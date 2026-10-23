@@ -11,7 +11,7 @@ import bevy_pbr::atmosphere::{
     functions::{sample_transmittance_lut, sample_sky_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, get_view_position},
 };
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
-import super::clouds_common::{Clouds, Storms, F16_MAX, PI, hg, phase, pcg, atmo_transmittance, map_sample, density_at, storm_unpack, storm_precip};
+import super::clouds_common::{Clouds, Storms, F16_MAX, PI, hg, phase, pcg, atmo_transmittance, map_sample, density_at, storm_unpack, storm_precip, air_segment};
 
 struct Shaft {
     slant: vec2<f32>,   // horizontal m per vertical m the rain drifts
@@ -156,7 +156,7 @@ fn main(in: FullscreenVertexOutput) -> Out {
 
     let rc = length(ce);
     let mu = dot(d, ce / rc);
-    let t_air = sample_transmittance_lut_segment(rc, mu, tc);
+    let t_air = air_segment(rc, mu, tc, u.air_guard);
     let t_inf = sample_transmittance_lut(rc, mu);
     let s_sky = sample_sky_view_lut(rc, direction_world_to_atmosphere(d));
     let s_air = min(s_sky * (vec3(1.0) - t_air) / max(vec3(1.0) - t_inf, vec3(1e-4)), s_sky);
