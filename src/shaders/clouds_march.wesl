@@ -297,7 +297,12 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
     var thick = false;
     if has_sh || has_st {
         // Low rays cross the shell obliquely: up to horizon_step_boost x the steps near the horizon so far clouds do not smear into step hatching.
-        let n = floor(f32(u.steps) * mix(u.horizon_step_boost, 1.0, smoothstep(0.0, u.horizon_step_y, d.y)));
+        // Edge LOD (clouds.edge_lod): a rectilinear view spends more pixels per degree toward the screen edges, so rays there take fewer
+        // steps and a dithered share of them skips the detail erosion (the temporal resolve averages the dither). Off: n and detail unchanged.
+        let edge = u.edge_on > 0.5;
+        let er = length((fp + 0.5) / vec2(u.full_w, u.full_h) * 2.0 - 1.0);
+        let ks = select(0.0, smoothstep(u.edge_r0, u.edge_r1, er), edge);
+        let n = max(floor(f32(u.steps) * mix(u.horizon_step_boost, 1.0, smoothstep(0.0, u.horizon_step_y, d.y)) * mix(1.0, u.edge_step_scale, ks)), 1.0);
         let dt = (t1 - t0) / n;
         let cs = dot(d, u.sun_dir);
         let cm = dot(d, u.moon_dir);
@@ -306,6 +311,8 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
         // offset, so the average over jitter keeps a bias that varies with altitude: horizontal streak lines in lit cloud bodies (more steps hide them).
         // resolve.light_jitter_shared = true restores the shared jitter (test red arm).
         let jl = select(ign_f(fp + u.light_jitter_offset), jit, u.light_jitter_shared > 0.5);
+        // Edge LOD detail: the ray keeps detail erosion unless its own jitter falls under the edge share (always kept when off).
+        let use_detail = !edge || jl >= smoothstep(u.edge_detail_r0, u.edge_detail_r1, er);
         // Sky ambient : L_top = mean of 5 up-taps of the sky-view LUT at the eye, L_gnd = ground bounce of the bodies + sky.
         let ce = get_view_position();
         let re = length(ce);
@@ -352,9 +359,9 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
                 continue;
             }
             var dens = 0.0;
-            if in_sh && inside { dens = density_shell(xz, alt, h, true); }
+            if in_sh && inside { dens = density_shell(xz, alt, h, use_detail); }
             var sv = vec3(0.0);
-            if in_st { sv = storm_at(xz, alt, t < u.s_detail_m); }
+            if in_st { sv = storm_at(xz, alt, use_detail && t < u.s_detail_m); }
             let storm_dom = sv.x > dens;
             dens = max(dens, sv.x);
             if dens > 0.0 {

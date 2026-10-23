@@ -157,6 +157,10 @@ pub(crate) fn drive(
         }
         None => m.gpu.oro_size = 0.0,
     }
+    // Read every frame so the panel toggle and live config edits apply at once.
+    let e = &wx.cfg.clouds.edge_lod;
+    (m.gpu.edge_on, m.gpu.edge_r0, m.gpu.edge_r1, m.gpu.edge_step_scale, m.gpu.edge_detail_r0, m.gpu.edge_detail_r1) =
+        (e.enabled as u32 as f32, e.r0, e.r1, e.step_scale, e.detail_r0, e.detail_r1);
 }
 
 /// Tileable cloud noise, `n`^3 RGBA8 (Schneider 2015). With `perlin` = Some(f): R is the base shape, Perlin fbm at

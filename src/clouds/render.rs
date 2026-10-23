@@ -83,6 +83,9 @@ pub struct CloudGpu {
     pub oro_type: f32,
     /// clouds.storm_step_opacity (1 = a storm sample's opacity uses the step taken; 0 = the shell step dt, test red arm). See clouds_march.wesl.
     pub storm_step_opacity: u32,
+    /// clouds.edge_lod: on (1) / off (0), step-reduction radii, step multiplier at full reduction, detail-skip radii. See clouds_march.wesl.
+    pub edge_on: f32, pub edge_r0: f32, pub edge_r1: f32, pub edge_step_scale: f32,
+    pub edge_detail_r0: f32, pub edge_detail_r1: f32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.
