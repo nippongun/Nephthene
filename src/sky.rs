@@ -80,7 +80,7 @@ fn air_here(wx: &Weather, ground: Option<&crate::rain::Ground>, p: Vec3, wetness
 }
 
 /// The climate at world (x, z): the climate map is read at world + `map.world_offset_m` (no shift).
-fn climate_at(wx: &Weather, p: Vec3) -> climate::Place {
+pub(crate) fn climate_at(wx: &Weather, p: Vec3) -> climate::Place {
     let [x, z] = w::map_xz(&wx.cfg.map, Vec2::ZERO, p.x, p.z);
     climate::place(&wx.cfg.climate, wx.climate.as_ref(), x, z)
 }

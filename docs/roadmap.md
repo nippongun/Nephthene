@@ -88,7 +88,7 @@ Two reference GPUs, four tiers, one budget rule. See **Performance**.
 ## Rules (all phases)
 
 - **Separate.** Nothing host-specific in the repo (AGENTS.md rule 7: no game names, assets or IDs). A host hooks in through
-  markers (`NephtheneSun`, `WetGround`), resources (`Ground`, `Weather`, `FogState`, ...), events and config only.
+  markers (`NephtheneSun`, `Shelter`), resources (`Ground`, `Weather`, `RainState`, `FogState`, ...), the `SurfaceWeather` query, events and config only.
 - **No magic values.** Every tunable is a `Config` field with a documented default, labelled untuned until the owner tunes it.
 - **Proof.** Every feature ships a gate that is red without it and green with it, and keeps its red arm (a config switch). A gate
   whose red arm cannot fail on any renderer is deleted and logged, not kept. Bounds come from a stated budget, never from a

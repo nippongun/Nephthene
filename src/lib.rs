@@ -7,7 +7,8 @@
 //! The scene supplies a camera with [`bevy::pbr::AtmosphereSettings`] (plus `Exposure` / `DistanceFog` if it wants them driven) and one
 //! `DirectionalLight` marked [`NephtheneSun`]. The plugin spawns the Atmosphere, the moon and the stars, moves the sun along the clock,
 //! draws volumetric clouds with cloud shadows, rain, optional storms, optional terrain-following ground fog, and (feature `panel`) a mouse-driven weather panel.
-//! Runtime state: [`Weather`], [`RainState`], [`Storms`], [`Flashes`], [`Orographic`]; messages [`LightningStrike`] and [`Thunder`]; mark a mesh [`WetGround`] to let rain wet it, or [`Shelter`] to keep rain out from under it.
+//! Runtime state: [`Weather`], [`RainState`] (and [`SurfaceWeather`]'s per-place wetness and snow), [`Storms`], [`Flashes`], [`Orographic`]; messages [`LightningStrike`] and [`Thunder`]; mark a mesh [`Shelter`] to keep rain out from under it.
+//! The plugin never touches the host's materials. Feature `surface` (off by default) adds `SurfaceMaterialPlugin`: a ready-made wet and snowy ground material a host may add, with or without [`NephthenePlugin`].
 //! Every tunable is in [`Config`] (re-exported from `nephthene_core`).
 use bevy::prelude::*;
 pub use nephthene_core::{self as core, Config, WeatherMap};
@@ -21,6 +22,8 @@ mod panel;
 mod rain;
 mod sky;
 mod storms;
+#[cfg(feature = "surface")]
+mod surface;
 
 pub use clouds::CloudParams;
 pub use fog::FogState;
@@ -28,8 +31,10 @@ pub use lightning::{Flashes, LightningStrike, Thunder};
 pub use orographic::Orographic;
 #[cfg(feature = "panel")]
 pub use panel::{Panel, Wid};
-pub use rain::{Ground, RainState, Shelter, SurfaceMaterial, WeatherSurface, WetGround};
+pub use rain::{Ground, GroundWeather, RainState, Shelter, SurfaceWeather};
 pub use sky::{Moon, NephtheneSun, Weather};
+#[cfg(feature = "surface")]
+pub use surface::{SurfaceMaterial, SurfaceMaterialPlugin, WeatherSurface, WetGround};
 pub use storms::Storms;
 
 /// Ordering handles for host systems: `Tick` is the clock / wind / sun update, `Drive` the cloud uniforms (after the panel's overrides). The two sets run in that order: Tick, then Drive.

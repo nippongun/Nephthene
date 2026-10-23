@@ -30,7 +30,7 @@ use bevy::{
     window::ExitCondition,
     winit::WinitPlugin,
 };
-use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, SurfaceMaterial, Weather, WeatherSurface};
+use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, SurfaceMaterial, SurfaceMaterialPlugin, Weather, WeatherSurface};
 use nephthene::core::rain::Ground as _;
 use serde::Deserialize;
 
@@ -101,7 +101,7 @@ fn main() {
     if args.has("--terrain") { app.insert_resource(nephthene::Ground(nephthene::core::fog::test_valley())); }
     if args.has("--mountains") { app.insert_resource(nephthene::Ground(nephthene::core::terrain::mountains())); }
     if args.has("--roof") { app.insert_resource(Roof); }
-    app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
+    app.add_plugins((NephthenePlugin::new(cfg.clone()), SurfaceMaterialPlugin)).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     match shot {
         Some(name) => { app.add_plugins(ShotPlugin { name, args }); }
         None => { app.insert_resource(StartPose(start)).add_systems(Update, fly); }

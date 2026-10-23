@@ -13,6 +13,7 @@ const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
 const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
 const SURFACE: &str = include_str!("../../../src/shaders/surface.wesl");
 const RAIN_RS: &str = include_str!("../../../src/rain.rs");
+const SURFACE_RS: &str = include_str!("../../../src/surface.rs");
 const LIGHTNING_RS: &str = include_str!("../../../src/lightning.rs");
 const LIGHTNING: &str = include_str!("../../../src/shaders/lightning.wesl");
 const MARCH: &str = include_str!("../../../src/shaders/clouds_march.wesl");
@@ -78,7 +79,7 @@ fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogRe
 #[test]
 fn rain_uniform_matches_wgsl() { same_order(RAIN_RS, "struct RainGpu {", RAIN, "struct Rain {"); }
 #[test]
-fn surface_uniform_matches_wgsl() { same_order(RAIN_RS, "struct SurfaceGpu {", SURFACE, "struct Surface {"); }
+fn surface_uniform_matches_wgsl() { same_order(SURFACE_RS, "struct SurfaceGpu {", SURFACE, "struct Surface {"); }
 #[test]
 fn surface_shader_mirrors_snow_mask() {
     for line in ["s.snow * smoothstep(s.slope_lo, s.slope_hi, pbr_input.world_normal.y)", "mix(pbr_input.material.perceptual_roughness, s.wet_roughness, wet)"] {

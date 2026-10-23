@@ -14,6 +14,21 @@ Each executor scores out of 10, from the verifier's report and the planner's rea
 
 Tokens are input (with cache reads) / output.
 
+## 2026-10-23: the library stops owning host materials (branch `claude/affectionate-pasteur-qtqvng`)
+
+Goal: `SurfaceMaterial` and `WetGround` move behind feature `surface` with a standalone `SurfaceMaterialPlugin`; `SurfaceWeather::at`
+publishes wetness and snow per place. One run (`wf_3c270752-586`), 5 agents, 179k subagent tokens, 17 min; verifier passed.
+
+| Node | Files | Result | Score |
+|---|---|---|---|
+| core | nephthene_core rain.rs | `ground_at` and three unit tests | 10 |
+| split | surface.rs, rain.rs, lib.rs, Cargo.toml, layout_pins.rs, sky.rs | pure move, bodies identical; a stray space in Cargo.toml (fixed by the planner) | 9 (in scope 1) |
+| query | rain.rs, sky.rs, lib.rs | `SurfaceWeather` / `GroundWeather`; reported the two pre-existing warnings honestly | 10 |
+| gate | tests/surface_plugin.rs | MinimalPlugins + AssetPlugin was enough (0.02 s); red arm flipped and restored | 10 |
+
+Learned: a self dev-dependency (`nephthene = { path = ".", features = [...] }`) turns a feature on for tests and examples only, so
+`cargo test` and `cargo run --example` need no flags; checked with `cargo tree -e features` before writing the graph.
+
 ## 2026-10-22: orographic precipitation, slice 2 (branch `claude/orographic-clouds`)
 
 Goal: the cloud march, shadow and shafts read the orographic tile (a second texture, combined in `map_sample`), with a render gate.

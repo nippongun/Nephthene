@@ -58,6 +58,13 @@ pub fn snow_cover(c: &RainCfg, live: f32, climate_snow: f32) -> f32 { c.cover_fo
 /// Snow on a surface whose normal points `normal_y` up: the cover, where the ground is flat enough to hold it. surface.wesl mirrors it.
 pub fn snow_mask(c: &RainCfg, cover: f32, normal_y: f32) -> f32 { cover.clamp(0.0, 1.0) * smoothstep(c.cover_slope_lo, c.cover_slope_hi, normal_y) }
 
+/// The ground at one place: (wetness, snow cover) 0..1. Wetness is the rain's or the climate map's ground wetness, whichever is more
+/// (`climate::wetness`); snow is [`snow_cover`] of the live cover and the climate map's ground snow. Under a roof neither reaches it: (0, 0).
+pub fn ground_at(c: &RainCfg, wetness: f32, live_cover: f32, place: &crate::climate::Place, sheltered: bool) -> (f32, f32) {
+    if sheltered { return (0.0, 0.0); }
+    (crate::climate::wetness(place, wetness).clamp(0.0, 1.0), snow_cover(c, live_cover, place.snow))
+}
+
 // ---- hash: PCG (O'Neill), u32 wrapping arithmetic, identical in rain.wesl (`pcg`, `hash01`). ----
 pub const PCG_MUL: u32 = 747796405;
 pub const PCG_ADD: u32 = 2891336453;
@@ -548,5 +555,21 @@ mod tests {
         assert_eq!(snow_mask(&rc(), 0.5, 1.0), 0.5);
         let m = snow_mask(&rc(), 1.0, 0.725);
         assert!(0.0 < m && m < 1.0, "{m}");
+    }
+    #[test]
+    fn ground_at_is_dry_and_bare_under_a_roof() {
+        let place = crate::climate::Place { snow: 1.0, wetness: 1.0, ..Default::default() };
+        assert_eq!(ground_at(&rc(), 1.0, 1.0, &place, true), (0.0, 0.0));
+    }
+    #[test]
+    fn ground_at_takes_the_more_of_rain_and_climate() {
+        let place = crate::climate::Place { wetness: 0.5, snow: 0.6, ..Default::default() };
+        assert_eq!(ground_at(&rc(), 0.2, 0.3, &place, false), (0.5, 0.6));
+        assert_eq!(ground_at(&rc(), 0.7, 0.8, &crate::climate::Place::default(), false), (0.7, 0.8));
+    }
+    #[test]
+    fn ground_at_snow_follows_cover_force() {
+        let place = crate::climate::Place { snow: 1.0, ..Default::default() };
+        assert_eq!(ground_at(&RainCfg { cover_force: Some(0.0), ..Default::default() }, 0.0, 1.0, &place, false).1, 0.0);
     }
 }

@@ -3765,6 +3765,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "image",
+ "nephthene",
  "nephthene_core",
  "serde",
  "serde_json",
