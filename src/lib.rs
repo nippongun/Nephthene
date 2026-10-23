@@ -7,7 +7,10 @@
 //! The scene supplies a camera with [`bevy::pbr::AtmosphereSettings`] (plus `Exposure` / `DistanceFog` if it wants them driven) and one
 //! `DirectionalLight` marked [`NephtheneSun`]. The plugin spawns the Atmosphere, the moon and the stars, moves the sun along the clock,
 //! draws volumetric clouds with cloud shadows, rain, optional storms, optional terrain-following ground fog, and (feature `panel`) a mouse-driven weather panel.
-//! Runtime state: [`Weather`], [`RainState`], [`Storms`], [`Flashes`], [`Orographic`]; messages [`LightningStrike`] and [`Thunder`]; mark a mesh [`WetGround`] to let rain wet it, or [`Shelter`] to keep rain out from under it.
+//! Runtime state: [`Weather`], [`RainState`], [`Storms`], [`Flashes`], [`Orographic`]; messages [`LightningStrike`] and [`Thunder`];
+//! [`Surfaces`] reads the wetness and snow on the ground at any (x, z). Mark a mesh [`Shelter`] to keep precipitation out from under it.
+//! Nephthene publishes state and draws only the weather itself: it writes to none of the host's materials and ships none, so surface
+//! looks stay the host's choice (`examples/sky.rs` has a worked ground material built from [`Surfaces`]).
 //! Every tunable is in [`Config`] (re-exported from `nephthene_core`).
 use bevy::prelude::*;
 pub use nephthene_core::{self as core, Config, WeatherMap};
@@ -28,7 +31,7 @@ pub use lightning::{Flashes, LightningStrike, Thunder};
 pub use orographic::Orographic;
 #[cfg(feature = "panel")]
 pub use panel::{Panel, Wid};
-pub use rain::{Ground, RainState, Shelter, SurfaceMaterial, WeatherSurface, WetGround};
+pub use rain::{Ground, RainState, Shelter, Surfaces};
 pub use sky::{Moon, NephtheneSun, Weather};
 pub use storms::Storms;
 
