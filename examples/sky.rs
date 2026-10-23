@@ -130,13 +130,13 @@ fn camera_bundle(cfg: &Config) -> impl Bundle {
     )
 }
 
-/// Flat ground (or the `--terrain` mesh over a lowered plane) and the sun; the camera is spawned by the mode (look-around or shot).
+/// Flat ground (or the `--terrain` mesh over a lowered curved disc) and the sun; the camera is spawned by the mode (look-around or shot).
 fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, mut surf: ResMut<Assets<SurfaceMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>, roof: Option<Res<Roof>>) {
     let ground = surf.add(SurfaceMaterial { base: StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() }, extension: WeatherSurface::default() });
     // Under the terrain the plane sits just below its lowest point, so it shows only past the terrain's edge.
     let below = terrain.as_ref().map_or(0.0, |t| t.0.y.iter().cloned().fold(f32::MAX, f32::min) - 10.0);
-    // 1000 km: from a few km up the horizon is over 200 km away, and a 60 km plane's edge showed as a line with the planet's ground beyond.
-    commands.spawn((Name::new("Ground"), Mesh3d(meshes.add(Plane3d::default().mesh().size(1_000_000.0, 1_000_000.0))), MeshMaterial3d(ground.clone()), Transform::from_xyz(0.0, below, 0.0)));
+    // A curved disc: a flat plane's far edge showed as a line under the horizon from altitude (the planet's horizon dips below it).
+    commands.spawn((Name::new("Ground"), Mesh3d(meshes.add(ground_disc())), MeshMaterial3d(ground.clone()), Transform::from_xyz(0.0, below, 0.0)));
     if let Some(t) = terrain { commands.spawn((Name::new("Terrain"), Mesh3d(meshes.add(terrain_mesh(&t.0))), MeshMaterial3d(ground))); }
     commands.spawn((
         NephtheneSun, DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },
@@ -153,6 +153,37 @@ fn terrain_mesh(g: &nephthene::core::rain::HeightGrid) -> Mesh {
     let idx: Vec<u32> = (0..g.h - 1).flat_map(|j| (0..g.w - 1).flat_map(move |i| { let a = j * g.w + i; [a, a + 1, a + g.w, a + 1, a + g.w + 1, a + g.w] })).collect();
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos).with_inserted_indices(Indices::U32(idx)).with_computed_smooth_normals()
+}
+
+/// The ground beyond the terrain: a disc about 540 km in radius that drops with the planet's curve (y = -d^2 / 2R), so from any camera
+/// height up to about 23 km its edge lies below the horizon. Rings grow outward (fine near the centre, coarse far away).
+fn ground_disc() -> Mesh {
+    use bevy::{asset::RenderAssetUsages, mesh::{Indices, PrimitiveTopology}};
+    // ponytail: R is Bevy's Atmosphere::earth inner radius (6360 km), which the plugin spawns; read it from the Atmosphere to support
+    // other planets. The ring spacing (first ring 50 m, x1.2 per ring, 52 rings) and the 128 segments are mesh resolution, not look.
+    const R: f32 = 6_360_000.0;
+    let (segs, rings) = (128u32, 52u32);
+    let mut pos = vec![[0.0f32, 0.0, 0.0]];
+    let mut nrm = vec![[0.0f32, 1.0, 0.0]];
+    for k in 0..rings {
+        let d = 50.0 * 1.2f32.powi(k as i32);
+        for s in 0..segs {
+            let a = s as f32 / segs as f32 * std::f32::consts::TAU;
+            let (x, z) = (d * a.cos(), d * a.sin());
+            pos.push([x, -d * d / (2.0 * R), z]);
+            nrm.push(Vec3::new(x / R, 1.0, z / R).normalize().to_array());
+        }
+    }
+    // Counter-clockwise seen from above (+y faces up): centre fan, then quads between rings.
+    let mut idx: Vec<u32> = (0..segs).flat_map(|s| [0, 1 + (s + 1) % segs, 1 + s]).collect();
+    for k in 0..rings - 1 {
+        for s in 0..segs {
+            let (a, b) = (1 + k * segs + s, 1 + k * segs + (s + 1) % segs);
+            idx.extend([a, b, a + segs, b, b + segs, a + segs]);
+        }
+    }
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos).with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm).with_inserted_indices(Indices::U32(idx))
 }
 
 // ---------------------------------------------------------------- interactive

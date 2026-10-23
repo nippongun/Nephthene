@@ -262,9 +262,9 @@ pub struct Clouds {
     pub debug_view: u32,
     /// Print GPU pass timings every 60 frames (needs TIMESTAMP_QUERY).
     pub pass_timing: bool,
-    /// Guard the air's transmittance between the eye and a cloud or rain shaft: where the far LUT sample underflows (long grazing rays
-    /// at the horizon) the transmittance to space stands in. Test switch (red arm): false uses Bevy's unguarded ratio, which shows as
-    /// black-and-white speckle on distant clouds at the horizon.
+    /// The air's transmittance between the eye and a cloud or rain shaft integrates the medium's density along the path (8 samples).
+    /// Test switch (red arm): false uses Bevy's LUT ratio, which breaks on long grazing rays at the horizon (black-and-white speckle
+    /// on distant clouds).
     pub air_guard: bool,
     /// Clouds meet the terrain: the cloud composite writes the cloud front's depth, so a cloud in front of terrain covers it and terrain
     /// in front of a cloud hides it, and the march runs below the horizon up to the ground and ends where the ray enters the terrain

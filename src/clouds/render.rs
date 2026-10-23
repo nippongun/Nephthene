@@ -14,7 +14,7 @@ use bevy::{
     },
     diagnostic::FrameCount,
     ecs::{query::ROQueryItem, system::{SystemParamItem, lifetimeless::Read}},
-    pbr::{ExtractedAtmosphere, GpuAtmosphereSettings, resources::{AtmosphereSampler, AtmosphereTextures, AtmosphereTransform, AtmosphereTransforms, AtmosphereTransformsOffset, GpuAtmosphere}},
+    pbr::{ExtractedAtmosphere, GpuAtmosphereSettings, GpuScatteringMedium, ScatteringMediumSampler, resources::{AtmosphereSampler, AtmosphereTextures, AtmosphereTransform, AtmosphereTransforms, AtmosphereTransformsOffset, GpuAtmosphere}},
     prelude::*,
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
@@ -199,6 +199,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     let atmo = BindGroupLayoutDescriptor::new("cloud_atmosphere", &BindGroupLayoutEntries::with_indices(S::FRAGMENT, (
         (0, uniform_buffer::<GpuAtmosphere>(true)), (1, uniform_buffer::<GpuAtmosphereSettings>(true)),
         (2, uniform_buffer::<AtmosphereTransform>(true)), (3, uniform_buffer::<ViewUniform>(true)),
+        (5, texture_2d(TextureSampleType::default())), (7, sampler(SamplerBindingType::Filtering)),
         (8, texture_2d(TextureSampleType::default())), (10, texture_2d(TextureSampleType::default())),
         (12, sampler(SamplerBindingType::Filtering)),
     )));
@@ -444,15 +445,16 @@ fn queue_shaft(
 fn prepare_bind_groups(
     mut commands: Commands, params: Option<Res<CloudParams>>, render: Option<Res<CloudRender>>, cache: Res<PipelineCache>, device: Res<RenderDevice>,
     images: Res<RenderAssets<GpuImage>>, atmo_sampler: Res<AtmosphereSampler>, view_uniforms: Res<ViewUniforms>, transforms: Res<AtmosphereTransforms>,
-    atmo_uniforms: Res<ComponentUniforms<GpuAtmosphere>>, settings_uniforms: Res<ComponentUniforms<GpuAtmosphereSettings>>,
-    views: Query<(Entity, &AtmosphereTextures, &CloudTextures, &CloudResolveUbo), With<ExtractedAtmosphere>>,
+    atmo_uniforms: Res<ComponentUniforms<GpuAtmosphere>>, settings_uniforms: Res<ComponentUniforms<GpuAtmosphereSettings>>, gpu_media: Res<RenderAssets<GpuScatteringMedium>>, medium_sampler: Res<ScatteringMediumSampler>,
+    views: Query<(Entity, &ExtractedAtmosphere, &AtmosphereTextures, &CloudTextures, &CloudResolveUbo)>,
 ) {
     let (Some(params), Some(render)) = (params, render) else { return };
     let (Some(base), Some(detail), Some(map), Some(ground), Some(oro)) = (images.get(&params.base), images.get(&params.detail), images.get(&params.map), images.get(&params.ground), images.get(&params.oro)) else { return };
     let (Some(a), Some(s), Some(t), Some(v), Some(u), Some(storms), Some(flash)) = (atmo_uniforms.binding(), settings_uniforms.binding(), transforms.uniforms().binding(), view_uniforms.uniforms.binding(), render.ubo.binding(), render.storm_ubo.binding(), render.flash_ubo.binding()) else { return };
-    for (e, atmo, tex, ubo) in &views {
+    for (e, extracted, atmo, tex, ubo) in &views {
+        let Some(medium) = gpu_media.get(extracted.medium) else { continue };
         let atmo_bg = device.create_bind_group("cloud_atmosphere", &cache.get_bind_group_layout(&render.atmo), &BindGroupEntries::with_indices((
-            (0, a.clone()), (1, s.clone()), (2, t.clone()), (3, v.clone()),
+            (0, a.clone()), (1, s.clone()), (2, t.clone()), (3, v.clone()), (5, &medium.density_lut_view), (7, medium_sampler.sampler()),
             (8, &atmo.transmittance_lut.default_view), (10, &atmo.sky_view_lut.default_view), (12, &**atmo_sampler),
         )));
         let cloud = device.create_bind_group("cloud_data", &cache.get_bind_group_layout(&render.cloud), &BindGroupEntries::sequential((

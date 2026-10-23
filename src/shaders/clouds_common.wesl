@@ -2,8 +2,8 @@
 // uses group 0, the others group 1), so textures and the uniform come in as arguments. Every constant here is untuned.
 import bevy_pbr::atmosphere::{
     bindings::atmosphere,
-    bruneton_functions::{ray_intersects_ground, sample_transmittance_lut_segment},
-    functions::{sample_transmittance_lut, get_local_r},
+    bruneton_functions::sample_transmittance_lut_segment,
+    functions::{sample_transmittance_lut, sample_density_lut, get_local_r},
 };
 
 struct Clouds {
@@ -154,26 +154,23 @@ fn atmo_transmittance(r: f32, mu: f32) -> vec3<f32> {
     return sample_transmittance_lut(r, mu);
 }
 
-// ponytail: f16 normals start at 6.1e-5; a LUT sample under 1e-4 has lost most of its precision. A numeric floor, not a look value.
-const AIR_FLOOR: f32 = 1e-4;
+// ponytail: 8 midpoint samples of the medium's density along the segment. The density is smooth (exponential in height), so 8 keep
+// the optical depth close on the longest (90 km) segments; a numeric resolution, not a look value. Lift into config if banding shows.
+const AIR_STEPS: f32 = 8.0;
 
-// The air's transmittance over `t` m from radius `r` along `mu` (eye to cloud or shaft). Bevy's sample_transmittance_lut_segment
-// divides two transmittance-LUT samples; on long grazing rays near the horizon the far one underflows in the f16 LUT, so the ratio
-// is 0/0 (NaN, drawn black) or x/0 (clamped to 1: a far cloud with no haze, drawn white): black-and-white speckle on distant clouds
-// at the horizon. Where the far sample is under AIR_FLOOR, the near one stands in: the transmittance to space (or, for a ray that
-// meets the ground, from the far point back up), a lower bound on the segment's, so the haze wins. `guard` 0 = Bevy's (red arm).
+// The air's transmittance over `t` m from radius `r` along `mu` (eye to cloud or shaft): the medium's extinction (Bevy's density
+// LUT: absorption + scattering) integrated along the segment, exp(-optical depth), per channel. Bevy's sample_transmittance_lut_segment
+// divides two transmittance-LUT samples instead; on long grazing rays at the horizon the far one underflows in the f16 LUT (0/0 drew
+// black, x/0 drew white), and a per-channel fallback to the near sample tinted distant clouds blue. `guard` 0 = Bevy's (red arm).
 fn air_segment(r: f32, mu: f32, t: f32, guard: u32) -> vec3<f32> {
     if guard == 0u { return sample_transmittance_lut_segment(r, mu, t); }
-    let r_t = get_local_r(r, mu, t);
-    let mu_t = clamp((r * mu + t) / r_t, -1.0, 1.0);
-    var near = sample_transmittance_lut(r, mu);
-    var far = sample_transmittance_lut(r_t, mu_t);
-    if ray_intersects_ground(r, mu) {
-        near = sample_transmittance_lut(r_t, -mu_t);
-        far = sample_transmittance_lut(r, -mu);
+    let dt = t / AIR_STEPS;
+    var od = vec3(0.0);
+    for (var i = 0.0; i < AIR_STEPS; i += 1.0) {
+        let r_i = get_local_r(r, mu, (i + 0.5) * dt);
+        od += (sample_density_lut(r_i, 0.0) + sample_density_lut(r_i, 1.0)) * dt;
     }
-    let ratio = min(near / max(far, vec3(AIR_FLOOR)), vec3(1.0));
-    return select(near, ratio, far > vec3(AIR_FLOOR));
+    return exp(-od);
 }
 
 // Base shape 0..1 (uniform): the 128^3 Perlin-Worley tile sampled at two incommensurate scales, the second rotated 37 deg about
