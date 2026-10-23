@@ -20,6 +20,9 @@ Read `AGENTS.md` first; its rules apply. This file adds how a session works.
   over one. `main` is protected: changes land through PRs.
 - Before starting, check open branches and PRs for work in flight on the same files; do not collide with another session.
 - Push the branch when the final verdict passes; open the PR when the owner asks (they usually do).
+- Every PR body carries the owner's full check list, so they can run the rest on their laptop: this PR's checks, and every open
+  `docs/handover.md` row (both sessions'). Each item gives the exact command, the expected numbers (with the lavapipe values), the
+  red arm, the look call, and the handover row it closes. Keep it current when the PR or the handover changes.
 
 ## Reporting
 - Intermediate messages: terse or none. No narration of steps.
