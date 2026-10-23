@@ -58,6 +58,23 @@ pub fn snow_cover(c: &RainCfg, live: f32, climate_snow: f32) -> f32 { c.cover_fo
 /// Snow on a surface whose normal points `normal_y` up: the cover, where the ground is flat enough to hold it. surface.wesl mirrors it.
 pub fn snow_mask(c: &RainCfg, cover: f32, normal_y: f32) -> f32 { cover.clamp(0.0, 1.0) * smoothstep(c.cover_slope_lo, c.cover_slope_hi, normal_y) }
 
+/// What the weather has done to the ground at one point. State, not a look: the host decides how wetness and snow are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Surface { pub wetness: f32, pub snow: f32 }
+
+/// Wetness and snow on the ground at one point: the live rain and cover against the climate map's standing ground wetness and snow,
+/// each taking whichever is more (`climate::wetness`, [`snow_cover`]). Under a roof both are 0, because nothing fell there;
+/// `cover_force` does not override that, since it says how much fell and not where. `rain.ignore_shelter` is the switch that ignores
+/// roofs: it empties the roof grid, so `roofed` is then false everywhere.
+pub fn surface_at(c: &RainCfg, live_wet: f32, live_snow: f32, climate: &crate::climate::Place, roofed: bool) -> Surface {
+    if roofed { return Surface { wetness: 0.0, snow: 0.0 }; }
+    Surface { wetness: crate::climate::wetness(climate, live_wet).clamp(0.0, 1.0), snow: snow_cover(c, live_snow, climate.snow) }
+}
+
+/// A roof stands over the ground at (x, z), so precipitation never reaches it. [`sheltered`] answers the same question for a point in
+/// the air (the camera); this one is about the ground itself.
+pub fn roofed_at(g: &dyn Ground, roofs: &HeightGrid, x: f32, z: f32) -> bool { roofs.top(x, z) > g.height(x, z) }
+
 // ---- hash: PCG (O'Neill), u32 wrapping arithmetic, identical in rain.wesl (`pcg`, `hash01`). ----
 pub const PCG_MUL: u32 = 747796405;
 pub const PCG_ADD: u32 = 2891336453;
@@ -258,6 +275,48 @@ mod tests {
     fn rc() -> RainCfg { RainCfg::default() }
     fn sh() -> Shafts { Shafts::default() }
     fn here(coverage: f32, precip: f32) -> Local { Local { coverage, precip, dust: 0.0 } }
+    /// A climate with no standing wetness or snow, so only the live weather shows.
+    fn dry() -> crate::climate::Place { crate::climate::Place::default() }
+
+    /// A roof means nothing fell: both channels read 0 there, soaking rain and deep snow alike, and open ground beside it is unaffected.
+    #[test]
+    fn a_roof_keeps_the_ground_under_it_dry_and_bare() {
+        let c = RainCfg { cover_force: None, ..Default::default() };
+        let g = HeightGrid::flat(0.0);
+        // One 20 m box whose top is 4 m up, centred on the origin.
+        let roofs = shelter_grid(&[(Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 4.0, 10.0))], 2.0, 4096);
+        assert!(roofed_at(&g, &roofs, 0.0, 0.0), "under the box");
+        let wet_climate = crate::climate::Place { snow: 1.0, wetness: 1.0, ..Default::default() };
+        let under = surface_at(&c, 1.0, 1.0, &wet_climate, roofed_at(&g, &roofs, 0.0, 0.0));
+        assert_eq!(under, Surface { wetness: 0.0, snow: 0.0 }, "soaking rain, standing wetness and deep snow still leave a roofed floor bare");
+        let out = surface_at(&c, 1.0, 1.0, &dry(), roofed_at(&g, &roofs, 100.0, 100.0));
+        assert_eq!((out.wetness, out.snow), (1.0, 1.0), "open ground gets the weather");
+    }
+
+    /// The gate's red arm: with no roofs at all (what `rain.ignore_shelter` produces) the same point is wet.
+    #[test]
+    fn with_no_roofs_the_same_point_is_wet() {
+        let (g, none) = (HeightGrid::flat(0.0), shelter_grid(&[], 2.0, 4096));
+        assert!(!roofed_at(&g, &none, 0.0, 0.0), "no roofs, nothing is roofed");
+        assert_eq!(surface_at(&rc(), 1.0, 0.0, &dry(), false).wetness, 1.0);
+    }
+
+    /// Each channel takes whichever is more, the live weather or the climate map's standing value; `cover_force` replaces the snow
+    /// but not a roof; both channels clamp.
+    #[test]
+    fn surface_takes_whichever_is_more_and_clamps() {
+        let c = RainCfg { cover_force: None, ..Default::default() };
+        let snowy = |snow| crate::climate::Place { snow, ..Default::default() };
+        assert_eq!(surface_at(&c, 0.5, 0.2, &snowy(0.7), false).snow, 0.7, "climate snow deeper");
+        assert_eq!(surface_at(&c, 0.5, 0.8, &snowy(0.1), false).snow, 0.8, "live cover deeper");
+        let marsh = crate::climate::Place { wetness: 0.6, ..Default::default() };
+        assert_eq!(surface_at(&c, 0.1, 0.0, &marsh, false).wetness, 0.6, "a wet climate keeps the ground damp without rain");
+        assert_eq!(surface_at(&c, 0.9, 0.0, &marsh, false).wetness, 0.9, "rain beats it when heavier");
+        assert_eq!(surface_at(&c, 3.0, 0.0, &dry(), false).wetness, 1.0, "clamped");
+        let forced = RainCfg { cover_force: Some(0.25), ..Default::default() };
+        assert_eq!(surface_at(&forced, 0.0, 0.9, &snowy(0.9), false).snow, 0.25, "cover_force replaces both");
+        assert_eq!(surface_at(&forced, 0.0, 0.9, &snowy(0.9), true).snow, 0.0, "but not under a roof");
+    }
 
     #[test]
     fn faint_map_rain_is_dry() {

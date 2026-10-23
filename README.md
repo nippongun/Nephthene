@@ -19,7 +19,9 @@ app.add_plugins(NephthenePlugin::new(Config::load(path)?));     // from JSON
 ```
 
 The scene provides a camera with `AtmosphereSettings` (add `Exposure` / `DistanceFog` to have them driven) and one `DirectionalLight` with the
-`NephtheneSun` marker. Mark a ground mesh `WetGround` to let rain wet it, insert `Ground(HeightGrid)` for terrain-aware rain. Read `Weather`
+`NephtheneSun` marker. Insert `Ground(HeightGrid)` for terrain-aware rain and mark roof meshes `Shelter`. Nephthene draws the weather
+itself and publishes state: it writes to no material of yours and ships none, so read `Surfaces` for the wetness and snow on the ground
+at any (x, z) and draw it how you like (`examples/sky.rs` has a worked ground material). Read `Weather`
 (hour, wind, local coverage/precip), `RainState`, `Storms`. Order your systems with `NephtheneSet::{Tick, Drive}`. Everything else is `Config`.
 
 ## Run

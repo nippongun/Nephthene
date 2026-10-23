@@ -1,14 +1,16 @@
 //! Rain FX, the render half. Streaks and ground splashes are quads of two static meshes whose corners the vertex shader
 //! (shaders/rain.wesl) computes from the quad id, time and one uniform: no CPU particle state. The maths and hash are
-//! `nephthene_core::rain` (pure, unit-tested; the shader mirrors it). Wet ground darkens and glosses entities marked [`WetGround`].
+//! `nephthene_core::rain` (pure, unit-tested; the shader mirrors it).
 //! Reads only the `Weather` resource (map sample at the atmosphere camera, wind, clock) plus `RainState.panel` (panel toggle) and
 //! `rain.force` from the config (forces rain everywhere). `RainState.intensity` / `.wetness` are for audio and gameplay.
 //! Ground: streak bottoms and splashes sit on the optional [`Ground`] height grid, otherwise flat 0.
 //! Snow and sleet use the same streak quads: the share `kind` of them (air `precip_kind`, or `rain.kind_force`) draw as slow, swirling round flakes.
 //! Only the falling quads (a prefix of the ids) are drawn: the plugin swaps in the smallest prebuilt prefix mesh that holds them (`rain.draw_levels`).
 //! Roofs: meshes marked [`Shelter`] stop rain, snow and splashes on the top of their bounding box (a world-fixed roof grid).
-//! ponytail: the ground under a roof still gets wet (WetGround is one material), and shelter heights come from axis-aligned boxes.
-//! Ground that opts into [`SurfaceMaterial`] darkens with wetness and turns white with snow cover (built while it snows, melted above `rain.melt_c`).
+//! ponytail: shelter heights come from axis-aligned boxes.
+//! Surfaces are the host's: this module renders falling precipitation and publishes state ([`RainState`], and [`Surfaces`] for the
+//! wetness and snow at a given (x, z)). It writes to no material of the host's, and ships none. `examples/sky.rs` has a worked
+//! ground material built from that state.
 use crate::sky::Weather;
 use bevy::{
     asset::embedded_asset,
@@ -18,7 +20,8 @@ use bevy::{
     camera::primitives::Aabb,
     mesh::{Indices, PrimitiveTopology},
     mesh::MeshVertexBufferLayoutRef,
-    pbr::{AtmosphereSettings, ExtendedMaterial, Material, MaterialExtension, MaterialPipeline, MaterialPipelineKey, MaterialPlugin, MeshMaterial3d},
+    ecs::system::SystemParam,
+    pbr::{AtmosphereSettings, Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin, MeshMaterial3d},
     prelude::*,
     reflect::TypePath,
     render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError},
@@ -30,7 +33,6 @@ pub struct RainPlugin;
 impl Plugin for RainPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/rain.wesl");
-        embedded_asset!(app, "shaders/surface.wesl");
         let cfg = &app.world().resource::<Weather>().cfg.rain;
         let force = cfg.force.inspect(|x| assert!((0.0..=1.0).contains(x), "rain.force = {x}: want 0..=1"));
         let enabled = cfg.enabled;
@@ -38,46 +40,20 @@ impl Plugin for RainPlugin {
         let snowing = r::kind(cfg, app.world().resource::<Weather>().air.precip_kind) > 0.5;
         // A forced rain has been falling "for a while": start wet, or under snow when the air gives snow.
         let (wetness, snow_cover) = match (started, snowing) { (true, false) => (1.0, 0.0), (true, true) => (0.0, 1.0), _ => (0.0, 0.0) };
-        app.add_plugins((MaterialPlugin::<RainMaterial>::default(), MaterialPlugin::<SurfaceMaterial>::default()))
+        app.add_plugins(MaterialPlugin::<RainMaterial>::default())
             .insert_resource(RainState { force, wetness, snow_cover, ..default() });
         // Off: no quads and no rain systems, so nothing runs per frame. RainState stays at rest (intensity 0, wetness 0).
         if enabled {
             app.add_systems(PostStartup, spawn.after(crate::sky::setup))
-                .add_systems(Update, (roofs, state.before(crate::NephtheneSet::Drive), drive, wet_ground, surface).chain().after(crate::NephtheneSet::Tick));
+                .add_systems(Update, (roofs, state.before(crate::NephtheneSet::Drive), drive).chain().after(crate::NephtheneSet::Tick));
         }
     }
 }
-
-/// Marks a mesh whose `StandardMaterial` gets wet (darker, glossier) in rain. Its dry roughness and reflectance are read at the first sight.
-#[derive(Component)]
-pub struct WetGround;
 
 /// Marks a mesh precipitation stops on (a roof, an overhang): rain, snow and splashes land on the top of its world bounding box and
 /// none falls below it. The box is axis-aligned, so mark roof meshes, not whole buildings with open sides.
 #[derive(Component)]
 pub struct Shelter;
-
-/// The weather surface: a [`StandardMaterial`] that darkens and glosses with wetness and turns white with snow cover where the ground
-/// is flat enough to hold it. Hosts opt in by giving ground meshes a [`SurfaceMaterial`]; the plugin writes the weather into every one.
-pub type SurfaceMaterial = ExtendedMaterial<StandardMaterial, WeatherSurface>;
-
-/// The weather part of a [`SurfaceMaterial`]; start from `WeatherSurface::default()`.
-#[derive(Asset, TypePath, AsBindGroup, Clone)]
-pub struct WeatherSurface { #[uniform(100)] gpu: SurfaceGpu }
-impl Default for WeatherSurface { fn default() -> Self { Self { gpu: surface_gpu(&w::RainCfg::default(), 0.0, 0.0) } } }
-impl MaterialExtension for WeatherSurface {
-    fn fragment_shader() -> ShaderRef { "embedded://nephthene/shaders/surface.wesl".into() }
-}
-
-/// Uniform for surface.wesl (field order identical in the shader).
-#[derive(Clone, Copy, Default, ShaderType)]
-struct SurfaceGpu {
-    snow_color: Vec3, wet: f32, snow: f32, wet_darken: f32, wet_roughness: f32, snow_roughness: f32, slope_lo: f32, slope_hi: f32,
-}
-
-fn surface_gpu(c: &w::RainCfg, wet: f32, snow: f32) -> SurfaceGpu {
-    SurfaceGpu { snow_color: Vec3::from(c.snow_color), wet, snow, wet_darken: c.wet_darken, wet_roughness: c.wet_roughness, snow_roughness: c.snow_roughness, slope_lo: c.cover_slope_lo, slope_hi: c.cover_slope_hi }
-}
 
 /// Optional terrain heights the rain and rain shafts stop on; absent = flat 0. Insert before PostStartup.
 #[derive(Resource)]
@@ -89,8 +65,8 @@ struct Roofs { grid: r::HeightGrid, tex: Handle<Image> }
 
 /// Live rain. `intensity` 0..1 at the camera, `wetness` 0..1 of the ground, `vel` the drop velocity (m/s). `snow_vel` the flake velocity (m/s),
 /// `kind` the precipitation kind 0 rain .. 1 snow (sleet between) at the camera, `sheltered` the camera stands under a [`Shelter`]. `panel` is the panel toggle's
-/// forced precip, `force` is the config's `rain.force`; either replaces the map. `snow_cover` 0..1 the ground's snow (live model; a [`SurfaceMaterial`]
-/// shows it, or the climate map's ground snow if more).
+/// forced precip, `force` is the config's `rain.force`; either replaces the map. `snow_cover` 0..1 the ground's snow from the live
+/// model. These are values at the camera; [`Surfaces`] gives wetness and snow at a chosen (x, z), with roofs and the climate map folded in.
 #[derive(Resource, Default, Clone, Debug)]
 pub struct RainState { pub intensity: f32, pub wetness: f32, pub snow_cover: f32, pub vel: Vec3, pub snow_vel: Vec3, pub kind: f32, pub sheltered: bool, pub panel: Option<f32>, pub force: Option<f32> }
 impl RainState {
@@ -228,28 +204,36 @@ fn drive(time: Res<Time>, wx: Res<Weather>, rain: Res<RainState>, roofs: Option<
     }
 }
 
-/// Wet ground: darkens and glosses the `StandardMaterial` of entities marked [`WetGround`], from their dry roughness and reflectance (read once).
-fn wet_ground(rain: Res<RainState>, wx: Res<Weather>, ground: Query<&MeshMaterial3d<StandardMaterial>, With<WetGround>>, mut mats: ResMut<Assets<StandardMaterial>>, mut last: Local<f32>, mut dry: Local<std::collections::HashMap<AssetId<StandardMaterial>, (Color, f32, f32)>>) {
-    if (rain.wetness - *last).abs() < wx.cfg.rain.wet_epsilon { return; }
-    for m in &ground {
-        let Some(mut mat) = mats.get_mut(&m.0) else { continue };
-        let (base, rough0, refl0) = *dry.entry(m.0.id()).or_insert((mat.base_color, mat.perceptual_roughness, mat.reflectance));
-        let (k, rough, refl) = r::wet_look(&wx.cfg.rain, rain.wetness, rough0, refl0);
-        let b = base.to_linear();
-        (mat.base_color, mat.perceptual_roughness, mat.reflectance) = (Color::linear_rgba(b.red * k, b.green * k, b.blue * k, b.alpha), rough, refl);
-        *last = rain.wetness;
-    }
+/// Reads the weather's effect on the ground at any (x, z): wetness and snow, as state. Nephthene renders falling precipitation and
+/// nothing else, so a host draws this however it likes — `examples/sky.rs` has a worked ground material. Honours [`Shelter`] roofs
+/// (nothing falls under one) and the climate map's standing ground wetness and snow. Needs no registration, so it works in a host
+/// that never adds [`NephthenePlugin`](crate::NephthenePlugin); `Ground` and the roofs are optional and absent means flat and open.
+///
+/// ```ignore
+/// fn paint(surfaces: Surfaces, mut q: Query<(&Transform, &mut MyGroundMaterial)>) {
+///     for (t, mut m) in &mut q { let s = surfaces.at(t.translation.x, t.translation.z); m.wet = s.wetness; m.snow = s.snow; }
+/// }
+/// ```
+#[derive(SystemParam)]
+pub struct Surfaces<'w> {
+    rain: Option<Res<'w, RainState>>,
+    wx: Option<Res<'w, Weather>>,
+    roofs: Option<Res<'w, Roofs>>,
+    ground: Option<Res<'w, Ground>>,
 }
 
-/// Writes the weather into every [`SurfaceMaterial`]: wetness and snow cover (`rain::snow_cover`: the live cover or the climate map's
-/// ground snow at the camera). Only when either moved by `rain.wet_epsilon` or a material was added, so the materials are not rewritten each frame.
-fn surface(rain: Res<RainState>, wx: Res<Weather>, mut mats: ResMut<Assets<SurfaceMaterial>>, mut last: Local<(f32, f32, usize)>) {
-    let c = &wx.cfg.rain;
-    let snow = r::snow_cover(c, rain.snow_cover, wx.climate_here.snow);
-    let moved = (rain.wetness - last.0).abs() >= c.wet_epsilon || (snow - last.1).abs() >= c.wet_epsilon;
-    if !moved && mats.len() == last.2 { return; }
-    // A newly added material gets the last written values, so a rewrite for it does not move the weather.
-    let (wet, snow) = if moved { (rain.wetness, snow) } else { (last.0, last.1) };
-    for (_, m) in mats.iter_mut() { m.extension.gpu = surface_gpu(c, wet, snow); }
-    *last = (wet, snow, mats.len());
+impl Surfaces<'_> {
+    /// Wetness and snow on the ground at world (x, z). Pure read: `core::rain::surface_at` does the maths and is unit-gated.
+    /// Every input is optional, so this answers in a host that never added the plugin: with no [`Weather`] there is no weather, and
+    /// the ground reads dry and bare.
+    pub fn at(&self, x: f32, z: f32) -> r::Surface {
+        let Some(wx) = self.wx.as_deref() else { return r::Surface::default() };
+        let flat = r::HeightGrid::flat(0.0);
+        let g: &dyn r::Ground = match self.ground.as_deref() { Some(g) => &g.0, None => &flat };
+        let roofed = self.roofs.as_deref().is_some_and(|rf| r::roofed_at(g, &rf.grid, x, z));
+        let [mx, mz] = w::map_xz(&wx.cfg.map, Vec2::ZERO, x, z);
+        let place = w::climate::place(&wx.cfg.climate, wx.climate.as_ref(), mx, mz);
+        let (wet, snow) = self.rain.as_deref().map_or((0.0, 0.0), |r| (r.wetness, r.snow_cover));
+        r::surface_at(&wx.cfg.rain, wet, snow, &place, roofed)
+    }
 }

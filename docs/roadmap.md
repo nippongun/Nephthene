@@ -88,7 +88,10 @@ Two reference GPUs, four tiers, one budget rule. See **Performance**.
 ## Rules (all phases)
 
 - **Separate.** Nothing host-specific in the repo (AGENTS.md rule 7: no game names, assets or IDs). A host hooks in through
-  markers (`NephtheneSun`, `WetGround`), resources (`Ground`, `Weather`, `FogState`, ...), events and config only.
+  markers (`NephtheneSun`, `Shelter`), resources (`Ground`, `Weather`, `FogState`, ...), queries (`Surfaces`), events and config only.
+- **State, not looks.** Nephthene renders the weather itself (sky, clouds, fog, precipitation, flashes) and publishes everything else
+  as state. It writes to no host material and ships none, so a host on any render path can consume it. `examples/sky.rs` is the
+  reference host, not part of the library's surface.
 - **No magic values.** Every tunable is a `Config` field with a documented default, labelled untuned until the owner tunes it.
 - **Proof.** Every feature ships a gate that is red without it and green with it, and keeps its red arm (a config switch). A gate
   whose red arm cannot fail on any renderer is deleted and logged, not kept. Bounds come from a stated budget, never from a
@@ -125,7 +128,7 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 | 6 | Terrain-following volumetric ground fog | have | G15-G19, G21 |
 | 7 | Light shafts through cloud gaps (god rays) | partial | rain shafts only |
 | 8 | Rain particles and surface wetness | partial | no occlusion, density bug open |
-| 9 | Snow particles and accumulation | partial | flakes and sleet in the rain pass from the air's `precip_kind`; G27 shape green, visibility red (look call); snow cover on `SurfaceMaterial` ground (one value at the camera, G29) |
+| 9 | Snow particles and accumulation | partial | flakes and sleet in the rain pass from the air's `precip_kind`; G27 shape green, visibility red (look call); snow cover published by `Surfaces` and drawn by the example's own material (G29) |
 | 10 | Precipitation occlusion (nothing falls indoors) | partial | `Shelter` roof grid from bounding boxes, G28; ground under roofs still wets |
 | 11 | Lightning and thunder | partial | slice 1 in: channel, flash light, strike/thunder messages, G23/G24; on by default, Metal pending |
 | 12 | Storm cells with a lifecycle | partial | analytic capsules, read as lenses |
@@ -283,9 +286,11 @@ white or dusty; each with a red-armed gate.
   construction (C2). Streaks, flakes and splashes stop on roofs and overhangs; wetness and snow cover read it too. Red arm:
   occlusion off.
 - Rain curtains and shafts under cells, virga with high bases, rain intensity from the field.
-- **Weather surface material**: an `ExtendedMaterial<StandardMaterial, _>` the host opts into, replacing the per-entity
-  `WetGround` colour edits: wet darkening, puddles from a noise and slope mask, ripples, snow cover by slope and accumulated
-  depth, dust film. Accumulation and melt per texel in the Phase 2 ground-state field, on the GPU.
+- **Ground state per texel, not a material.** Nephthene ships no surface material and writes to none of the host's (decided
+  2026-10-23): it publishes wetness and snow at a point through `Surfaces`, and the host draws wet darkening, puddles, ripples,
+  snow by slope and depth, and dust film however it likes. What this phase owes that query is resolution: accumulation and melt
+  per texel in the Phase 2 ground-state field on the GPU, so `Surfaces` answers from a field instead of one value at the camera,
+  and a readback or a host-sampled texture for the CPU side. `examples/sky.rs` carries the reference material.
 - **Light shafts through cloud gaps** (scoreboard row 7): the rain-shaft march already exists; drive it from cloud transmittance
   with no rain required. Gate: shaft contrast under a broken deck, red arm the shaft pass off.
 - Rainbows and halos: analytic, sun behind the camera, rain ahead, sun elevation < 42 deg; nearly free.
