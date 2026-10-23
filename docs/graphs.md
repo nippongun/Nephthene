@@ -154,3 +154,20 @@ per-cell `AirCfg` clone in `inputs` (it now runs once a game minute).
 
 **Executor average:** 9.5 / 10 over 8 scored nodes. Every deviation from the spec was reported honestly; none edited a test or a
 budget. The lean deductions went to the three nodes over about 500k input tokens (N3, N4, N5).
+
+## 2026-10-22: orographic upwind lifting base (branch `claude/affectionate-pasteur-qtqvng`)
+
+Goal: lift each cell's air from the lowest ground upwind of it (`orographic.fetch_m`) instead of the tile's lowest ground; gate
+`cloud_lifts_from_the_upwind_ground`, red arm `orographic.tile_base`; no tile cache (measured). The planner prototyped the bake and the
+gate in a scratch copy first (tile base 0.34 cover, upwind 0, flipped march 0.34; a 10 km fetch changed the old gate's lee rain, 25.6 km
+did not). One run.
+
+### Run 1 (`wf_5611d590-6fc`): pass
+
+| Node | Files | Time | Tools | Tokens in / out | Result | Score |
+|---|---|---|---|---|---|---|
+| N1-core | config.rs, orographic.rs | - | - | - | as specified; both axes dry 0.0000, red arm 0.3433, humid 0.506; old gates unchanged; the flipped march fails in a scratch copy | 10 |
+| N2-docs | config.reference.json, 5 docs | - | - | - | reference regenerated (two keys); G31 on lavapipe passes (west 5.91 %, east 0.50 %, red arm 0.000, 288 s); docs filled from measurements and flagged which numbers it did not re-measure | 10 |
+| Final verifier | (read-only) | - | - | - | pass. Full `cargo test --release`; flipped x only, z only, both, and a disabled march (all fail); `--print-config` byte-identical; bake 44 ms vs 12 ms; G31 re-run, same numbers. Note: the bake time is measured on a `HeightGrid` only. | - |
+
+Workflow total: 3 agents, 52 tool calls, 114k subagent tokens, 16.5 min.

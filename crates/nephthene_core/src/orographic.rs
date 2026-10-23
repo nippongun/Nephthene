@@ -140,25 +140,37 @@ pub fn uplift_sensitivity(temp_c: f32, lapse_k_per_km: f32) -> f32 {
 pub struct Tile { pub min_x: f32, pub max_z: f32, pub cell_m: f32, pub n: u32, pub precip: Vec<f32>, pub cover: Vec<f32>, pub centre: [f32; 2], pub wind: [f32; 2], pub temp_c: f32, pub dew_c: f32 }
 
 /// Bake the tile centred on world `centre` (snapped to whole cells) over ground `g`, for the mean wind `wind_xz` (m/s, world XZ, the
-/// direction the air moves) and the air at `air.ref_alt_m` (temperature `temp_c`, dew point `dew_c`). The air is lifted from the tile's
-/// lowest ground and condenses only above its lifting condensation level, `lcl_m_per_k` x the dew point spread there (Espy), so the
-/// terrain is clipped at that height; Cw is the base air's. Precipitation (kg/m^2/s x 3600 = mm/h) and the cloud source rate map to
-/// 0..1 by `full_mm_h`. ponytail: one base for the whole tile (its lowest ground); the upwind ground of each cell is the upgrade.
+/// direction the air moves) and the air at `air.ref_alt_m` (temperature `temp_c`, dew point `dew_c`). Each cell's air is lifted from
+/// the lowest ground upwind of it within `fetch_m` and condenses only above its lifting condensation level, `lcl_m_per_k` x the dew
+/// point spread at that base (Espy), so the terrain is clipped at that height per cell; `tile_base` (red arm) lifts every cell from the
+/// tile's lowest ground instead. Cw is the air's at the tile's lowest ground. Precipitation (kg/m^2/s x 3600 = mm/h) and the cloud
+/// source rate map to 0..1 by `full_mm_h`.
 pub fn bake<G: Ground + ?Sized>(c: &OroCfg, air: &AirCfg, g: &G, centre: [f32; 2], wind_xz: [f32; 2], temp_c: f32, dew_c: f32) -> Tile {
     let n = c.tile_px.max(2);
     let snap = |v: f32| (v / c.cell_m).round() * c.cell_m;
     let half = 0.5 * n as f32 * c.cell_m;
     let (min_x, max_z) = (snap(centre[0]) - half, snap(centre[1]) + half);
     let h: Vec<f32> = (0..n * n).map(|k| g.height(min_x + ((k % n) as f32 + 0.5) * c.cell_m, max_z - ((k / n) as f32 + 0.5) * c.cell_m)).collect();
-    // The air at the tile's lowest ground: temperature and dew point lapse from the reference altitude.
-    let base = h.iter().cloned().fold(f32::INFINITY, f32::min);
-    let dz = (base - air.ref_alt_m) / 1000.0;
-    let t_base = temp_c - air.lapse_k_per_km * dz;
-    let spread = (temp_c - dew_c - (air.lapse_k_per_km - air.dew_lapse_k_per_km) * dz).max(0.0);
-    let lcl = base + c.lcl_m_per_k * spread;
-    let lifted: Vec<f32> = h.iter().map(|&y| (y - lcl).max(0.0)).collect();
+    // The air at height `b` (m): temperature and dew point spread, lapsed from the reference altitude.
+    let air_at = |b: f32| {
+        let dz = (b - air.ref_alt_m) / 1000.0;
+        (temp_c - air.lapse_k_per_km * dz, (temp_c - dew_c - (air.lapse_k_per_km - air.dew_lapse_k_per_km) * dz).max(0.0))
+    };
+    // Each cell's air was lifted from the lowest ground upwind of it within `fetch_m` (its own ground included, sampled every cell
+    // along the mean wind) and condenses above that base's lifting condensation level, so the terrain is clipped there per cell.
+    let tile_min = h.iter().cloned().fold(f32::INFINITY, f32::min);
+    let dir = glam::Vec2::from(wind_xz).normalize_or_zero();
+    let steps = (c.fetch_m / c.cell_m).ceil().max(0.0) as u32;
+    let lifted: Vec<f32> = h.iter().enumerate().map(|(k, &y)| {
+        let (x, z) = (min_x + ((k as u32 % n) as f32 + 0.5) * c.cell_m, max_z - ((k as u32 / n) as f32 + 0.5) * c.cell_m);
+        let base = if c.tile_base { tile_min } else {
+            (1..=steps).map(|s| g.height(x - dir.x * s as f32 * c.cell_m, z - dir.y * s as f32 * c.cell_m)).fold(y, f32::min)
+        };
+        (y - base - c.lcl_m_per_k * air_at(base).1).max(0.0)
+    }).collect();
     // Grid axes: columns run east (+x), rows run south (-z), so the wind's (u, v) is (x, -z).
-    let p = OroParams { cell_m: c.cell_m, wind: [wind_xz[0], -wind_xz[1]], gain: c.gain * uplift_sensitivity(t_base, air.lapse_k_per_km),
+    // Cw is the air's at the tile's lowest ground. ponytail: one Cw for the tile; a per-cell Cw would need one FFT per band of bases.
+    let p = OroParams { cell_m: c.cell_m, wind: [wind_xz[0], -wind_xz[1]], gain: c.gain * uplift_sensitivity(air_at(tile_min).0, air.lapse_k_per_km),
         n_moist: c.n_moist, h_w: c.h_w, tau_c: c.tau_c, tau_f: c.tau_f };
     let out = compute(&lifted, n as usize, n as usize, &p);
     // ponytail: the floor only guards a zero `full_mm_h`.
@@ -269,6 +281,18 @@ mod tests {
         }).collect();
         crate::rain::HeightGrid { min_x: -12800.0, max_z: 12800.0, cell_m: cell, w: n, h: n, y }
     }
+    /// A 1000 m plateau upwind, an 800 m ridge (sigma 3 km) on it with its crest at 1800 m, and a lee valley at 0 m from 8 km past the
+    /// crest (a smoothstep from 2 to 8 km): the grid of `ridge_grid`, with the wind along +x or, `east_west`, along +z.
+    fn plateau_grid(east_west: bool) -> crate::rain::HeightGrid {
+        let (n, cell) = (256u32, 100.0f32);
+        let y = (0..n * n).map(|k| {
+            let (x, z) = (-12800.0 + ((k % n) as f32 + 0.5) * cell, 12800.0 - ((k / n) as f32 + 0.5) * cell);
+            let d = if east_west { z } else { x };
+            let t = ((d - 2000.0) / 6000.0).clamp(0.0, 1.0);
+            800.0 * (-d * d / (2.0 * 3000.0 * 3000.0)).exp() + 1000.0 * (1.0 - t * t * (3.0 - 2.0 * t))
+        }).collect();
+        crate::rain::HeightGrid { min_x: -12800.0, max_z: 12800.0, cell_m: cell, w: n, h: n, y }
+    }
 
     // Gate (roadmap, orographic precipitation): a 10 m/s wind at 10 C over the ridge, the map dry (precip 0, cover 0.5). In Smith &
     // Barstad's theory the air condenses on the ascent, and the fallout delays (tau_c + tau_f = 2000 s) carry the rain about U x tau
@@ -340,5 +364,33 @@ mod tests {
         println!("LCL: dry air (10 K spread) max cover or precip {dry:.4}, saturated air 3 km upwind precip {wet:.3} (budget dry <= 0.001, saturated >= {lo})");
         assert!(dry <= 1e-3 && wet >= lo, "dry air must stay clear over a ridge under its LCL, saturated air must rain");
         assert!(run(&OroCfg { lcl_m_per_k: 0.0, ..OroCfg::default() }).0 > 1e-3, "red arm (lcl_m_per_k 0) passes: the gate cannot fail");
+    }
+
+    // Gate: the air is lifted from its own upwind ground. Air crossing the plateau 8 K above its dew point there saturates 1000 m up
+    // (Espy), at 2000 m, over the 1800 m crest: no cloud and no rain anywhere. Lifted from the lee valley floor instead (the tile's
+    // lowest ground, a 12.7 K spread under the default lapse rates) its LCL would be about 1590 m, and the crest would wear a cap. Air
+    // 4 K above its dew point over the plateau (LCL 1500 m, under the crest) does cloud the ridge. Budgets: the dry air's max cover and
+    // precip <= 1e-3 (the FFT's f32 noise, as `cloud_needs_the_lifting_condensation_level`); the humid air's max cover >= 0.1 (a
+    // visible cloud). Both tile axes run (a westerly and a southerly): a march downwind instead of upwind reaches the lee valley and
+    // fails. Red arm `tile_base`.
+    #[test]
+    fn cloud_lifts_from_the_upwind_ground() {
+        let air = AirCfg::default();
+        let max = |f: &[f32]| f.iter().cloned().fold(0.0, f32::max);
+        // Air at the reference altitude whose dew point spread is `spread` K at the plateau (1000 m).
+        let temp = 15.0;
+        let dew = |spread: f32| temp - spread - (air.lapse_k_per_km - air.dew_lapse_k_per_km) * (1000.0 - air.ref_alt_m) / 1000.0;
+        let run = |c: &OroCfg, ew: bool, spread: f32| {
+            let t = bake(c, &air, &plateau_grid(ew), [0.0, 0.0], if ew { [0.0, 10.0] } else { [10.0, 0.0] }, temp, dew(spread));
+            (max(&t.cover).max(max(&t.precip)), max(&t.cover))
+        };
+        let red = OroCfg { tile_base: true, ..OroCfg::default() };
+        for ew in [false, true] {
+            let (dry, wet, red) = (run(&OroCfg::default(), ew, 8.0).0, run(&OroCfg::default(), ew, 4.0).1, run(&red, ew, 8.0).0);
+            println!("{}: 8 K over the plateau max cover or precip {dry:.4}, red arm (tile base) {red:.4}; 4 K max cover {wet:.3} (budget dry <= 0.001, humid >= 0.1)",
+                if ew { "southerly" } else { "westerly" });
+            assert!(dry <= 1e-3 && wet >= 0.1, "air must lift from its upwind ground: dry {dry}, humid {wet}");
+            assert!(red > 1e-3, "red arm (tile_base) passes: the gate cannot fail");
+        }
     }
 }
