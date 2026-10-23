@@ -10,6 +10,9 @@
 //! `--set clouds.update_div=1`), `--settle frames` (default 60), `--seq count,every` / `--at a,b,c` (several frames per run),
 //! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (drive the panel with synthetic pointer input).
 //! `--terrain`: the test valley (nephthene_core::fog::test_valley) as the ground mesh and the plugin's `Ground`, instead of the flat plane.
+//! `--mountains`: a mountain range (nephthene_core::terrain::mountains: 48 km square, peaks to about 2.9 km, plains either side) as the
+//! ground instead; poses `mtn_west` (west plain, upwind of the default westerly), `mtn_east` (the lee) and `mtn_high` (overview).
+//! `--pose <name>` (interactive): start the flying camera at that pose of examples/poses.json instead of the origin.
 //! `--roof`: a 200 x 200 m slab 4 m up over the origin, marked `Shelter` (precipitation occlusion tests: no rain falls under it).
 //! `--print-config` prints the effective config as JSON and exits (the reference file).
 //! `--describe` (shots): after the settle frames, prints one `DESCRIBE` line: the weather at the camera (`nephthene_core::dash::describe`).
@@ -28,6 +31,7 @@ use bevy::{
     winit::WinitPlugin,
 };
 use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, SurfaceMaterial, Weather, WeatherSurface};
+use nephthene::core::rain::Ground as _;
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone)]
@@ -41,6 +45,11 @@ impl Args {
     fn num<T: std::str::FromStr>(&self, k: &str) -> Option<T> { self.get(k).map(|v| v.parse().unwrap_or_else(|_| die(&format!("{k} {v}: not a number")))) }
 }
 fn die(m: &str) -> ! { eprintln!("{m}"); std::process::exit(4) }
+/// The pose `name` of examples/poses.json; exit 4 if there is none.
+fn pose(name: &str) -> Pose {
+    let poses: Vec<Pose> = serde_json::from_str(include_str!("poses.json")).expect("poses.json");
+    poses.into_iter().find(|p| p.name == name).unwrap_or_else(|| die(&format!("unknown pose {name}")))
+}
 
 /// Default config, then --config, then --hour / --live, then each --set path=json (dotted path into the config tree).
 fn config(a: &Args, shot: bool) -> Config {
@@ -71,6 +80,7 @@ fn main() {
     let shot = args.get("--shot");
     let cfg = config(&args, shot.is_some());
     if args.has("--print-config") { println!("{}", cfg.to_json()); return; }
+    let start = args.get("--pose").map(|n| pose(&n));
     if shot.is_none() && std::env::var("CLAUDECODE").as_deref() == Ok("1") && std::env::var("NEPHTHENE_ALLOW_WINDOW").is_err() {
         eprintln!("refusing to open a window under an agent (CLAUDECODE=1); use --shot, or set NEPHTHENE_ALLOW_WINDOW=1");
         std::process::exit(5);
@@ -89,11 +99,12 @@ fn main() {
         app.add_plugins(plugins);
     }
     if args.has("--terrain") { app.insert_resource(nephthene::Ground(nephthene::core::fog::test_valley())); }
+    if args.has("--mountains") { app.insert_resource(nephthene::Ground(nephthene::core::terrain::mountains())); }
     if args.has("--roof") { app.insert_resource(Roof); }
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     match shot {
         Some(name) => { app.add_plugins(ShotPlugin { name, args }); }
-        None => { app.add_systems(Update, fly); }
+        None => { app.insert_resource(StartPose(start)).add_systems(Update, fly); }
     }
     if let AppExit::Error(c) = app.run() { std::process::exit(c.get() as i32); }
 }
@@ -102,6 +113,8 @@ fn main() {
 struct Cfg(Config);
 #[derive(Resource)]
 struct Roof;
+#[derive(Resource)]
+struct StartPose(Option<Pose>);
 #[derive(Component)]
 struct Cam;
 
@@ -143,11 +156,19 @@ fn terrain_mesh(g: &nephthene::core::rain::HeightGrid) -> Mesh {
 
 // ---------------------------------------------------------------- interactive
 
-fn fly(mut commands: Commands, cfg: Res<Cfg>, cams: Query<Entity, With<Cam>>, mut cam: Query<&mut Transform, With<Cam>>,
+fn fly(mut commands: Commands, cfg: Res<Cfg>, start: Res<StartPose>, ground: Option<Res<nephthene::Ground>>, cams: Query<Entity, With<Cam>>, mut cam: Query<&mut Transform, With<Cam>>,
     mouse: Res<ButtonInput<MouseButton>>, keys: Res<ButtonInput<KeyCode>>, motion: Res<AccumulatedMouseMotion>, scroll: Res<AccumulatedMouseScroll>,
     #[cfg(feature = "panel")] panel: Option<Res<nephthene::Panel>>, time: Res<Time>, mut speed: Local<Option<f32>>) {
     if cams.is_empty() {
-        commands.spawn((camera_bundle(&cfg.0), Transform::from_xyz(0.0, 1.7, 0.0).looking_at(Vec3::new(0.0, 400.0, 1000.0), Vec3::Y)));
+        // At the pose given, else 1.7 m above the ground at the origin (the mountains' origin is a peak), looking up the valley.
+        let t = match &start.0 {
+            Some(p) => Transform::from_translation(Vec3::from(p.pos)).looking_at(Vec3::from(p.look_at), Vec3::Y),
+            None => {
+                let y = ground.as_ref().map_or(0.0, |g| g.0.height(0.0, 0.0)) + 1.7;
+                Transform::from_xyz(0.0, y, 0.0).looking_at(Vec3::new(0.0, y + 400.0, 1000.0), Vec3::Y)
+            }
+        };
+        commands.spawn((camera_bundle(&cfg.0), t));
         return;
     }
     let Ok(mut t) = cam.single_mut() else { return };
@@ -189,8 +210,7 @@ struct ShotPlugin { name: String, args: Args }
 impl Plugin for ShotPlugin {
     fn build(&self, app: &mut App) {
         let a = &self.args;
-        let poses: Vec<Pose> = serde_json::from_str(include_str!("poses.json")).expect("poses.json");
-        let Some(mut p) = poses.into_iter().find(|p| p.name == self.name) else { die(&format!("unknown pose {}", self.name)) };
+        let mut p = pose(&self.name);
         if let Some(s) = a.get("--size") {
             let (w, h) = s.split_once('x').unwrap_or_else(|| die("--size WxH"));
             p.size = Some([w.parse().unwrap_or_else(|_| die("--size")), h.parse().unwrap_or_else(|_| die("--size"))]);

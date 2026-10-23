@@ -16,6 +16,7 @@ pub mod fog;
 pub mod lightning;
 pub mod air;
 pub mod climate;
+pub mod terrain;
 pub use config::{AirCfg, Clock, ClimateCfg, Clouds, Config, Fog, MapCfg, Moon, OroCfg, RainCfg, Shafts, Sky, Stars, Wind};
 use serde::Deserialize;
 

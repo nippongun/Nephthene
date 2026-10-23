@@ -171,3 +171,17 @@ did not). One run.
 | Final verifier | (read-only) | - | - | - | pass. Full `cargo test --release`; flipped x only, z only, both, and a disabled march (all fail); `--print-config` byte-identical; bake 44 ms vs 12 ms; G31 re-run, same numbers. Note: the bake time is measured on a `HeightGrid` only. | - |
 
 Workflow total: 3 agents, 52 tool calls, 114k subagent tokens, 16.5 min.
+
+## 2026-10-23: mountain test terrain (branch `claude/mountains`)
+
+Goal: a mountain range fixture (`terrain::mountains`), `--mountains`, poses `mtn_*`, `--pose` for the live camera, docs. The planner
+prototyped the heightmap (numpy hillshade, then the Rust function in a scratch crate) and handed it over as a file to copy.
+
+| Run | Node | Result | Score |
+|---|---|---|---|
+| `wf_09505f39-8e1` | N1-core | copied, test passes (top 2860 m, crest band 1462 m, plains 60 m) | 10 |
+| | N2-example | all edits right; reported `blocked` on a build warning that is already on main (`panel_test`, read only under the panel feature) | 9 (correct to report; the planner's check was too strict) |
+| `wf_927f6095-77d` | N3-docs | README line, handover row | 10 |
+| | Final verifier | pass, no shots: core tests, warning on HEAD, exit codes 0/4/5, spawn diff, pose heights 29/45/73 m under 250/250/4500, no game names | - |
+
+**Planner error:** a "no warnings" check without first building HEAD for warnings already there. Build the base first.

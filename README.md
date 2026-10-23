@@ -25,7 +25,7 @@ The scene provides a camera with `AtmosphereSettings` (add `Exposure` / `Distanc
 ## Run
 
 - Example (a window, your terminal only): `cargo run --release --example sky`. Hold the left mouse button and move to look; W/S forward and back, A/D strafe, E up, Q down, Left Shift 5x, wheel changes speed; `` ` `` opens the panel.
-- Headless shot (never opens a window): `cargo run --release --example sky -- --shot sky_west --hour 17.5 --out shots`. Options are listed at the top of `examples/sky.rs`; `--set clouds.update_div=1` overrides any config key, `--config file.json` loads a file, `--print-config` prints the full reference (`config.reference.json`).
+- Headless shot (never opens a window): `cargo run --release --example sky -- --shot sky_west --hour 17.5 --out shots`. Options are listed at the top of `examples/sky.rs`; `--set clouds.update_div=1` overrides any config key, `--config file.json` loads a file, `--print-config` prints the full reference (`config.reference.json`). `--terrain` loads the test valley and `--mountains` a mountain range (poses `mtn_west`, `mtn_east`, `mtn_high`); in the live window `--pose <name>` starts the camera at a pose.
 - Under an agent (`CLAUDECODE=1`) a windowed run refuses to start.
 - Without the panel (feature `panel`, default on): `cargo build --release --example sky --no-default-features`.
 
