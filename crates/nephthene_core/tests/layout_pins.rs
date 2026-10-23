@@ -1,6 +1,9 @@
 //! Text pins: the Rust uniform structs (src/clouds/render.rs, src/fog/render.rs) and the WGSL structs (src/shaders) must list the same
 //! fields in the same order with the same types, the WGSL `StormCell` must follow `storm::pack`'s layout, and the shaders' rain/shaft maths must keep the
 //! expressions the Rust reference (rain.rs) implements. Reading the files as text is the only check that needs no GPU.
+//! The surface pair is the example's, not the library's: Nephthene ships no surface material, so `examples/sky.rs` owns the Rust
+//! struct and `examples/surface.wesl` the WGSL one. They are pinned here all the same, because rule 3 is about the pair, not about
+//! which file holds it.
 use glam::Vec2;
 use nephthene_core::{rain as r, storm::{self, Kind, Now, Stage, Storm}};
 
@@ -11,7 +14,8 @@ const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
 const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
-const SURFACE: &str = include_str!("../../../src/shaders/surface.wesl");
+const SURFACE: &str = include_str!("../../../examples/surface.wesl");
+const SKY_RS: &str = include_str!("../../../examples/sky.rs");
 const RAIN_RS: &str = include_str!("../../../src/rain.rs");
 const LIGHTNING_RS: &str = include_str!("../../../src/lightning.rs");
 const LIGHTNING: &str = include_str!("../../../src/shaders/lightning.wesl");
@@ -78,7 +82,7 @@ fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogRe
 #[test]
 fn rain_uniform_matches_wgsl() { same_order(RAIN_RS, "struct RainGpu {", RAIN, "struct Rain {"); }
 #[test]
-fn surface_uniform_matches_wgsl() { same_order(RAIN_RS, "struct SurfaceGpu {", SURFACE, "struct Surface {"); }
+fn surface_uniform_matches_wgsl() { same_order(SKY_RS, "struct SurfaceGpu {", SURFACE, "struct Surface {"); }
 #[test]
 fn surface_shader_mirrors_snow_mask() {
     for line in ["s.snow * smoothstep(s.slope_lo, s.slope_hi, pbr_input.world_normal.y)", "mix(pbr_input.material.perceptual_roughness, s.wet_roughness, wet)"] {

@@ -18,21 +18,67 @@
 //! `--describe` (shots): after the settle frames, prints one `DESCRIBE` line: the weather at the camera (`nephthene_core::dash::describe`).
 //! Exit codes: 0 ok, 3 timeout, 4 bad argument.
 use bevy::{
+    asset::{load_internal_asset, uuid_handle},
     core_pipeline::tonemapping::Tonemapping,
     app::ScheduleRunnerPlugin,
     asset::RenderAssetUsages,
     camera::{ImageRenderTarget, RenderTarget, Exposure},
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     light::{AtmosphereEnvironmentMapLight, CascadeShadowConfigBuilder, light_consts::lux},
-    pbr::AtmosphereSettings,
+    pbr::{AtmosphereSettings, ExtendedMaterial, MaterialExtension, MaterialPlugin},
     prelude::*,
+    reflect::TypePath,
+    render::render_resource::{AsBindGroup, ShaderType},
+    shader::ShaderRef,
     render::{render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages}, view::screenshot::{Screenshot, save_to_disk}, RenderPlugin},
     window::ExitCondition,
     winit::WinitPlugin,
 };
-use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, SurfaceMaterial, Weather, WeatherSurface};
-use nephthene::core::rain::Ground as _;
+use nephthene::{Config, NephtheneSun, NephthenePlugin, Shelter, Surfaces, Weather};
+use nephthene::core::{self as w, rain::Ground as _};
 use serde::Deserialize;
+
+/// The ground material this example draws the weather with. Nephthene itself ships no material and writes to none of the host's: it
+/// publishes state, and `surface_system` below reads it through [`Surfaces`] and writes it in here. A host wanting a different look
+/// (puddles, wet normal maps, drifted snow) replaces this file's worth of code and leaves the weather alone.
+type SurfaceMaterial = ExtendedMaterial<StandardMaterial, WeatherSurface>;
+
+const SURFACE_SHADER: Handle<Shader> = uuid_handle!("7e2a1c54-9b3d-4f16-8a07-5c1e9d2b4a38");
+
+#[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
+struct WeatherSurface { #[uniform(100)] gpu: SurfaceGpu }
+impl MaterialExtension for WeatherSurface {
+    fn fragment_shader() -> ShaderRef { SURFACE_SHADER.into() }
+}
+
+/// Uniform for surface.wesl (field order identical in the shader).
+#[derive(Clone, Copy, Default, ShaderType)]
+struct SurfaceGpu {
+    snow_color: Vec3, wet: f32, snow: f32, wet_darken: f32, wet_roughness: f32, snow_roughness: f32, slope_lo: f32, slope_hi: f32,
+}
+
+/// The look values come from `rain` in the config, which publishes them as suggestions; the shader mirrors
+/// `core::rain::snow_mask` and the darkening half of `core::rain::wet_look`.
+fn surface_gpu(c: &w::RainCfg, s: w::rain::Surface) -> SurfaceGpu {
+    SurfaceGpu { snow_color: Vec3::from(c.snow_color), wet: s.wetness, snow: s.snow, wet_darken: c.wet_darken,
+                 wet_roughness: c.wet_roughness, snow_roughness: c.snow_roughness, slope_lo: c.cover_slope_lo, slope_hi: c.cover_slope_hi }
+}
+
+/// Reads the weather at the camera through [`Surfaces`] and writes it into every [`SurfaceMaterial`]. Only when a value moved by
+/// `rain.wet_epsilon` or a material was added, so the materials are not rewritten each frame. A host with per-tile ground materials
+/// would call `surfaces.at` at each tile instead of once at the camera.
+fn surface_system(surfaces: Surfaces, wx: Res<Weather>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>,
+    mut mats: ResMut<Assets<SurfaceMaterial>>, mut last: Local<(f32, f32, usize)>) {
+    let c = &wx.cfg.rain;
+    let p = cam.iter().next().map_or(Vec3::ZERO, |t| t.translation());
+    let s = surfaces.at(p.x, p.z);
+    let moved = (s.wetness - last.0).abs() >= c.wet_epsilon || (s.snow - last.1).abs() >= c.wet_epsilon;
+    if !moved && mats.len() == last.2 { return; }
+    // A newly added material gets the last written values, so a rewrite for it does not move the weather.
+    let s = if moved { s } else { w::rain::Surface { wetness: last.0, snow: last.1 } };
+    for (_, m) in mats.iter_mut() { m.extension.gpu = surface_gpu(c, s); }
+    *last = (s.wetness, s.snow, mats.len());
+}
 
 #[derive(Deserialize, Clone)]
 struct Pose { name: String, pos: [f32; 3], look_at: [f32; 3], #[serde(default)] fov_deg: Option<f32>, #[serde(default)] size: Option<[u32; 2]> }
@@ -102,6 +148,10 @@ fn main() {
     if args.has("--mountains") { app.insert_resource(nephthene::Ground(nephthene::core::terrain::mountains())); }
     if args.has("--roof") { app.insert_resource(Roof); }
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
+    // The host owns its surfaces: this example's material, its shader and the system that fills it from Nephthene's published state.
+    load_internal_asset!(app, SURFACE_SHADER, "surface.wesl", Shader::from_wesl);
+    app.add_plugins(MaterialPlugin::<SurfaceMaterial>::default())
+        .add_systems(Update, surface_system.after(nephthene::NephtheneSet::Drive));
     match shot {
         Some(name) => { app.add_plugins(ShotPlugin { name, args }); }
         None => { app.insert_resource(StartPose(start)).add_systems(Update, fly); }

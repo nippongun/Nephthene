@@ -455,7 +455,7 @@ pub struct RainCfg {
     pub cover_force: Option<f32>,
     /// Snow cover gain per second at full snowfall (intensity x kind), loss per second while the air at the ground is above `melt_c` (C).
     pub cover_up_per_s: f32, pub melt_per_s: f32, pub melt_c: f32,
-    /// Snow look on a `SurfaceMaterial`: albedo, perceptual roughness, and the surface normal's up component over which snow holds
+    /// Suggested snow look for a host's surface material (Nephthene ships none): albedo, perceptual roughness, and the surface normal's up component over which snow holds
     /// (none below `cover_slope_lo`, full above `cover_slope_hi`).
     pub snow_color: [f32; 3], pub snow_roughness: f32, pub cover_slope_lo: f32, pub cover_slope_hi: f32,
 }
