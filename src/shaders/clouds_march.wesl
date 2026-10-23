@@ -18,7 +18,7 @@ import bevy_pbr::atmosphere::{
     functions::{sample_transmittance_lut, sample_sky_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, get_view_position},
 };
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
-import super::clouds_common::{Clouds, Storms, PI, F16_MAX, remap, hg, phase, gradient, pcg, ign, atmo_transmittance, base_shape_at, map_sample, density_at, StormCell, storm_unpack, storm_reach, storm_profile, storm_col_cell};
+import super::clouds_common::{Clouds, Storms, PI, F16_MAX, remap, hg, phase, gradient, pcg, ign, atmo_transmittance, base_shape_at, map_sample, density_at, StormCell, storm_unpack, storm_reach, storm_profile, storm_col_cell, air_segment};
 
 @group(1) @binding(0) var<uniform> u: Clouds;
 @group(1) @binding(1) var base_tex: texture_3d<f32>;
@@ -43,6 +43,8 @@ fn flash_light(q: vec3<f32>) -> vec3<f32> {
 }
 @group(1) @binding(8) var oro_tex: texture_2d<f32>;
 @group(1) @binding(9) var oro_sampler: sampler;
+// Terrain heights (rain::HeightGrid, R32Float, unfilterable; grid in u.g_*): the march ends where the ray enters the ground.
+@group(1) @binding(10) var ground_tex: texture_2d<f32>;
 
 // ponytail: the literals left in this file (phase g, gradients, Nubis in-scatter constants, octave a/b/c, n*2+8 iteration cap, 5 up-taps at 30 deg) are look-shaping math, untuned; lift into clouds.look as they become knobs.
 
@@ -55,6 +57,20 @@ fn sphere(o: vec3<f32>, d: vec3<f32>, r: f32) -> vec2<f32> {
     if h < 0.0 { return vec2(-1.0); }
     let s = sqrt(h);
     return vec2(-b - s, -b + s);
+}
+
+fn ground_at(i: i32, j: i32) -> f32 {
+    return textureLoad(ground_tex, vec2<i32>(clamp(i, 0, i32(u.g_w) - 1), clamp(j, 0, i32(u.g_h) - 1)), 0).r;
+}
+// Ground height (world y, m) at world xz: bilinear, clamped at the grid's edges. Mirrors nephthene_core::rain::HeightGrid::height
+// (as clouds_shaft.wesl ground_h).
+fn ground_y(xz: vec2<f32>) -> f32 {
+    let f = clamp(vec2<f32>((xz.x - u.g_min.x) / u.g_cell - 0.5, (u.g_min.y - xz.y) / u.g_cell - 0.5), vec2<f32>(0.0), vec2<f32>(f32(u.g_w) - 1.0, f32(u.g_h) - 1.0));
+    let i = vec2<i32>(floor(f));
+    let t = f - floor(f);
+    let a = mix(ground_at(i.x, i.y), ground_at(i.x + 1, i.y), t.x);
+    let b = mix(ground_at(i.x, i.y + 1), ground_at(i.x + 1, i.y + 1), t.x);
+    return mix(a, b, t.y);
 }
 
 fn map_at(xz: vec2<f32>) -> vec4<f32> { return map_sample(u, map_tex, map_sampler, oro_tex, oro_sampler, xz); }
@@ -240,8 +256,10 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
     let R = atmosphere.inner_radius;
     let alt0 = max(view.world_position.y, 0.0);
     let o = vec3(0.0, R + alt0, 0.0);
-    // Below the horizon: the ground (Bevy's planet) is there, nothing of ours shows.
-    if sphere(o, d, R).x > 0.0 { return none(); }
+    // Below the horizon the ray meets the ground (Bevy's planet) at t_gnd. With clouds.over_terrain the march runs up to it (clouds
+    // below a raised camera, in front of the ground); without it nothing of ours shows there (the old rule).
+    let t_gnd = sphere(o, d, R).x;
+    if t_gnd > 0.0 && u.over_terrain == 0u { return none(); }
 
     let rb = R + u.bottom;
     let rt = R + u.top;
@@ -255,8 +273,10 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
         t1 = select(sphere(o, d, rt).y, hb.x, hb.x > 0.0);
     }
     t1 = min(t1, u.max_distance);
+    if t_gnd > 0.0 { t1 = min(t1, t_gnd); }
     var si = vec2(1e30, 0.0);
     if storms.n > 0u { si = storm_interval(o, d, R, alt0); }
+    if t_gnd > 0.0 { si.y = min(si.y, t_gnd); }
     let has_sh = t1 > t0;
     let has_st = si.y > si.x;
     let s0 = si.x;
@@ -322,6 +342,8 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
             let r = length(p);
             let h = (r - rb) / (rt - rb);
             let xz = view.world_position.xz + d.xz * t;
+            // The ray has entered the terrain: nothing beyond it shows (clouds.over_terrain).
+            if u.over_terrain != 0u && view.world_position.y + d.y * t < ground_y(xz) { break; }
             let alt = r - R;
             let inside = h >= 0.0 && h <= 1.0;
             if cheap && !in_st {
@@ -411,7 +433,7 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
     let c = get_view_position();
     let rc = length(c);
     let mu = dot(d, c / rc);
-    let t_air = sample_transmittance_lut_segment(rc, mu, tc);
+    let t_air = air_segment(rc, mu, tc, u.air_guard);
     let t_inf = sample_transmittance_lut(rc, mu);
     let s_sky = sample_sky_view_lut(rc, direction_world_to_atmosphere(d));
     let s_air = min(s_sky * (vec3(1.0) - t_air) / max(vec3(1.0) - t_inf, vec3(1e-4)), s_sky);
