@@ -94,6 +94,8 @@ struct Clouds {
     g_h: u32,
     // Orographic tile's weight added to the map's cloud type (config orographic.type_weight). 0 = the map's type alone.
     oro_type: f32,
+    // clouds.storm_step_opacity: 1 = a storm sample's opacity uses the step taken (ds), 0 = the shell step dt (test switch).
+    storm_step_opacity: u32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).

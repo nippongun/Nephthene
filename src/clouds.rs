@@ -68,6 +68,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
         s_core_flare: cfg.storms.core_flare, s_anvil_wide: cfg.storms.anvil_wide, s_anvil_p: cfg.storms.anvil_p, s_shelf_ceil: cfg.storms.shelf_ceil,
         s_curtain_full: cfg.storms.fx.curtain_full, s_couple: cfg.storms.couple as u32 as f32,
         air_guard: c.air_guard as u32,
+        storm_step_opacity: c.storm_step_opacity as u32,
         over_terrain: c.over_terrain as u32, g_min: Vec2::new(grid.min_x, grid.max_z), g_cell: grid.cell_m, g_w: grid.w, g_h: grid.h,
         ..default()
     };

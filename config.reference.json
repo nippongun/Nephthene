@@ -195,6 +195,7 @@
     "pass_timing": false,
     "air_guard": true,
     "over_terrain": true,
+    "storm_step_opacity": true,
     "look": {
       "cov_boost": 1.5,
       "tower_vsq": 0.3,
