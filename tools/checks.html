@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nephthene checks</title>
+<style>
+:root {
+  --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --card: #ffffff; --border: #d9d9d4;
+  --ok: #1f8a3b; --bad: #c62828; --warn: #b26a00; --accent: #2a5db0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161617; --fg: #e8e8e6; --muted: #9a9a94; --card: #1f1f21; --border: #34343a;
+    --ok: #4cc766; --bad: #ff6b6b; --warn: #f0b04a; --accent: #7aa7ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161617; --fg: #e8e8e6; --muted: #9a9a94; --card: #1f1f21; --border: #34343a;
+  --ok: #4cc766; --bad: #ff6b6b; --warn: #f0b04a; --accent: #7aa7ff;
+}
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 0 16px 48px; }
+.top { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px 16px; }
+.top h1 { font-size: 18px; margin: 0; margin-right: auto; }
+#run { font-family: ui-monospace, monospace; font-size: 13px; color: var(--muted); word-break: break-all; }
+#exit { font-size: 13px; }
+button { font: inherit; font-size: 14px; color: var(--accent); background: var(--card); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: default; }
+#stop { color: var(--bad); }
+pre#out { font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all;
+  max-height: 50vh; overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; margin: 16px 0; }
+#pngs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin: 16px 0; }
+#pngs a { color: var(--fg); text-decoration: none; font-size: 12px; word-break: break-all; }
+#pngs img { display: block; width: 100%; border: 1px solid var(--border); border-radius: 6px; background: var(--card); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin: 14px 0; }
+.card h2 { font-size: 16px; margin: 0 0 6px; word-break: break-word; }
+.pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; color: #fff; }
+.pill.open { background: var(--warn); }
+.pill.done { background: var(--ok); }
+.look { color: var(--muted); font-size: 14px; margin: 8px 0; }
+.cmd { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; margin-top: 10px; }
+.cmd code { flex: 1 1 300px; white-space: pre-wrap; word-break: break-all; font-size: 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; color: #fff; }
+.badge.pass { background: var(--ok); }
+.badge.fail { background: var(--bad); }
+.badge.never { background: var(--muted); }
+.cmd small { color: var(--muted); }
+code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Nephthene checks</h1>
+  <span id="run">idle</span>
+  <span id="exit"></span>
+  <button id="stop" disabled>Stop</button>
+</header>
+<main>
+  <pre id="out" hidden></pre>
+  <div id="pngs" hidden></div>
+  <div id="items"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const md = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+let items = [], running = false, polling = false, timer = null;
+
+function badge(last) {
+  if (!last) return '<span class="badge never">never run</span>';
+  const ok = last.exit === 0;
+  return `<span class="badge ${ok ? 'pass' : 'fail'}">${ok ? 'pass' : 'fail ' + esc(last.exit)}</span> <small>${esc(last.finished)}</small>`;
+}
+
+function renderItems() {
+  const order = items.map((it, i) => ({it, i}))
+    .sort((a, b) => a.it.date < b.it.date ? 1 : a.it.date > b.it.date ? -1 : 0);
+  $('#items').innerHTML = order.map(({it, i}) => `
+    <section class="card">
+      <h2>${esc(it.date)} &middot; ${md(it.change)}</h2>
+      <span class="pill ${it.status === 'open' ? 'open' : 'done'}">${esc(it.status)}</span>
+      <p class="look"><b>Look for:</b> ${md(it.look)}</p>
+      ${it.cmds.map((c, j) => `
+      <div class="cmd">
+        <button class="run" data-i="${i}" data-j="${j}">${esc(c.label)}</button>
+        <code>${esc(c.cmd)}</code>
+        <div>${badge(c.last)}</div>
+      </div>`).join('')}
+    </section>`).join('');
+  document.querySelectorAll('.run').forEach(b => b.disabled = running);
+}
+
+function show(s) {
+  running = !!s.running;
+  $('#run').textContent = s.cmd ? (running ? s.cmd : 'idle') : 'idle';
+  $('#exit').textContent = s.exit == null ? '' : 'exit ' + s.exit;
+  $('#stop').disabled = !running;
+  const out = $('#out');
+  if (s.started || s.output) {
+    out.hidden = false;
+    out.textContent = s.output || '';
+    out.scrollTop = out.scrollHeight;
+  }
+  const grid = $('#pngs'), pngs = s.pngs || [];
+  grid.hidden = !pngs.length;
+  grid.innerHTML = pngs.map(p => {
+    const src = esc('/file?p=' + encodeURIComponent(p));
+    return `<a href="${src}" target="_blank"><img src="${src}" loading="lazy"><span>${esc(p.split('/').pop())}</span></a>`;
+  }).join('');
+  document.querySelectorAll('.run').forEach(b => b.disabled = running);
+}
+
+async function poll() {
+  let s;
+  try { s = await (await fetch('/status')).json(); } catch (e) { return; }
+  show(s);
+  if (s.running) return;
+  if (polling) {
+    polling = false;
+    clearInterval(timer);
+    timer = null;
+    await loadItems();
+  }
+}
+
+function startPolling() {
+  if (!polling) { polling = true; timer = setInterval(poll, 1000); }
+  poll();
+}
+
+async function loadItems() {
+  items = await (await fetch('/items')).json();
+  renderItems();
+}
+
+$('#items').addEventListener('click', async e => {
+  const b = e.target.closest('.run');
+  if (!b || b.disabled) return;
+  const r = await fetch('/run', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({item: +b.dataset.i, cmd: +b.dataset.j}),
+  });
+  if (r.status === 409) {
+    const d = await r.json();
+    $('#run').textContent = 'busy: ' + d.busy;
+  } else if (r.ok) {
+    startPolling();
+  } else {
+    $('#run').textContent = 'error ' + r.status;
+  }
+});
+
+$('#stop').addEventListener('click', () => fetch('/stop', {method: 'POST'}));
+
+(async () => {
+  await loadItems();
+  const s = await (await fetch('/status')).json();
+  show(s);
+  if (s.running) startPolling();
+})();
+</script>
+</body>
+</html>
