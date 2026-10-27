@@ -350,6 +350,10 @@ pub struct Resolve {
     pub motion_half_px: f32,
     /// A pixel with no history takes a 4-tap wide upsample instead of the plain bilinear one (false = RED ARM: 8 px blotches of single-sample noise).
     pub wide_upsample: bool,
+    /// A still view (reprojection displacement under `still_px`) takes its history without the neighbourhood clamp, which is only for
+    /// camera motion. With the clamp, a light that changes every frame (a fast clock) pins the history to the min/max of one noisy
+    /// sample per texel: flat squares and dark rims on the clouds. false = RED ARM.
+    pub still_free: bool,
     /// A cut (history reset): a turn of more than `cut_deg` in one frame (180 or more never cuts), or a move of more than `cut_m`.
     pub cut_deg: f32, pub cut_m: f32,
     /// Per-visit jitter step (golden ratio conjugate).
@@ -361,7 +365,7 @@ pub struct Resolve {
 }
 impl Default for Resolve {
     fn default() -> Self {
-        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, upsample_mean_frames: 3.0, motion_half_px: 0.0, wide_upsample: true, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
+        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, upsample_mean_frames: 3.0, motion_half_px: 0.0, wide_upsample: true, still_free: true, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
                   light_jitter_offset: [2053.0, 911.0], no_reproject: false, light_jitter_shared: false }
     }
 }

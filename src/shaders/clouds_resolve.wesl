@@ -27,6 +27,8 @@ struct Resolve {
     // Reprojection motion (render px) that halves a marched pixel's counted visits (0 = off; test red arm), and 1 = wide upsample for no-history pixels.
     motion_half_px: f32,
     wide_upsample: f32,
+    // 1 = a still view takes its history unclamped (config resolve.still_free; 0 is the red arm).
+    still_free: f32,
 }
 
 @group(0) @binding(0) var<uniform> r: Resolve;
@@ -90,7 +92,10 @@ fn main(in: FullscreenVertexOutput) -> Out {
     let still = 1.0 - saturate(length((puv - in.uv) * vec2<f32>(low)) / r.still_px);
     lo = mix(lo, lo5, still);
     hi = mix(hi, hi5, still);
-    let hist = clamp(raw, lo, hi);
+    // A still view reprojects exactly, so history needs no ghost bound at all: the clamp is for camera motion. Under a still view the
+    // lighting still changes (a fast clock), and the box (min/max of single noisy samples) then pins a lagging history to its edge: flat
+    // squares and dark rims. `still` fades the clamp out as the view stops; still_free = 0 (red arm) keeps it.
+    let hist = mix(clamp(raw, lo, hi), raw, still * r.still_free);
     // The pixels NOT marched this frame keep their reprojected history (HZD): no blend toward the upsample.
     // Unmarched pixel: history. In the div*div frames after a reset (a cut: every pixel is fresh) it takes the running mean of the per-frame upsamples
     // (different offset each frame) instead, so a cut or teleport fills in within one cycle, not over its marched visits at weight alpha. Global count n,

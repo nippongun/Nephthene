@@ -232,6 +232,7 @@
     "upsample_mean_frames": 3.0,
     "motion_half_px": 0.0,
     "wide_upsample": true,
+    "still_free": true,
     "cut_deg": 20.0,
     "cut_m": 200.0,
     "jitter_step": 0.618034,
