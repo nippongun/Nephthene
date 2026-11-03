@@ -130,6 +130,8 @@ pub struct CloudParams {
     pub render_scale: f32, pub temporal_alpha: f32, pub update_div: u32,
     /// Cloud shadow cookie image (R8Unorm), its frame, and whether to redraw it this frame.
     pub shadow: Handle<Image>, pub shadow_gpu: ShadowGpu, pub shadow_draw: bool,
+    /// Double buffer: the cycle being drawn goes into `shadow_back` at `shadow_draw_gpu`; `shadow`/`shadow_gpu` is the finished one the light projects.
+    pub shadow_back: Handle<Image>, pub shadow_draw_gpu: ShadowGpu,
     /// Incremental redraw: this frame redraws band `.0` of `.1` horizontal bands of the cookie (config clouds.shadow_every bands, one per frame).
     pub shadow_band: (u32, u32),
     /// Rain shafts (clouds_shaft.wesl): uniform and the R32Float ground heights it stops on.
@@ -312,7 +314,7 @@ fn prepare_textures_and_uniform(
     views: Query<(Entity, &ExtractedView, Option<&MainPassResolutionOverride>, Option<&CloudHistory>), With<ExtractedAtmosphere>>, device: Res<RenderDevice>, queue: Res<RenderQueue>, mut cache: ResMut<TextureCache>,
 ) {
     let (Some(params), Some(mut render)) = (params, render) else { return };
-    render.shadow_ubo.set(params.shadow_gpu);
+    render.shadow_ubo.set(params.shadow_draw_gpu);
     render.shadow_ubo.write_buffer(&device, &queue);
     render.storm_ubo.set(params.storm);
     render.storm_ubo.write_buffer(&device, &queue);
@@ -516,7 +518,7 @@ fn clouds_march(
     let (tex, bg, atmo_i, settings_i, transforms_i, view_i) = view.into_inner();
     // Cloud shadow cookie: once per frame (the first view), every `shadow_every` frames.
     if let (Some(params), Some(sp), Some(sbg)) = (&params, cache.get_render_pipeline(render.shadow_pipeline), &bg.shadow) {
-        if let (true, Some(img)) = (!skipped("shadow"), images.get(&params.shadow)) {
+        if let (true, Some(img)) = (!skipped("shadow"), images.get(&params.shadow_back)) {
             if drawn.swap(frame.0 + 1, std::sync::atomic::Ordering::Relaxed) != frame.0 + 1 {
                 let (band, bands) = (params.shadow_band.0, params.shadow_band.1.max(1));
                 let load = if bands > 1 { LoadOp::Load } else { LoadOp::Clear(default()) };
