@@ -80,6 +80,11 @@ struct Fog {
     // The fog map and the ground texture hold heights relative to these (f16, sampled with hardware bilinear).
     map_y0: f32,
     g_y0: f32,
+    // Aerial occlusion terms: terrain shadows the air, the cloud cookie shadows the air, the cloud base altitude above which it is skipped, and whether the correction is weighted by the uncovered share (1) or not (0).
+    occ_terrain: f32,
+    occ_cloud: f32,
+    occ_cloud_y: f32,
+    occ_cloud_mask: f32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -94,6 +99,8 @@ struct Fog {
 // Tiling 3D value-noise lattice (nephthene_core::fog::noise_lattice), sampled with repeat.
 @group(1) @binding(6) var noise_tex: texture_3d<f32>;
 @group(1) @binding(7) var noise_smp: sampler;
+// The cloud composite's colour (premultiplied, alpha = cloud opacity); zeros when clouds are off.
+@group(1) @binding(8) var cloud_rgba: texture_2d<f32>;
 // Composite pass: the half-resolution march (premultiplied fog, surface distance per texel).
 @group(2) @binding(0) var low_fog: texture_2d<f32>;
 @group(2) @binding(1) var low_t: texture_2d<f32>;
@@ -255,15 +262,19 @@ fn kept(c: f32) -> vec3<f32> {
 }
 
 // Share of the view ray from the eye to `t_end` that lies in the terrain's shadow (below each column's sunlit altitude), at occ_steps
-// points jittered per pixel by `jit` (even spacing would band the share in steps of 1 / occ_steps). Outside the fog map counts as sunlit.
+// points jittered per pixel by `jit` (even spacing would band the share in steps of 1 / occ_steps). The share lies in the terrain's or
+// the clouds' shadow: outside the fog map the terrain counts as sunlit, outside the cookie the clouds do.
 fn shadowed(eye: vec3<f32>, d: vec3<f32>, t_end: f32, jit: f32) -> f32 {
     let half = 0.5 * f.map_cell * f32(f.map_n);
     let centre = f.map_min + vec2(half, -half);
     var s = 0.0;
     for (var k = 0u; k < f.occ_steps; k++) {
         let p = eye + d * (t_end * (f32(k) + jit) / f32(f.occ_steps));
-        if max(abs(p.x - centre.x), abs(p.z - centre.y)) > half { continue; }
-        s += 1.0 - lit(p.y, map_at(p.xz).z);
+        var l = 1.0;
+        // ponytail: air inside or above the cloud layer counts as sunlit (the cookie is the whole layer's transmittance); a per-height cookie is the upgrade.
+        if f.occ_cloud > 0.0 && p.y < f.occ_cloud_y { l = cloud_shadow(p); }
+        if f.occ_terrain > 0.0 && max(abs(p.x - centre.x), abs(p.z - centre.y)) <= half { l *= lit(p.y, map_at(p.xz).z); }
+        s += 1.0 - l;
     }
     return s / f32(max(f.occ_steps, 1u));
 }
@@ -291,8 +302,13 @@ fn march_low(in: FullscreenVertexOutput) -> Low {
         t_scene = length(v.xyz / v.w);
     }
     var x_ap = vec3(0.0);
-    if occ && t_scene > 0.0 {
-        x_ap = shadowed(eye, d, t_scene, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (vec3(1.0) - kept(dot(d, f.sun_dir))) * sample_aerial_view_lut(in.uv, t_scene) * view.exposure;
+    // Sky pixels (no surface) are shadowed out to the cookie's half-width, the farthest the cookie knows about.
+    let t_occ = select(f.sh_half, t_scene, t_scene > 0.0);
+    if occ && (t_scene > 0.0 || f.occ_cloud > 0.0) {
+        x_ap = shadowed(eye, d, t_occ, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (vec3(1.0) - kept(dot(d, f.sun_dir))) * sample_aerial_view_lut(in.uv, t_occ) * view.exposure;
+        // Clouds drawn over this pixel carry their own air (clouds_march.wesl air_segment), not Bevy's aerial perspective: only the uncovered share takes the correction.
+        let cov = textureSampleLevel(cloud_rgba, smp, in.uv, 0.0).a;
+        x_ap *= vec3(1.0 - select(0.0, clamp(cov, 0.0, 1.0), f.occ_cloud_mask > 0.0));
     }
     let fog = march(in, d, eye, t_scene, occ);
     return Low(vec4(fog.rgb - x_ap * (1.0 - fog.a), fog.a), t_scene);

@@ -309,3 +309,49 @@ fn g21_still_view_has_no_grain() {
     if red <= 0.0005 { list.push(format!("red arm (temporal_alpha=1) flicker {:.4}% <= 0.05%: the gate cannot fail", 100.0 * red)); }
     finish("G21", list);
 }
+
+/// G34 god rays: clouds shadow the air (sky.cloud_shafts). Pose fog_valley at 7.0 h (low sun ahead of the camera), clouds on at coverage
+/// 0.5, ground fog on (default). `on` is the shot with the shafts; d = (luma(off) - luma(on)) / 255 is the darkening against `off`
+/// (sky.cloud_shafts=false). Two claims:
+/// (a) Rays, not a uniform dimming: over the top 40% of rows (sky and cloud, away from the terrain face), each column's mean d varies
+/// across columns with a standard deviation of at least 0.5/255. Shadowed and lit columns must differ by half an 8-bit level, a step a
+/// viewer sees; a uniform dimming has a flat column profile and fails. Red arm: off2 (the same off config again) against off must stay
+/// under 0.5/255, since a repeat shot has no rays.
+/// (b) No over-darkening: the correction removes only the air's in-scatter, never more than the pixel had. Over the whole frame, the share
+/// of pixels with luma(off) - luma(on) > 64 (a quarter of the range; the bug blacked clouds and sky) must be at most 0.5%. The budget is a
+/// few edge texels of the half-res march. Red arm: bad (sky.cloud_shafts_ignore_clouds=true, the bug) against off must exceed 0.5%.
+#[test]
+#[ignore = "manual gate"]
+fn g34_cloud_shafts() {
+    let base = ["clouds.enabled=true", "clouds.coverage_override=0.5"];
+    let on = shot(&FOG_VALLEY, "g34_on", "7.0", &base, &[]);
+    let off = shot(&FOG_VALLEY, "g34_off", "7.0", &[base[0], base[1], "sky.cloud_shafts=false"], &[]);
+    let off2 = shot(&FOG_VALLEY, "g34_off2", "7.0", &[base[0], base[1], "sky.cloud_shafts=false"], &[]);
+    let bad = shot(&FOG_VALLEY, "g34_bad", "7.0", &[base[0], base[1], "sky.cloud_shafts_ignore_clouds=true"], &[]);
+    let (w, h) = on.dimensions();
+    let top = (0.4 * h as f32) as u32;
+    // Std across columns of the per-column mean of d over the top rows; a is the candidate, b the reference (off).
+    let col_std = |a: &RgbImage, b: &RgbImage| {
+        let means: Vec<f32> = (0..w).map(|x| (0..top).map(|y| (luma(b.get_pixel(x, y)) - luma(a.get_pixel(x, y))) / 255.0).sum::<f32>() / top.max(1) as f32).collect();
+        let n = means.len() as f32;
+        let mean = means.iter().sum::<f32>() / n;
+        (means.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n).sqrt()
+    };
+    // Share of the frame whose luma drops by more than 64 levels from b (reference) to a (candidate).
+    let overdark = |a: &RgbImage, b: &RgbImage| {
+        let n = a.pixels().zip(b.pixels()).filter(|(p, q)| luma(q) - luma(p) > 64.0).count();
+        n as f32 / (w * h) as f32
+    };
+    let std_on = col_std(&on, &off);
+    let std_red = col_std(&off2, &off);
+    let over_on = overdark(&on, &off);
+    let over_bad = overdark(&bad, &off);
+    println!("G34: column std on {:.5}, red {:.5}; over-dark on {:.3}%, bad (ignore_clouds) {:.3}%", std_on, std_red, 100.0 * over_on, 100.0 * over_bad);
+    let mut red = vec![];
+    if std_on < 0.5 / 255.0 { red.push(format!("column std on {std_on:.5} < budget 0.5/255 ({:.5})", 0.5 / 255.0)); }
+    if over_on > 0.005 { red.push(format!("over-dark on {:.3}% > budget 0.5%", 100.0 * over_on)); }
+    // A red arm that passes the claim it must fail means the gate cannot fail.
+    if std_red >= 0.5 / 255.0 { red.push(format!("red arm passes: off2 vs off column std {std_red:.5} >= 0.5/255: the gate cannot fail")); }
+    if over_bad <= 0.005 { red.push(format!("red arm passes: bad over-dark {:.3}% <= 0.5%: the gate cannot fail", 100.0 * over_bad)); }
+    finish("G34", red);
+}
