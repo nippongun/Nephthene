@@ -14,3 +14,4 @@ Python needs numpy, scipy, Pillow. Shell tools call `cargo run --release --examp
 | `cloud_size.py` | Offline cloud cell size spectrum and tower thickness from a CPU port of the density (about 50 s) | `python3 tools/cloud_size.py [--config file.json] [--legacy]` |
 | `cloud_turn_err.py` | Per-frame error of a turning series vs div 1 at the same frames, split leading 15% / rest on cloud pixels (lead/rest ratio is gate G14) | `python3 tools/cloud_turn_err.py <dir> <div1_ref_dir> [--lead left\|right\|none]` |
 | `cloud_turn_eval.sh` | Turn-rate sweep: captures div 4 and cached div 1 at each rate, prints the errors | `tools/cloud_turn_eval.sh <workdir> [45,90]` |
+| `checks.py` | Owner's check dashboard (page: `checks.html`): every docs/handover.md item with a button per command, one run at a time, its output, exit code and PNGs | `python3 tools/checks.py --open` from your own terminal (live-window commands are refused under an agent session) |

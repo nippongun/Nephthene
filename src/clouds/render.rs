@@ -81,6 +81,8 @@ pub struct CloudGpu {
     pub over_terrain: u32, pub g_min: Vec2, pub g_cell: f32, pub g_w: u32, pub g_h: u32,
     /// Orographic tile's weight added to the map's cloud type (orographic.type_weight). See clouds_common.wesl `Clouds`.
     pub oro_type: f32,
+    /// clouds.storm_step_opacity (1 = a storm sample's opacity uses the step taken; 0 = the shell step dt, test red arm). See clouds_march.wesl.
+    pub storm_step_opacity: u32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.
@@ -128,6 +130,8 @@ pub struct CloudParams {
     pub render_scale: f32, pub temporal_alpha: f32, pub update_div: u32,
     /// Cloud shadow cookie image (R8Unorm), its frame, and whether to redraw it this frame.
     pub shadow: Handle<Image>, pub shadow_gpu: ShadowGpu, pub shadow_draw: bool,
+    /// Double buffer: the cycle being drawn goes into `shadow_back` at `shadow_draw_gpu`; `shadow`/`shadow_gpu` is the finished one the light projects.
+    pub shadow_back: Handle<Image>, pub shadow_draw_gpu: ShadowGpu,
     /// Incremental redraw: this frame redraws band `.0` of `.1` horizontal bands of the cookie (config clouds.shadow_every bands, one per frame).
     pub shadow_band: (u32, u32),
     /// Rain shafts (clouds_shaft.wesl): uniform and the R32Float ground heights it stops on.
@@ -149,7 +153,7 @@ struct ResolveGpu {
     /// resolve.no_reproject: history sampled where the pixel is, not where it was (test red arm: a turning camera ghosts).
     noreproj: u32, div: u32, n: u32,
     reject_gain: f32, still_px: f32, fresh: f32, conf_max: f32, upsample_mean_frames: f32,
-    motion_half_px: f32, wide_upsample: f32,
+    motion_half_px: f32, wide_upsample: f32, still_free: f32,
 }
 
 /// HZD's 16-frame cover order of a 4x4 block (value = x + 4y). untuned.
@@ -310,7 +314,7 @@ fn prepare_textures_and_uniform(
     views: Query<(Entity, &ExtractedView, Option<&MainPassResolutionOverride>, Option<&CloudHistory>), With<ExtractedAtmosphere>>, device: Res<RenderDevice>, queue: Res<RenderQueue>, mut cache: ResMut<TextureCache>,
 ) {
     let (Some(params), Some(mut render)) = (params, render) else { return };
-    render.shadow_ubo.set(params.shadow_gpu);
+    render.shadow_ubo.set(params.shadow_draw_gpu);
     render.shadow_ubo.write_buffer(&device, &queue);
     render.storm_ubo.set(params.storm);
     render.storm_ubo.write_buffer(&device, &queue);
@@ -347,7 +351,7 @@ fn prepare_textures_and_uniform(
             delta: hist.map_or(Vec3::ZERO, |h| cam - h.cam), alpha: params.temporal_alpha, max_distance: params.gpu.max_distance, reset: reset as u32, ox, oy, div, n: if reset { 0 } else { hist.map_or(0, |h| h.since + 1) },
             noreproj: params.resolve.no_reproject as u32,
             reject_gain: params.resolve.reject_gain, still_px: params.resolve.still_px, fresh: params.resolve.fresh, conf_max: params.resolve.conf_max, upsample_mean_frames: params.resolve.upsample_mean_frames,
-            motion_half_px: params.resolve.motion_half_px, wide_upsample: params.resolve.wide_upsample as u32 as f32,
+            motion_half_px: params.resolve.motion_half_px, wide_upsample: params.resolve.wide_upsample as u32 as f32, still_free: params.resolve.still_free as u32 as f32,
         });
         ubo.write_buffer(&device, &queue);
         commands.entity(e).insert((
@@ -514,7 +518,7 @@ fn clouds_march(
     let (tex, bg, atmo_i, settings_i, transforms_i, view_i) = view.into_inner();
     // Cloud shadow cookie: once per frame (the first view), every `shadow_every` frames.
     if let (Some(params), Some(sp), Some(sbg)) = (&params, cache.get_render_pipeline(render.shadow_pipeline), &bg.shadow) {
-        if let (true, Some(img)) = (!skipped("shadow"), images.get(&params.shadow)) {
+        if let (true, Some(img)) = (!skipped("shadow"), images.get(&params.shadow_back)) {
             if drawn.swap(frame.0 + 1, std::sync::atomic::Ordering::Relaxed) != frame.0 + 1 {
                 let (band, bands) = (params.shadow_band.0, params.shadow_band.1.max(1));
                 let load = if bands > 1 { LoadOp::Load } else { LoadOp::Clear(default()) };

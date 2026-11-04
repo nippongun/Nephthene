@@ -60,7 +60,7 @@ fn spawn(mut commands: Commands, mut images: ResMut<Assets<Image>>, ground: Opti
         // No clouds: a white cookie (sh_on stays 0 and the shader never reads it).
         cookie: images.add(image(1, 1, TextureFormat::R8Unorm, vec![255])),
         // ponytail: 64^3 cells of noise lattice: tiles every 64 noise cells (16 km at the 250 m breakup cell), too far to see.
-        noise: images.add({ let mut im = image(64, 64, TextureFormat::R8Unorm, f::noise_lattice(64)); im.texture_descriptor.size.depth_or_array_layers = 64; im.texture_descriptor.dimension = TextureDimension::D3; im }),
+        noise: images.add({ let mut im = Image::new(Extent3d { width: 64, height: 64, depth_or_array_layers: 64 }, TextureDimension::D3, f::noise_lattice(64), TextureFormat::R8Unorm, RenderAssetUsages::RENDER_WORLD); im.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST; im }),
         render_scale: wx.cfg.ground_fog.render_scale,
         temporal_alpha: wx.cfg.ground_fog.temporal_alpha, still_px: wx.cfg.ground_fog.still_px, cut_deg: wx.cfg.resolve.cut_deg, cut_m: wx.cfg.resolve.cut_m,
         timing: wx.cfg.clouds.pass_timing,

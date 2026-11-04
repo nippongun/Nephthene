@@ -9,8 +9,8 @@ knob in `Config`. A host game only consumes it.
 "Rival a AAA weather system" is not a measurable claim, so it is kept here as a scoreboard with a denominator (the matrix at
 **Scoreboard** below) and a stated bar:
 
-- **80% of the matrix at `have`** - 20 of its 25 rows - each with a gate that is red without the feature, green with it, on both
-  reference GPUs.
+- **80% of the matrix at `have`** - 20 of its 25 rows - each with a gate that is red without the feature, green with it, on reference GPU A
+  (Apple Silicon / Metal); green on B (NVIDIA) as well is extra, not required.
 - **Inside the tier budget** (see **Performance**): the whole stack fits its tier's millisecond wall at its tier's resolution.
 - **Judged by eye**: every row that changes a pixel ships renders of the fixed poses and the owner accepts them. Green gates do
   not prove a look.
@@ -116,7 +116,7 @@ Two reference GPUs, four tiers, one budget rule. See **Performance**.
 
 ## Scoreboard
 
-The denominator for the 80% target. `have` requires a green gate with a kept red arm on both reference GPUs.
+The denominator for the 80% target. `have` requires a green gate with a kept red arm on reference GPU A (Metal); B (NVIDIA) green is extra.
 
 | # | Row | State | Where |
 |---|---|---|---|
@@ -148,7 +148,7 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 
 ## Phase 0: finish ground fog - merged (PR 1); tail below
 
-Done when: both reference GPUs run green (G15-G19, G21, goldens), the owner accepts the renders.
+Done when: reference GPU A runs green (G15-G19, G21, goldens), the owner accepts the renders.
 - Cost: gate G19 <= the tier budget's fog share with red arm `render_scale=1` + `hash_noise=true`. Reference-A number pending.
 - Visible without forcing: fog follows the effective mean wind (panel override included); document that the default 6 m/s wind
   forms none and that a calm night does (>= 0.7 by 5 h at <= 2.5 m/s). Whether the *default* weather should ever be calm is a

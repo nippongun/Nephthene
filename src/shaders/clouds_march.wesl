@@ -397,7 +397,9 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
                     }
                 }
                 let s = sd * u.light_gain + sa;
-                let ts = exp(-sigma * dt);
+                // Opacity over the step actually taken: storm samples advance by ds (see `adv` below). The shell step dt is negative on
+                // rays with no shell interval (t1 clamped to max_distance < t0): transmittance above 1, a white strip on the horizon.
+                let ts = exp(-sigma * select(select(ds, dt, in_sh), dt, u.storm_step_opacity == 0u));
                 // Lightning: integrated like `lum` but kept apart, so it skips the shoulder and the history.
                 if flashes.n > 0u {
                     let sf = flash_light(vec3(xz.x, alt, xz.y));

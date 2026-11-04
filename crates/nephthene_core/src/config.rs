@@ -270,6 +270,11 @@ pub struct Clouds {
     /// in front of a cloud hides it, and the march runs below the horizon up to the ground and ends where the ray enters the terrain
     /// (the ground height grid). Test switch (red arm): false draws clouds on sky samples only and marches through the terrain.
     pub over_terrain: bool,
+    /// A storm sample's opacity uses the step the march actually takes (ds in the storm interval, dt in the shell). Test switch (red
+    /// arm): false uses the shell step dt for storm samples too, which is negative on rays whose shell interval is empty (the cloud
+    /// base beyond max_distance, just above the horizon from low cameras): transmittance above 1, a white strip with black dots on
+    /// the horizon under distant storm cells.
+    pub storm_step_opacity: bool,
     /// Look constants that were shader literals.
     pub look: CloudLook,
     /// Procedural noise textures.
@@ -283,7 +288,7 @@ impl Default for Clouds {
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
             shadow_step_m: 120.0, shadow_samples_max: 48, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
-            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true, over_terrain: true,
+            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true, over_terrain: true, storm_step_opacity: true,
             look: CloudLook::default(), noise: CloudNoise::default(),
         }
     }
@@ -345,6 +350,10 @@ pub struct Resolve {
     pub motion_half_px: f32,
     /// A pixel with no history takes a 4-tap wide upsample instead of the plain bilinear one (false = RED ARM: 8 px blotches of single-sample noise).
     pub wide_upsample: bool,
+    /// A still view (reprojection displacement under `still_px`) takes its history without the neighbourhood clamp, which is only for
+    /// camera motion. With the clamp, a light that changes every frame (a fast clock) pins the history to the min/max of one noisy
+    /// sample per texel: flat squares and dark rims on the clouds. false = RED ARM.
+    pub still_free: bool,
     /// A cut (history reset): a turn of more than `cut_deg` in one frame (180 or more never cuts), or a move of more than `cut_m`.
     pub cut_deg: f32, pub cut_m: f32,
     /// Per-visit jitter step (golden ratio conjugate).
@@ -356,7 +365,7 @@ pub struct Resolve {
 }
 impl Default for Resolve {
     fn default() -> Self {
-        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, upsample_mean_frames: 3.0, motion_half_px: 0.0, wide_upsample: true, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
+        Resolve { reject_gain: 4.0, still_px: 0.5, fresh: 1.0, conf_max: 255.0, upsample_mean_frames: 3.0, motion_half_px: 0.0, wide_upsample: true, still_free: true, cut_deg: 20.0, cut_m: 200.0, jitter_step: 0.618034,
                   light_jitter_offset: [2053.0, 911.0], no_reproject: false, light_jitter_shared: false }
     }
 }

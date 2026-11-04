@@ -195,6 +195,7 @@
     "pass_timing": false,
     "air_guard": true,
     "over_terrain": true,
+    "storm_step_opacity": true,
     "look": {
       "cov_boost": 1.5,
       "tower_vsq": 0.3,
@@ -231,6 +232,7 @@
     "upsample_mean_frames": 3.0,
     "motion_half_px": 0.0,
     "wide_upsample": true,
+    "still_free": true,
     "cut_deg": 20.0,
     "cut_m": 200.0,
     "jitter_step": 0.618034,

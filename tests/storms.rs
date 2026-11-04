@@ -1,6 +1,7 @@
 //! Storm rain gates (headless; every shot is the `sky` example in `--shot` mode). Manual: `cargo test --release --test storms --
 //! --ignored --nocapture --test-threads=1`. Metrics print before asserting; every threshold is a budget with a stated reason.
-//! G25 reads the storm's rain at the camera (the `STORMHERE` line); G26 reads the rain shafts under a cell 8 km west (pixels).
+//! G25 reads the storm's rain at the camera (the `STORMHERE` line); G26 reads the rain shafts under a cell 8 km west (pixels);
+//! G32 counts the saturated white strip on the horizon under distant storm cells (pixels).
 mod common;
 use common::*;
 use image::RgbImage;
@@ -77,4 +78,34 @@ fn g26_rain_shafts_under_a_storm() {
     if score < G26_SHARE { f.push(format!("{score:.4} < {G26_SHARE}: the rain shafts do not change the curtain region")); }
     if noise >= G26_SHARE { f.push(format!("red arm noise {noise:.4} >= {G26_SHARE}: run-to-run noise passes the gate")); }
     finish("G26", f);
+}
+
+/// G32: no white strip on the horizon under distant storm cells. Scene: the default weather at 17.5 h (the storm in it sits at the
+/// horizon), flat ground, pose `mtn_west` (camera 250 m up, looking east), 1600x900. Rows 480..545 are the horizon band. A storm
+/// sample used to take its opacity from the shell step dt, negative on rays whose shell interval is empty: transmittance above 1,
+/// a saturated strip. The budget is 520 saturated pixels, 0.5% of the band's 104000 pixels: the clear horizon at this exposure
+/// does not saturate, and the strip measured ~14000. Red arm: `clouds.storm_step_opacity=false` (the old shell step) must exceed
+/// the budget, or the scene has no storm at the horizon and the gate sees nothing.
+const G32_ROWS: std::ops::Range<u32> = 480..545;
+const G32_BUDGET: usize = 520;
+
+fn g32_saturated(label: &str, extra: &[&str]) -> usize {
+    let mut args = vec!["--hour", "17.5"];
+    for s in extra { args.extend(["--set", *s]); }
+    let (dir, _) = shoot_log(label, "mtn_west", &args);
+    let im: RgbImage = read(&dir, "mtn_west");
+    assert_eq!((im.width(), im.height()), (1600, 900), "{label}: G32 rows assume 1600x900");
+    G32_ROWS.flat_map(|y| (0..im.width()).map(move |x| (x, y))).filter(|&(x, y)| luma(im.get_pixel(x, y)) >= 250.0).count()
+}
+
+#[test]
+#[ignore = "manual gate"]
+fn g32_no_strip_under_distant_storms() {
+    let on = g32_saturated("g32_on", &[]);
+    let red = g32_saturated("g32_red", &["clouds.storm_step_opacity=false"]);
+    println!("G32 saturated px in rows 480..545: on {on}, red arm (storm_step_opacity false) {red}, budget < {G32_BUDGET}");
+    let mut f = vec![];
+    if on >= G32_BUDGET { f.push(format!("{on} saturated px >= {G32_BUDGET}: a white strip on the horizon")); }
+    if red < G32_BUDGET { f.push(format!("red arm {red} < {G32_BUDGET}: the gate does not see the strip (no storm at the horizon?)")); }
+    finish("G32", f);
 }

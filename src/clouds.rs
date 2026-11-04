@@ -68,6 +68,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
         s_core_flare: cfg.storms.core_flare, s_anvil_wide: cfg.storms.anvil_wide, s_anvil_p: cfg.storms.anvil_p, s_shelf_ceil: cfg.storms.shelf_ceil,
         s_curtain_full: cfg.storms.fx.curtain_full, s_couple: cfg.storms.couple as u32 as f32,
         air_guard: c.air_guard as u32,
+        storm_step_opacity: c.storm_step_opacity as u32,
         over_terrain: c.over_terrain as u32, g_min: Vec2::new(grid.min_x, grid.max_z), g_cell: grid.cell_m, g_w: grid.w, g_h: grid.h,
         ..default()
     };
@@ -76,11 +77,12 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
     shadow.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
     // Explicit linear, clamped: Bevy's clustered-light sampler is the first light texture's.
     shadow.sampler = bevy::image::ImageSampler::linear();
+    let shadow_back = images.add(shadow.clone());
     let shadow = images.add(shadow);
     for e in &sun { commands.entity(e).insert(DirectionalLightTexture { image: shadow.clone(), tiled: false }); }
     let (r, sh, n) = (&cfg.rain, &cfg.shafts, &c.noise);
     commands.insert_resource(CloudParams {
-        shadow, shadow_gpu: ShadowGpu { half_m: c.shadow_half_m, strength: c.shadow_strength, samples: c.shadow_samples, ..default() }, shadow_draw: true, shadow_band: (0, 1),
+        shadow, shadow_back, shadow_gpu: ShadowGpu { half_m: c.shadow_half_m, strength: c.shadow_strength, samples: c.shadow_samples, ..default() }, shadow_draw_gpu: ShadowGpu { half_m: c.shadow_half_m, strength: c.shadow_strength, samples: c.shadow_samples, ..default() }, shadow_draw: true, shadow_band: (0, 1),
         shaft: ShaftGpu { scale: c.shaft_scale, slant: Vec2::ZERO, g_cell: grid.cell_m, g_min: Vec2::new(grid.min_x, grid.max_z), g_w: grid.w, g_h: grid.h,
             precip_lo: r.precip_lo, precip_hi: r.precip_hi, sigma: sh.sigma, near_m: sh.near_m, fade_m: sh.fade_m, max_m: sh.max_m, xz_m: sh.xz_m, y_m: sh.y_m,
             ground_keep: sh.ground_keep, cloud_lo: sh.cloud_lo, cloud_hi: sh.cloud_hi, streak_lo: sh.streak_lo, streak_hi: sh.streak_hi, gap: sh.gap,
@@ -105,31 +107,34 @@ fn tower_stops(curve: &[[f32; 2]], k: usize) -> Vec4 {
 
 /// Per frame: bodies from the lights sky.rs placed, wind drift (frozen in headless shots).
 pub(crate) fn drive(
-    time: Res<Time>, wx: Res<Weather>, params: Option<ResMut<CloudParams>>, mut drift: Local<Vec2>, mut slant: Local<Vec2>, mut origin: Local<Vec3>,
+    time: Res<Time>, wx: Res<Weather>, params: Option<ResMut<CloudParams>>, mut drift: Local<Vec2>, mut slant: Local<Vec2>,
     frame: Res<bevy::diagnostic::FrameCount>, cam: Query<&GlobalTransform, With<bevy::pbr::AtmosphereSettings>>,
-    mut sun: Query<(&DirectionalLight, &mut Transform), (With<NephtheneSun>, Without<Moon>)>, moon: Query<(&DirectionalLight, &Transform), With<Moon>>,
+    mut sun: Query<(&DirectionalLight, &mut Transform, Option<&mut DirectionalLightTexture>), (With<NephtheneSun>, Without<Moon>)>, moon: Query<(&DirectionalLight, &Transform), With<Moon>>,
     oro: Option<Res<crate::orographic::Orographic>>, mut images: ResMut<Assets<Image>>, mut shown: Local<u32>,
 ) {
     let Some(mut m) = params else { return };
     if wx.rate > 0.0 { *drift += wx.wind.xz() * wx.cfg.clouds.wind_scale * time.delta_secs(); }
     let body = |l: &DirectionalLight, t: &Transform| (t.back().as_vec3(), l.color.to_linear().to_vec3() * l.illuminance);
-    if let Some((l, mut t)) = sun.iter_mut().next() {
+    if let Some((l, mut t, mut tex)) = sun.iter_mut().next() {
         (m.gpu.sun_dir, m.gpu.sun_color) = body(l, &t);
-        // Cloud shadow cookie: the light's translation/scale place and size the map; both change (and the map redraws) only every
-        // `shadow_every` frames, snapped to texels, so the cookie and the map always agree.
+        // Cloud shadow cookie, double-buffered: a cycle redraws `shadow_every` bands, one per frame, into the back image at the cycle's
+        // origin; when the cycle ends the back image and its origin become the light's cookie together, so every band the light
+        // projects was drawn at the origin it is projected with (a single image let stale bands jump a whole texel at each snap).
         let every = wx.cfg.clouds.shadow_every.max(1);
-        // Incremental: `every` bands, one redrawn per frame; the frame and origin change only when band 0 starts a cycle (stale bands lag <= 1 texel).
         m.shadow_draw = frame.0 % every == 0;
         m.shadow_band = (frame.0 % every, every);
         if m.shadow_draw && let Some(p) = cam.iter().next().map(|g| g.translation()) {
+            let m = &mut *m;
+            std::mem::swap(&mut m.shadow, &mut m.shadow_back);
+            m.shadow_gpu = m.shadow_draw_gpu;
+            if let Some(tex) = tex.as_mut() { tex.image = m.shadow.clone(); }
             let (r, u) = (t.right().as_vec3(), t.up().as_vec3());
-            let half = wx.cfg.clouds.shadow_half_m;
-            *origin = w::shadow_origin(p, r, u, half, wx.cfg.clouds.shadow_res);
-            (m.shadow_gpu.right, m.shadow_gpu.up) = (r, u);
+            m.shadow_draw_gpu.origin = w::shadow_origin(p, r, u, wx.cfg.clouds.shadow_half_m, wx.cfg.clouds.shadow_res);
+            (m.shadow_draw_gpu.right, m.shadow_draw_gpu.up) = (r, u);
         }
-        m.shadow_gpu.origin = *origin;
-        m.shadow_gpu.samples = w::shadow_samples(&wx.cfg.clouds, wx.cfg.clouds.top_m - wx.cfg.clouds.bottom_m, m.gpu.sun_dir.y);
-        (t.translation, t.scale) = (*origin, Vec3::splat(wx.cfg.clouds.shadow_half_m));
+        m.shadow_draw_gpu.samples = w::shadow_samples(&wx.cfg.clouds, wx.cfg.clouds.top_m - wx.cfg.clouds.bottom_m, m.gpu.sun_dir.y);
+        m.shadow_gpu.samples = m.shadow_draw_gpu.samples;
+        (t.translation, t.scale) = (m.shadow_gpu.origin, Vec3::splat(wx.cfg.clouds.shadow_half_m));
     }
     if let Some((l, t)) = moon.iter().next() { (m.gpu.moon_dir, m.gpu.moon_color) = body(l, t); }
     // Upwind is where the noise comes from: sampling at p - drift moves the shapes downwind.
