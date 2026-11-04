@@ -1,4 +1,4 @@
-//! Text pins: the Rust uniform structs (src/clouds/render.rs, src/fog/render.rs) and the WGSL structs (src/shaders) must list the same
+//! Text pins: the Rust uniform structs (src/clouds/render.rs, src/fog/render.rs, src/rays.rs) and the WGSL structs (src/shaders) must list the same
 //! fields in the same order with the same types, the WGSL `StormCell` must follow `storm::pack`'s layout, and the shaders' rain/shaft maths must keep the
 //! expressions the Rust reference (rain.rs) implements. Reading the files as text is the only check that needs no GPU.
 //! The surface pair is the example's, not the library's: Nephthene ships no surface material, so `examples/sky.rs` owns the Rust
@@ -10,6 +10,8 @@ use nephthene_core::{rain as r, storm::{self, Kind, Now, Stage, Storm}};
 const RENDER: &str = include_str!("../../../src/clouds/render.rs");
 const FOG_RENDER: &str = include_str!("../../../src/fog/render.rs");
 const FOG: &str = include_str!("../../../src/shaders/fog.wesl");
+const RAYS_RS: &str = include_str!("../../../src/rays.rs");
+const RAYS: &str = include_str!("../../../src/shaders/rays.wesl");
 const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
@@ -79,6 +81,8 @@ fn resolve_uniform_matches_wgsl() { same_order(RENDER, "struct ResolveGpu {", RE
 fn fog_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogGpu {", FOG, "struct Fog {"); }
 #[test]
 fn fog_resolve_uniform_matches_wgsl() { same_order(FOG_RENDER, "pub struct FogResolveGpu {", FOG, "struct FogResolve {"); }
+#[test]
+fn rays_uniform_matches_wgsl() { same_order(RAYS_RS, "pub struct RaysGpu {", RAYS, "struct Rays {"); }
 #[test]
 fn rain_uniform_matches_wgsl() { same_order(RAIN_RS, "struct RainGpu {", RAIN, "struct Rain {"); }
 #[test]

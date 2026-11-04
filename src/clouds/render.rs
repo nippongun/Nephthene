@@ -300,7 +300,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
 /// `flash`: the march's flash light, low res, read only by the composite.
 /// `read`/`write`: the resolved history pair, swapped every frame; the composite shows `write`.
 #[derive(Component)]
-struct CloudTextures { cur: CachedTexture, t: CachedTexture, flash: CachedTexture, read: CachedTexture, write: CachedTexture, scur: CachedTexture, st: CachedTexture, sread: CachedTexture, swrite: CachedTexture, cread: CachedTexture, cwrite: CachedTexture }
+pub(crate) struct CloudTextures { cur: CachedTexture, t: CachedTexture, flash: CachedTexture, read: CachedTexture, pub(crate) write: CachedTexture, scur: CachedTexture, st: CachedTexture, sread: CachedTexture, swrite: CachedTexture, cread: CachedTexture, cwrite: CachedTexture }
 
 /// Last frame's view, kept on the render-world view entity. A size change or a skipped frame resets the history.
 #[derive(Component)]

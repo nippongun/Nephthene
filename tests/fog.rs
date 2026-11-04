@@ -1,4 +1,4 @@
-//! Ground fog gates G15-G21 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
+//! Ground fog gates G15-G21 and god ray gates G34-G35 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
 //! `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`. Metrics print before asserting.
 //! Pixels are classed on the CPU: each pose ray is cast into the test valley and marched through nephthene_core::fog's own density
 //! (no noise), so "pooled" and "clear" pixels come from the model, not from hand-picked image regions.
@@ -308,4 +308,81 @@ fn g21_still_view_has_no_grain() {
     if green > 0.0005 { list.push(format!("flicker {:.4}% > 0.05%", 100.0 * green)); }
     if red <= 0.0005 { list.push(format!("red arm (temporal_alpha=1) flicker {:.4}% <= 0.05%: the gate cannot fail", 100.0 * red)); }
     finish("G21", list);
+}
+
+/// G34 god rays: clouds shadow the air (sky.cloud_shafts). Pose fog_valley at 7.0 h (low sun ahead of the camera), clouds on at coverage
+/// 0.5, ground fog on (default). `on` is the shot with the shafts; d = (luma(off) - luma(on)) / 255 is the darkening against `off`
+/// (sky.cloud_shafts=false). Claim:
+/// (b) No over-darkening: the correction removes only the air's in-scatter, never more than the pixel had. Over the whole frame, the share
+/// of pixels with luma(off) - luma(on) > 64 (a quarter of the range; the bug blacked clouds and sky) must be at most 0.5%. The budget is a
+/// few edge texels of the half-res march. Red arm: bad (sky.cloud_shafts_ignore_clouds=true, the bug) against off must exceed 0.5%.
+#[test]
+#[ignore = "manual gate"]
+fn g34_cloud_shafts() {
+    let base = ["clouds.enabled=true", "clouds.coverage_override=0.5"];
+    let on = shot(&FOG_VALLEY, "g34_on", "7.0", &base, &[]);
+    let off = shot(&FOG_VALLEY, "g34_off", "7.0", &[base[0], base[1], "sky.cloud_shafts=false"], &[]);
+    let bad = shot(&FOG_VALLEY, "g34_bad", "7.0", &[base[0], base[1], "sky.cloud_shafts_ignore_clouds=true"], &[]);
+    let (w, h) = on.dimensions();
+    // Share of the frame whose luma drops by more than 64 levels from b (reference) to a (candidate).
+    let overdark = |a: &RgbImage, b: &RgbImage| {
+        let n = a.pixels().zip(b.pixels()).filter(|(p, q)| luma(q) - luma(p) > 64.0).count();
+        n as f32 / (w * h) as f32
+    };
+    let over_on = overdark(&on, &off);
+    let over_bad = overdark(&bad, &off);
+    println!("G34: over-dark on {:.3}%, bad (ignore_clouds) {:.3}%", 100.0 * over_on, 100.0 * over_bad);
+    let mut red = vec![];
+    if over_on > 0.005 { red.push(format!("over-dark on {:.3}% > budget 0.5%", 100.0 * over_on)); }
+    // A red arm that passes the claim it must fail means the gate cannot fail.
+    if over_bad <= 0.005 { red.push(format!("red arm passes: bad over-dark {:.3}% <= 0.5%: the gate cannot fail", 100.0 * over_bad)); }
+    finish("G34", red);
+}
+
+/// G35 god rays (screen-space, config `rays`): sky_west at 16.0 h, cloud cover 0.5, the sun on screen behind broken cloud. The sun's
+/// pixel is the brightest one of the same view with clouds and rays off. d = luma(on) - luma(off) is read on a ring around the sun of
+/// radius a quarter of the frame height, one point per degree, on-screen points only (at least 90 of them).
+/// (a) Visible: mean d on the ring >= 2 levels (below about 2 of 255 the eye does not see added light on a bright sky). Red arm: a second
+/// rays-off shot against the first must fail it.
+/// (b) Beams, not a glow: std / mean of d round the ring >= 0.3 (light shafts and the shadows between them differ by at least 30% of
+/// their mean; a glow centred on the sun is the same all round). Red arm: rays.flat_source=true (every pixel an equal source, a pure
+/// glow) must fail it.
+#[test]
+#[ignore = "manual gate"]
+fn g35_god_rays() {
+    let base = ["--terrain", "--hour", "16.0", "--set", "clouds.coverage_override=0.5"];
+    let with = |extra: &[&'static str]| { let mut a = base.to_vec(); for s in extra { a.extend(["--set", *s]); } a };
+    let sun_img = still("g35_sun", "sky_west", &with(&["clouds.enabled=false", "rays.enabled=false"]));
+    let on = still("g35_on", "sky_west", &with(&[]));
+    let off = still("g35_off", "sky_west", &with(&["rays.enabled=false"]));
+    let off2 = still("g35_off2", "sky_west", &with(&["rays.enabled=false"]));
+    let flat = still("g35_flat", "sky_west", &with(&["rays.flat_source=true"]));
+    let (w, h) = on.dimensions();
+    let (mut sx, mut sy, mut best) = (0u32, 0u32, -1.0f32);
+    for (x, y, p) in sun_img.enumerate_pixels() { let l = luma(p); if l > best { (sx, sy, best) = (x, y, l); } }
+    let r = 0.25 * h as f32;
+    // Mean and std / mean of d round the ring, and the number of on-screen ring points.
+    let ring = |a: &RgbImage| {
+        let d: Vec<f32> = (0..360).filter_map(|k| {
+            let t = (k as f32).to_radians();
+            let (x, y) = (sx as f32 + r * t.cos(), sy as f32 + r * t.sin());
+            (x >= 0.0 && y >= 0.0 && (x as u32) < w && (y as u32) < h).then(|| luma(a.get_pixel(x as u32, y as u32)) - luma(off.get_pixel(x as u32, y as u32)))
+        }).collect();
+        let n = d.len() as f32;
+        let mean = d.iter().sum::<f32>() / n.max(1.0);
+        let std = (d.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n.max(1.0)).sqrt();
+        (mean, std / mean.abs().max(1e-3), d.len())
+    };
+    let (m_on, cv_on, n) = ring(&on);
+    let (m_red, _, _) = ring(&off2);
+    let (m_flat, cv_flat, _) = ring(&flat);
+    println!("G35: sun px ({sx}, {sy}), ring points {n}; on mean {m_on:.2} cv {cv_on:.3}; red off2 mean {m_red:.2}; red flat mean {m_flat:.2} cv {cv_flat:.3}");
+    let mut red = vec![];
+    if n < 90 { red.push(format!("only {n} ring points on screen < 90")); }
+    if m_on < 2.0 { red.push(format!("on mean {m_on:.2} < budget 2 levels")); }
+    if cv_on < 0.3 { red.push(format!("on cv {cv_on:.3} < budget 0.3")); }
+    // A red arm that passes the claim it must fail means the gate cannot fail.
+    if m_red >= 2.0 { red.push(format!("red arm passes: off2 mean {m_red:.2} >= 2: the gate cannot fail")); }
+    if cv_flat >= 0.3 { red.push(format!("red arm passes: flat cv {cv_flat:.3} >= 0.3: the gate cannot fail")); }
+    finish("G35", red);
 }

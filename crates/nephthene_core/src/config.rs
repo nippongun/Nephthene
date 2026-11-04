@@ -31,6 +31,8 @@ pub struct Config {
     pub clouds: Clouds,
     pub resolve: Resolve,
     pub shafts: Shafts,
+    /// Screen-space god rays toward the sun.
+    pub rays: Rays,
     pub rain: RainCfg,
     pub storms: StormCfg,
     pub audio: audio::Cfg,
@@ -56,6 +58,7 @@ impl Default for Config {
             fog_brightness: vec![[-14.0, 0.01], [-4.0, 0.05], [0.0, 0.35], [10.0, 0.9], [20.0, 1.0]],
             fog: Fog::default(), moon: Moon::default(), stars: Stars::default(), sky: Sky::default(), wind: Wind::default(),
             map: MapCfg::default(), clouds: Clouds::default(), resolve: Resolve::default(), shafts: Shafts::default(),
+            rays: Rays::default(),
             rain: RainCfg::default(), storms: StormCfg::default(), audio: audio::Cfg::default(), air: AirCfg::default(), climate: ClimateCfg::default(), orographic: OroCfg::default(), ground_fog: GroundFog::default(), sim: Sim::default(),
         }
     }
@@ -172,10 +175,14 @@ pub struct Sky {
     /// in-scatter (the sun glow Bevy's aerial perspective puts on a ridge face with the sun behind it), all but `occlusion_keep` of it
     /// (the multiple-scattered share the shadow does not block), sampled at `occlusion_steps` points. Off = Bevy's own (test red arm).
     pub sun_occlusion: bool, pub occlusion_keep: f32, pub occlusion_steps: u32,
+    /// Clouds shadow the air too (god rays): with sun_occlusion on and clouds drawn, the share of a view ray in the cloud shadow cookie (below clouds.bottom_m) also loses its aerial sun in-scatter, all but occlusion_keep; sky pixels are marched to clouds.shadow_half_m. Off = terrain only (test red arm). Default on, untuned.
+    pub cloud_shafts: bool,
+    /// Test switch (red arm of G34's over-darkening budget): true = the cloud-shaft correction ignores the clouds drawn over a pixel, so it darkens cloud and the sky behind it (the bug it guards). Default false.
+    pub cloud_shafts_ignore_clouds: bool,
 }
 impl Default for Sky {
     fn default() -> Self {
-        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8 }
+        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8, cloud_shafts: true, cloud_shafts_ignore_clouds: false }
     }
 }
 
@@ -421,6 +428,42 @@ impl Default for Shafts {
         Shafts { sigma: 0.016, near_m: 50.0, fade_m: 250.0, max_m: 14000.0, xz_m: 1100.0, y_m: 6000.0, ground_keep: 0.4, cloud_lo: 0.05, cloud_hi: 0.4,
                  streak_lo: 0.3, streak_hi: 0.7, gap: 0.05, shear_frac: 0.1, slant_tau_s: 20.0, lean_intensity: 0.7, albedo: 0.6, light_od: 0.03, steps: 80.0,
                  gust_lean: false }
+    }
+}
+
+/// Screen-space god rays (GPU Gems 3, ch. 13): the scene's bright pixels (sky and sunlit cloud edges brighter than `threshold`) are
+/// blurred along lines toward the sun's screen position, so the gaps between clouds and terrain in front of the sun stream light.
+/// Only while the sun is on screen or within `edge_fade` of it. All values untuned.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Rays {
+    /// Off = no pass (test red arm of G35's visibility claim).
+    pub enabled: bool,
+    /// Multiplier on the blurred light added to the scene.
+    pub strength: f32,
+    /// HDR luminance (after exposure) a pixel must exceed to send light; only the excess is used.
+    pub threshold: f32,
+    /// Weight kept per sample walking from the pixel toward the sun.
+    pub decay: f32,
+    /// Source mask: Gaussian radius around the sun, as a fraction of the screen height.
+    pub radius: f32,
+    /// Samples per pixel along the line to the sun.
+    pub samples: u32,
+    /// Resolution of the ray march relative to the view (it is upsampled when added).
+    pub render_scale: f32,
+    /// The rays fade out as the sun leaves the screen, over this distance outside it (screen fraction).
+    pub edge_fade: f32,
+    /// Test switch (red arm of G35's beam claim): true = every pixel is an equal source, so the result is a smooth glow with no beams.
+    pub flat_source: bool,
+    /// Cap on a source pixel's light above `threshold` (HDR luminance), so the sun disc does not swamp the sky gaps.
+    pub source_max: f32,
+    /// Resolution of the prefiltered source the rays are marched through, relative to the view (a box average; it spreads the sun disc
+    /// over more than one march step, which removes ring artifacts).
+    pub source_scale: f32,
+}
+impl Default for Rays {
+    fn default() -> Self {
+        Rays { enabled: true, strength: 12.0, threshold: 0.8, decay: 0.97, radius: 0.35, samples: 64, render_scale: 0.5, edge_fade: 0.2, flat_source: false, source_max: 2.0, source_scale: 0.125 }
     }
 }
 
