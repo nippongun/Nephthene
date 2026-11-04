@@ -71,6 +71,7 @@ Look and cost knobs (all defaults untuned):
 - `still_px`: reprojection motion (march texels) below which the history clamp box is 5x5 instead of 3x3 (0.5).
 - `hash_noise`: test switch, per-step hashed noise (cost gate red arm).
 - `sky.sun_occlusion`, `sky.occlusion_keep`, `sky.occlusion_steps`: with terrain, the share of a view ray in the terrain's shadow loses its aerial sun in-scatter except `occlusion_keep` (0.2), sampled at `occlusion_steps` (8); `sun_occlusion` false = Bevy's own (red arm).
+- `sky.cloud_shafts` (true): the cloud shadow cookie shadows the same view ray as the terrain does, below `clouds.bottom_m`, so air under cloud gaps stays lit and air under clouds loses its sun in-scatter (god rays); sky pixels use a ray of `clouds.shadow_half_m`. Needs `sun_occlusion` and the fog pass running (ground fog on, or terrain). false = terrain only (red arm of G34). The correction is weighted by the share of the pixel the clouds leave uncovered (1 - cloud alpha): cloud colour has its own air, not Bevy's. `sky.cloud_shafts_ignore_clouds` true drops that weight (red arm).
 
 ## Why no fog by default
 

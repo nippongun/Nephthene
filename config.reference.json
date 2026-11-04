@@ -110,7 +110,9 @@
     "msaa_fix": true,
     "sun_occlusion": true,
     "occlusion_keep": 0.2,
-    "occlusion_steps": 8
+    "occlusion_steps": 8,
+    "cloud_shafts": true,
+    "cloud_shafts_ignore_clouds": false
   },
   "wind": {
     "from_deg": 225.0,

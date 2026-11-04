@@ -110,6 +110,7 @@ fn bake(
         (b.field, b.m) = (Some(field), m);
     };
     if let Some(r) = b.task.as_mut().and_then(check_ready) { b.task = None; done(r, &mut b, &mut params); }
+    // ponytail: with ground fog off and no terrain the pass idles, so cloud shafts need one of them; add the cloud term here to run it alone.
     if !c.enabled && !(wx.cfg.sky.sun_occlusion && b.terrain) {
         (params.gpu.y_lo, params.gpu.y_hi, b.cfg, *fog) = (0.0, 0.0, None, FogState::default());
         return;
@@ -180,9 +181,15 @@ fn drive(
     (g.top_billow, g.billow_tile, g.mie_g, g.mie_beta, g.ray_beta) = (c.top_billow_m, c.billow_tile_m, sky.mie_asymmetry, sky.mie_scattering, Vec3::new(5.802e-6, 13.558e-6, 33.1e-6));
     g.hash_noise = c.hash_noise as u32 as f32;
     (g.top_fade, g.cloud_diffuse, g.cloud_cover) = (c.top_fade_m, c.cloud_diffuse, if c.ignore_cloud_sky { 0.0 } else { cover });
+    let mut cookie = None;
     if let Some(cp) = clouds {
         let s = &cp.shadow_gpu;
         (g.sh_origin, g.sh_right, g.sh_up, g.sh_half, g.sh_on) = (s.origin, s.right, s.up, wx.cfg.clouds.shadow_half_m, 1.0);
-        params.cookie = cp.shadow.clone();
+        cookie = Some(cp.shadow.clone());
     }
+    // The air's shadow: terrain where there is a terrain Ground, the cloud cookie where clouds draw (sky.cloud_shafts).
+    (g.occ_terrain, g.occ_cloud, g.occ_cloud_y) = (b.terrain as u32 as f32, (sky.cloud_shafts && g.sh_on > 0.0) as u32 as f32, wx.cfg.clouds.bottom_m);
+    g.occ_cloud_mask = (!sky.cloud_shafts_ignore_clouds) as u32 as f32;
+    g.occ_on = (sky.sun_occlusion && (g.occ_terrain > 0.0 || g.occ_cloud > 0.0)) as u32 as f32;
+    if let Some(h) = cookie { params.cookie = h; }
 }

@@ -172,10 +172,14 @@ pub struct Sky {
     /// in-scatter (the sun glow Bevy's aerial perspective puts on a ridge face with the sun behind it), all but `occlusion_keep` of it
     /// (the multiple-scattered share the shadow does not block), sampled at `occlusion_steps` points. Off = Bevy's own (test red arm).
     pub sun_occlusion: bool, pub occlusion_keep: f32, pub occlusion_steps: u32,
+    /// Clouds shadow the air too (god rays): with sun_occlusion on and clouds drawn, the share of a view ray in the cloud shadow cookie (below clouds.bottom_m) also loses its aerial sun in-scatter, all but occlusion_keep; sky pixels are marched to clouds.shadow_half_m. Off = terrain only (test red arm). Default on, untuned.
+    pub cloud_shafts: bool,
+    /// Test switch (red arm of G34's over-darkening budget): true = the cloud-shaft correction ignores the clouds drawn over a pixel, so it darkens cloud and the sky behind it (the bug it guards). Default false.
+    pub cloud_shafts_ignore_clouds: bool,
 }
 impl Default for Sky {
     fn default() -> Self {
-        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8 }
+        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8, cloud_shafts: true, cloud_shafts_ignore_clouds: false }
     }
 }
 
