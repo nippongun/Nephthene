@@ -98,14 +98,14 @@ pub fn plugin(app: &mut App) {
 /// clouds.pass_timing: GPU timestamps for `ground_fog_march`, `ground_fog_resolve` and `ground_fog_composite`. Prints `FOGMS` every 60 frames (mean ms).
 /// Created in `prepare` (the switch arrives with FogParams, after startup). Off or no TIMESTAMP_QUERY: no query set, no readback.
 #[derive(Resource)]
-struct FogTiming {
+pub(crate) struct FogTiming {
     qs: wgpu::QuerySet, resolve: wgpu::Buffer, read: wgpu::Buffer, sums: [f64; 3], n: u32,
     /// Set by fog_pass when it resolved this frame's timestamps; read_timing reads only then.
     recorded: bool,
 }
 
 #[derive(Resource)]
-struct FogRender {
+pub(crate) struct FogRender {
     atmo: BindGroupLayoutDescriptor, data: [BindGroupLayoutDescriptor; 2], comp: BindGroupLayoutDescriptor, resolve_layout: BindGroupLayoutDescriptor, shader: Handle<Shader>, fullscreen: FullscreenShader,
     smp: Sampler, repeat: Sampler, nearest: Sampler, ubo: UniformBuffer<FogGpu>,
     /// March pipeline per MSAA, resolve pipeline per MSAA, composite pipeline per (MSAA, target format).
@@ -115,7 +115,7 @@ struct FogRender {
 /// The view's pipelines, its half-resolution march targets (premultiplied fog, surface distance) and the resolved history pair
 /// (`read`/`write`, swapped every frame; the composite shows `write`) with the resolve uniform.
 #[derive(Component)]
-struct FogView { march: CachedRenderPipelineId, resolve: CachedRenderPipelineId, composite: CachedRenderPipelineId, low: CachedTexture, t: CachedTexture, read: CachedTexture, write: CachedTexture, ubo: UniformBuffer<FogResolveGpu> }
+pub(crate) struct FogView { march: CachedRenderPipelineId, resolve: CachedRenderPipelineId, composite: CachedRenderPipelineId, low: CachedTexture, t: CachedTexture, read: CachedTexture, write: CachedTexture, ubo: UniformBuffer<FogResolveGpu> }
 
 /// Last frame's view, kept on the render-world view entity. A size change, a skipped frame, a cut or a frame the fog pass skipped resets the history.
 #[derive(Component)]
@@ -229,7 +229,7 @@ fn prepare(
     }
 }
 
-fn fog_pass(
+pub(crate) fn fog_pass(
     view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &Msaa, &FogView, &AtmosphereTextures, &DynamicUniformIndex<GpuAtmosphere>, &DynamicUniformIndex<GpuAtmosphereSettings>, &AtmosphereTransformsOffset, &ViewUniformOffset, Option<&crate::clouds::render::CloudTextures>)>,
     render: Option<Res<FogRender>>, params: Option<Res<FogParams>>, images: Res<RenderAssets<GpuImage>>, cache: Res<PipelineCache>, fallback: Res<FallbackImageZero>,
     atmo_sampler: Res<AtmosphereSampler>, view_uniforms: Res<ViewUniforms>, transforms: Res<AtmosphereTransforms>,

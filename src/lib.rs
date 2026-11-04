@@ -22,6 +22,7 @@ mod orographic;
 #[cfg(feature = "panel")]
 mod panel;
 mod rain;
+mod rays;
 mod sky;
 mod storms;
 
@@ -62,6 +63,7 @@ impl Plugin for NephthenePlugin {
         if self.config.clouds.enabled { app.add_plugins(clouds::CloudPlugin); }
         app.add_plugins((rain::RainPlugin, storms::StormPlugin, lightning::LightningPlugin));
         app.add_plugins(fog::FogPlugin);
+        app.add_plugins(rays::RaysPlugin);
         app.add_plugins(orographic::OroPlugin);
         #[cfg(feature = "panel")]
         app.add_plugins(panel::PanelPlugin);

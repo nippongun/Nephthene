@@ -274,6 +274,19 @@
     "steps": 80.0,
     "gust_lean": false
   },
+  "rays": {
+    "enabled": true,
+    "strength": 12.0,
+    "threshold": 0.8,
+    "decay": 0.97,
+    "radius": 0.35,
+    "samples": 64,
+    "render_scale": 0.5,
+    "edge_fade": 0.2,
+    "flat_source": false,
+    "source_max": 2.0,
+    "source_scale": 0.125
+  },
   "rain": {
     "enabled": true,
     "half_m": 40.0,
