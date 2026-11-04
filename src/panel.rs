@@ -26,7 +26,7 @@ struct DashPanel;
 struct MapView;
 /// Which control an event came from.
 #[derive(Component, Clone, Copy, PartialEq, Debug)]
-pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, StormsOn, StormNow, Clouds, Shadows, Debug, UpdateDiv, Channel, Giz(usize) }
+pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, StormsOn, StormNow, Clouds, Shadows, Debug, UpdateDiv, EdgeLod, Channel, Giz(usize) }
 /// Option index a select currently shows (so a state change elsewhere moves it).
 #[derive(Component)]
 struct SelShown(usize);
@@ -191,6 +191,10 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
     let r = row(cm, root);
     lbl(cm, r, "Cloud update div");
     select(cm, r, Wid::UpdateDiv, &["1 (full, slow)", "2", "4 (default)"], 2);
+    // Edge LOD: fewer cloud march steps and less detail toward the screen edges (clouds.edge_lod).
+    let r = row(cm, root);
+    lbl(cm, r, "Cloud edge LOD");
+    toggle(cm, r, Wid::EdgeLod);
     // map
     heading(cm, root, "Map");
     let r = row(cm, root);
@@ -266,6 +270,7 @@ fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut 
     match kind(&q, ev.source) {
         Some(Wid::Rain) => d.0.rain = v,
         Some(Wid::FogOn) => wx.cfg.ground_fog.enabled = v,
+        Some(Wid::EdgeLod) => wx.cfg.clouds.edge_lod.enabled = v,
         Some(Wid::StormsOn) => if let Some(mut s) = storms { s.cfg.enabled = v; },
         Some(Wid::Clouds) => d.0.clouds = v,
         Some(Wid::Shadows) => d.0.shadows = v,
@@ -349,7 +354,7 @@ fn sync_widgets(
         if (v.0 - want).abs() > 1e-4 { commands.entity(e).insert(SliderValue(want)); }
     }
     for (e, k, on) in &checks {
-        let want = match k { Wid::Rain => d.0.rain, Wid::FogOn => g.enabled, Wid::StormsOn => storms.as_ref().is_some_and(|s| s.cfg.enabled), Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
+        let want = match k { Wid::Rain => d.0.rain, Wid::FogOn => g.enabled, Wid::EdgeLod => wx.cfg.clouds.edge_lod.enabled, Wid::StormsOn => storms.as_ref().is_some_and(|s| s.cfg.enabled), Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
         if want && !on { commands.entity(e).insert(Checked); } else if !want && on { commands.entity(e).remove::<Checked>(); }
     }
     for (e, k, v) in &nums {

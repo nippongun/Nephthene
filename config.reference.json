@@ -206,6 +206,14 @@
       "horizon_step_y": 0.5,
       "cheap_empty_steps": 6
     },
+    "edge_lod": {
+      "enabled": false,
+      "r0": 0.5,
+      "r1": 1.2,
+      "step_scale": 0.5,
+      "detail_r0": 0.8,
+      "detail_r1": 1.2
+    },
     "noise": {
       "base_res": 128,
       "base_freqs": [
