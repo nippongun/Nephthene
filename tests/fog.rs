@@ -1,4 +1,4 @@
-//! Ground fog gates G15-G21 and god ray gates G34-G35 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
+//! Ground fog gates G15-G21 and god ray gates G34-G36 (headless; every shot is the `sky` example in `--shot` mode with `--terrain`). Manual, #[ignore]:
 //! `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`. Metrics print before asserting.
 //! Pixels are classed on the CPU: each pose ray is cast into the test valley and marched through nephthene_core::fog's own density
 //! (no noise), so "pooled" and "clear" pixels come from the model, not from hand-picked image regions.
@@ -385,4 +385,31 @@ fn g35_god_rays() {
     if m_red >= 2.0 { red.push(format!("red arm passes: off2 mean {m_red:.2} >= 2: the gate cannot fail")); }
     if cv_flat >= 0.3 { red.push(format!("red arm passes: flat cv {cv_flat:.3} >= 0.3: the gate cannot fail")); }
     finish("G35", red);
+}
+
+/// G36 god rays leave a clear sky alone (config rays.local_mean): sky_west at 16.0 h, `--terrain`, clouds off, the sun on screen over
+/// open sky. Nothing stands in front of the sun, so there is no beam to draw: d = luma(on) - luma(off) averaged over the bottom half of
+/// the frame (lit ground) must stay <= 10 levels (about 4% of the range: a faint haze; above it the frame reads as a white film).
+/// Red arm: rays.local_mean=false (the whole blurred sky is added, the wash this gate guards against) must exceed it.
+#[test]
+#[ignore = "manual gate"]
+fn g36_rays_clear_sky() {
+    let base = ["--terrain", "--hour", "16.0", "--set", "clouds.enabled=false"];
+    let with = |extra: &[&'static str]| { let mut a = base.to_vec(); for s in extra { a.extend(["--set", *s]); } a };
+    let on = still("g36_on", "sky_west", &with(&[]));
+    let off = still("g36_off", "sky_west", &with(&["rays.enabled=false"]));
+    let wash = still("g36_wash", "sky_west", &with(&["rays.local_mean=false"]));
+    let (w, h) = on.dimensions();
+    let d = |a: &RgbImage| {
+        let mut s = 0.0f64;
+        for y in h / 2..h { for x in 0..w { s += (luma(a.get_pixel(x, y)) - luma(off.get_pixel(x, y))) as f64; } }
+        (s / (w as f64 * (h - h / 2) as f64)) as f32
+    };
+    let (d_on, d_wash) = (d(&on), d(&wash));
+    println!("G36: bottom-half mean added light: on {d_on:.2}, red local_mean=false {d_wash:.2} (budget 10 levels)");
+    let mut red = vec![];
+    if d_on > 10.0 { red.push(format!("on adds {d_on:.2} > budget 10 levels")); }
+    // A red arm that passes the claim it must fail means the gate cannot fail.
+    if d_wash <= 10.0 { red.push(format!("red arm passes: local_mean=false adds {d_wash:.2} <= 10: the gate cannot fail")); }
+    finish("G36", red);
 }
