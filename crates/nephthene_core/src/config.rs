@@ -776,9 +776,13 @@ pub struct Sim {
     pub here_tau_s: f32,
     /// Open the weather panel at start.
     pub panel_open: bool,
+    /// File the panel's Save and Load buttons use (relative to the working directory). A game loads it with `Config::load`.
+    pub settings_file: String,
+    /// Panel sections open at start, by key (`rays`, `ground_fog`) or title (`Clock`).
+    pub panel_expand: Vec<String>,
 }
 impl Default for Sim {
-    fn default() -> Self { Sim { here_tau_s: 5.0, panel_open: false } }
+    fn default() -> Self { Sim { here_tau_s: 5.0, panel_open: false, settings_file: "nephthene_settings.json".into(), panel_expand: vec![] } }
 }
 
 #[cfg(test)]

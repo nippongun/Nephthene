@@ -2,3 +2,4 @@ target/
 shots/
 .DS_Store
 __pycache__/
+nephthene_settings.json

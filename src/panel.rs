@@ -1,6 +1,6 @@
 //! Weather panel: a mouse-driven panel (bevy_feathers widgets) on the left. Thin Bevy adapter; the state and maths are in
 //! `nephthene_core::dash` (unit-tested). Open/close: ` (Backquote) or the [x]; `Panel.0.open` is the state, so a host can gate its own
-//! input on it (`Res<Panel>`). All overrides are runtime-only; sizes are px, untuned.
+//! input on it (`Res<Panel>`). Overrides are runtime-only until Save writes them to sim.settings_file; sizes are px, untuned.
 use crate::{clouds::CloudParams, rain::RainState, sky::Weather};
 use bevy::{
     asset::RenderAssetUsages, feathers::{FeathersPlugins, controls::*, dark_theme::create_dark_theme, display::{caption, label, label_dim}, theme::UiTheme},
@@ -9,12 +9,16 @@ use bevy::{
     ui::{Checked, RelativeCursorPosition}, ui_widgets::{Activate, Checkbox, SetSelected, SliderPrecision, SliderValue, ValueChange},
 };
 use nephthene_core::{self as w, dash::{self as c, Channel, Ctl}};
+use nephthene_core::knobs::{self as k, Kind, Knob};
 
 const PANEL_W: f32 = 430.0;
 const MAP_W: f32 = PANEL_W - 24.0;
 
 #[derive(Resource)]
 pub struct Panel(pub Ctl, pub String);
+/// The settings rows and the config they reset to (the one the game started with).
+#[derive(Resource)]
+struct Knobs { list: Vec<Knob>, start: w::config::Config }
 #[derive(Resource)]
 struct MapImage(Handle<Image>);
 /// Map uv (0..1, v down from the north edge) under the cursor.
@@ -24,14 +28,22 @@ struct MapHover(Option<Vec2>);
 struct DashPanel;
 #[derive(Component)]
 struct MapView;
+/// A clickable section heading (index into the section list) and the body it shows or hides.
+#[derive(Component, Clone, Copy)]
+struct SectionHead(usize);
+#[derive(Component, Clone, Copy)]
+struct SectionBody(usize);
+/// Section titles in spawn order.
+#[derive(Resource, Default)]
+struct Sections(Vec<String>);
 /// Which control an event came from.
 #[derive(Component, Clone, Copy, PartialEq, Debug)]
-pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, StormsOn, StormNow, Clouds, Shadows, Debug, UpdateDiv, EdgeLod, Channel, Giz(usize) }
+pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, StormsOn, StormNow, Clouds, Shadows, Debug, UpdateDiv, EdgeLod, Channel, Giz(usize), Knob(usize), KnobReset(usize), Save, Load }
 /// Option index a select currently shows (so a state change elsewhere moves it).
 #[derive(Component)]
 struct SelShown(usize);
 #[derive(Component, Clone, Copy, Default)]
-enum Txt { #[default] Time, Play, Here, Air, Climate, Oro, Rain, Sun, Frame, Hover, Pin, Fog, Storm }
+enum Txt { #[default] Time, Play, Here, Air, Climate, Oro, Rain, Sun, Frame, Hover, Pin, Fog, Storm, Status }
 #[derive(Component, Clone, Copy, PartialEq)]
 enum Mark { Cam, Heading, Pin, Storm(usize) }
 
@@ -39,11 +51,12 @@ pub struct PanelPlugin;
 impl Plugin for PanelPlugin {
     fn build(&self, app: &mut App) {
         let open = app.world().resource::<Weather>().cfg.sim.panel_open;
+        let cfg = app.world().resource::<Weather>().cfg.clone();
         app.add_plugins(FeathersPlugins).insert_resource(UiTheme(create_dark_theme()))
-            .insert_resource(Panel(Ctl { open, ..default() }, String::new())).init_resource::<MapHover>()
-            .add_observer(on_activate).add_observer(on_f32).add_observer(on_bool).add_observer(on_select).add_observer(on_map_move).add_observer(on_map_out).add_observer(on_map_click)
+            .insert_resource(Panel(Ctl { open, ..default() }, String::new())).insert_resource(Knobs { list: k::knobs(), start: cfg }).init_resource::<MapHover>().init_resource::<Sections>()
+            .add_observer(on_activate).add_observer(on_f32).add_observer(on_bool).add_observer(on_select).add_observer(on_map_move).add_observer(on_map_out).add_observer(on_map_click).add_observer(on_section_click)
             .add_systems(PostStartup, (spawn, gizmo_style))
-            .add_systems(Update, (input, apply.after(crate::NephtheneSet::Tick).before(crate::NephtheneSet::Drive), sync_widgets, refresh_ui, scroll, draw_gizmos).chain().after(crate::NephtheneSet::Tick));
+            .add_systems(Update, (input, apply.after(crate::NephtheneSet::Tick).before(crate::NephtheneSet::Drive), sync_widgets, sync_knobs, refresh_ui, scroll, draw_gizmos).chain().after(crate::NephtheneSet::Tick));
     }
 }
 
@@ -64,10 +77,15 @@ const ORANGE: Color = Color::srgb(1.0, 0.55, 0.15);
 const CREAM: Color = Color::srgb(0.96, 0.92, 0.82);
 const PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.09, 0.94);
 const RING: Color = Color::srgb(0.35, 0.35, 0.4);
-fn heading(cm: &mut Commands, parent: Entity, t: &str) {
-    cm.spawn((Text::new(t), TextFont { font_size: FontSize::Px(20.0), ..default() },
+/// A heading and its body; click the heading to fold it. Open when `open` or named in `expand` (sim.panel_expand). Returns the body.
+fn section(cm: &mut Commands, parent: Entity, titles: &mut Vec<String>, expand: &[String], t: &str, open: bool) -> Entity {
+    let (i, open) = (titles.len(), open || expand.iter().any(|x| x == t));
+    titles.push(t.to_string());
+    cm.spawn((SectionHead(i), Text::new(head_text(t, open)), TextFont { font_size: FontSize::Px(20.0), ..default() },
         TextColor(ORANGE), Node { margin: UiRect::top(px(6.0)), ..default() }, ChildOf(parent)));
+    cm.spawn((SectionBody(i), Node { flex_direction: FlexDirection::Column, row_gap: px(6.0), display: if open { Display::Flex } else { Display::None }, ..default() }, ChildOf(parent))).id()
 }
+fn head_text(t: &str, open: bool) -> String { format!("{} {t}", if open { "-" } else { "+" }) }
 fn lbl(cm: &mut Commands, parent: Entity, t: &str) { cm.spawn_scene(label(t.to_string())).insert(ChildOf(parent)); }
 fn dim(cm: &mut Commands, parent: Entity, t: &str) { cm.spawn_scene(label_dim(t.to_string())).insert(ChildOf(parent)); }
 fn select(cm: &mut Commands, parent: Entity, wid: Wid, names: &[&str], cur: usize) {
@@ -94,8 +112,24 @@ fn checkbox(cm: &mut Commands, parent: Entity, wid: Wid, text: &str) {
     let text = text.to_string();
     cm.spawn_scene(bsn! { @FeathersCheckbox { @caption: bsn! { @caption(text) } } }).insert((wid, ChildOf(parent)));
 }
+fn knob_slider(cm: &mut Commands, parent: Entity, wid: Wid, min: f32, max: f32, precision: i32) {
+    cm.spawn_scene(bsn! { @FeathersSlider { @min: min, @max: max } SliderPrecision(precision) }).insert((wid, ChildOf(parent)));
+}
+/// One section of generated rows: a reset button, then a label and a slider or toggle per knob.
+fn knob_rows(cm: &mut Commands, body: Entity, list: &[Knob], key: &str, section_i: usize) {
+    let r = row(cm, body);
+    button(cm, r, Wid::KnobReset(section_i), "Reset section", None);
+    for (i, kn) in list.iter().enumerate() {
+        if k::section(&kn.path) != key { continue; }
+        let r = row(cm, body);
+        let cell = cm.spawn((Node { width: px(200.0), flex_shrink: 0.0, ..default() }, ChildOf(r))).id();
+        lbl(cm, cell, k::label(&kn.path));
+        if kn.kind == Kind::Bool { toggle(cm, r, Wid::Knob(i)); } else { knob_slider(cm, r, Wid::Knob(i), kn.min, kn.max, kn.precision()); }
+    }
+}
 
-fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images: ResMut<Assets<Image>>) {
+fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, knobs: Res<Knobs>, mut images: ResMut<Assets<Image>>) {
+    let (mut titles, expand) = (Vec::new(), wx.cfg.sim.panel_expand.clone());
     let map = &wx.map;
     let mut img = Image::new(Extent3d { width: map.width, height: map.height, depth_or_array_layers: 1 }, TextureDimension::D2,
         c::effective_rgba(map, &dash.0), TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
@@ -116,91 +150,96 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
     cm.spawn((Node { flex_grow: 1.0, ..default() }, ChildOf(h)));
     cm.spawn_scene(label_dim("` to close".to_string())).insert(ChildOf(h));
     button(cm, h, Wid::Close, "x", None);
-    // clock
-    heading(cm, root, "Clock");
     let r = row(cm, root);
+    button(cm, r, Wid::Save, "Save", None);
+    button(cm, r, Wid::Load, "Load", None);
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Status, ChildOf(root)));
+    // clock
+    let s = section(cm, root, &mut titles, &expand, "Clock", true);
+    let r = row(cm, s);
     cm.spawn_scene(label_dim("--:--".to_string())).insert((Txt::Time, ChildOf(r)));
     cm.spawn((Node { flex_grow: 1.0, ..default() }, ChildOf(r)));
     button(cm, r, Wid::PlayPause, "Pause", Some(Txt::Play));
-    let r = row(cm, root);
+    let r = row(cm, s);
     slider(cm, r, Wid::Hour, 0.0, 24.0);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Rate");
     select(cm, r, Wid::Rate, &c::RATE_NAMES, rate_i);
     // weather
-    heading(cm, root, "Weather");
-    let r = row(cm, root);
+    let s = section(cm, root, &mut titles, &expand, "Weather", true);
+    let r = row(cm, s);
     lbl(cm, r, "Coverage");
     select(cm, r, Wid::CovMode, &["map", "override"], dash.0.coverage.is_some() as usize);
-    let r = row(cm, root);
+    let r = row(cm, s);
     slider(cm, r, Wid::Cov, 0.0, 1.0);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Wind from (deg)");
     number(cm, r, Wid::WindDir, 0.0, 360.0);
     lbl(cm, r, "speed (m/s)");
     number(cm, r, Wid::WindSpeed, 0.0, 30.0);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Rain");
     toggle(cm, r, Wid::Rain);
     dim(cm, r, "(forces rain: streaks, splashes, wet ground)");
     cm.spawn((Node { flex_grow: 1.0, ..default() }, ChildOf(r)));
     button(cm, r, Wid::Reset, "Reset all", None);
+    for key in k::sections(&knobs.list) { if key != "rays" { continue; } let i = titles.len(); let s = section(cm, root, &mut titles, &expand, k::title(&key), expand.contains(&key)); knob_rows(cm, s, &knobs.list, &key, i); }
     // fog: the switch, the amount (model or forced), and the knobs that shape the pool and its top
-    heading(cm, root, "Fog");
-    let r = row(cm, root);
+    let s = section(cm, root, &mut titles, &expand, "Fog", false);
+    let r = row(cm, s);
     lbl(cm, r, "Ground fog");
     toggle(cm, r, Wid::FogOn);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Amount");
     select(cm, r, Wid::FogMode, &["model", "force"], wx.cfg.ground_fog.force.is_some() as usize);
-    let r = row(cm, root);
+    let r = row(cm, s);
     slider(cm, r, Wid::FogAmount, 0.0, 1.0);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Burn-off per hour");
     slider(cm, r, Wid::FogBurn, 0.0, 3.0);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Pool depth (m)");
     slider(cm, r, Wid::FogDepth, 20.0, 400.0);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Visibility (m)");
     slider(cm, r, Wid::FogVis, 30.0, 1000.0);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Wisps (m)");
     slider(cm, r, Wid::FogWisp, 0.0, 120.0);
-    cm.spawn_scene(label_dim(String::new())).insert((Txt::Fog, ChildOf(root)));
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Fog, ChildOf(s)));
     // storms: the switch, a summon, and the readout (nearest cell, storm weather here)
-    heading(cm, root, "Storms");
-    let r = row(cm, root);
+    let s = section(cm, root, &mut titles, &expand, "Storms", false);
+    let r = row(cm, s);
     lbl(cm, r, "Storms");
     toggle(cm, r, Wid::StormsOn);
     cm.spawn((Node { flex_grow: 1.0, ..default() }, ChildOf(r)));
     button(cm, r, Wid::StormNow, "Storm now", None);
-    dim(cm, root, "(Storm now: a mature cell upwind that drifts over you)");
-    cm.spawn_scene(label_dim(String::new())).insert((Txt::Storm, ChildOf(root)));
+    dim(cm, s, "(Storm now: a mature cell upwind that drifts over you)");
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Storm, ChildOf(s)));
     // view
-    heading(cm, root, "View");
-    let r = row(cm, root);
+    let s = section(cm, root, &mut titles, &expand, "View", false);
+    let r = row(cm, s);
     lbl(cm, r, "Clouds");
     toggle(cm, r, Wid::Clouds);
     lbl(cm, r, "Shadows");
     toggle(cm, r, Wid::Shadows);
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Debug view");
     select(cm, r, Wid::Debug, &c::DEBUG_NAMES, dash.0.debug as usize);
     // A/B the cloud resolve live (1 = every pixel marched every frame, the reference; 4 = default). Synced to the real value on open.
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Cloud update div");
     select(cm, r, Wid::UpdateDiv, &["1 (full, slow)", "2", "4 (default)"], 2);
     // Edge LOD: fewer cloud march steps and less detail toward the screen edges (clouds.edge_lod).
-    let r = row(cm, root);
+    let r = row(cm, s);
     lbl(cm, r, "Cloud edge LOD");
     toggle(cm, r, Wid::EdgeLod);
     // map
-    heading(cm, root, "Map");
-    let r = row(cm, root);
+    let s = section(cm, root, &mut titles, &expand, "Map", false);
+    let r = row(cm, s);
     lbl(cm, r, "Channel");
     select(cm, r, Wid::Channel, &Channel::ALL.map(Channel::label), dash.0.channel.index());
-    let m = cm.spawn((MapView, Node { width: px(MAP_W), height: px(map_h), flex_shrink: 0.0, ..default() }, ChildOf(root))).id();
+    let m = cm.spawn((MapView, Node { width: px(MAP_W), height: px(map_h), flex_shrink: 0.0, ..default() }, ChildOf(s))).id();
     cm.spawn((ImageNode::new(handle), Node { position_type: PositionType::Absolute, width: px(MAP_W), height: px(map_h), ..default() }, Pickable::IGNORE, ChildOf(m)));
     // storm marks first, so the camera mark draws on top of them
     for i in 0..nephthene_core::storm::MAX_CELLS {
@@ -210,25 +249,38 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, mut images:
         let n = Node { position_type: PositionType::Absolute, border: if border { UiRect::all(px(2.0)) } else { default() }, ..default() };
         if border { cm.spawn((k, n, BorderColor::all(color), Pickable::IGNORE, ChildOf(m))); } else { cm.spawn((k, n, BackgroundColor(color), Pickable::IGNORE, ChildOf(m))); }
     }
-    dim(cm, root, "red dot = you (bar = heading), yellow = pinned, violet = storms. north up.");
-    cm.spawn_scene(label("hover the map".to_string())).insert((Txt::Hover, ChildOf(root)));
-    cm.spawn_scene(label("click the map to pin a point".to_string())).insert((Txt::Pin, ChildOf(root)));
+    dim(cm, s, "red dot = you (bar = heading), yellow = pinned, violet = storms. north up.");
+    cm.spawn_scene(label("hover the map".to_string())).insert((Txt::Hover, ChildOf(s)));
+    cm.spawn_scene(label("click the map to pin a point".to_string())).insert((Txt::Pin, ChildOf(s)));
     // gizmos: the legend
-    heading(cm, root, "Gizmos (in the world)");
+    let s = section(cm, root, &mut titles, &expand, "Gizmos (in the world)", false);
     for (i, (name, rgb)) in c::GIZMOS.iter().enumerate() {
-        let r = row(cm, root);
+        let r = row(cm, s);
         cm.spawn((Node { width: px(26.0), height: px(10.0), border_radius: BorderRadius::all(px(3.0)), ..default() }, BackgroundColor(col(*rgb)), ChildOf(r)));
         checkbox(cm, r, Wid::Giz(i), name);
     }
+    // ponytail: about 300 rows, folded with Display::None; spawn them on first open if startup cost shows.
+    for key in k::sections(&knobs.list) { if key == "rays" { continue; } let i = titles.len(); let s = section(cm, root, &mut titles, &expand, k::title(&key), expand.contains(&key)); knob_rows(cm, s, &knobs.list, &key, i); }
     // readout
-    heading(cm, root, "Here");
-    cm.spawn_scene(label(String::new())).insert((Txt::Here, ChildOf(root)));
-    cm.spawn_scene(label(String::new())).insert((Txt::Air, ChildOf(root)));
-    cm.spawn_scene(label_dim(String::new())).insert((Txt::Climate, ChildOf(root)));
-    cm.spawn_scene(label_dim(String::new())).insert((Txt::Oro, ChildOf(root)));
-    cm.spawn_scene(label_dim(String::new())).insert((Txt::Rain, ChildOf(root)));
-    cm.spawn_scene(label(String::new())).insert((Txt::Sun, ChildOf(root)));
-    cm.spawn_scene(label_dim(String::new())).insert((Txt::Frame, ChildOf(root)));
+    let s = section(cm, root, &mut titles, &expand, "Here", false);
+    cm.spawn_scene(label(String::new())).insert((Txt::Here, ChildOf(s)));
+    cm.spawn_scene(label(String::new())).insert((Txt::Air, ChildOf(s)));
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Climate, ChildOf(s)));
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Oro, ChildOf(s)));
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Rain, ChildOf(s)));
+    cm.spawn_scene(label(String::new())).insert((Txt::Sun, ChildOf(s)));
+    cm.spawn_scene(label_dim(String::new())).insert((Txt::Frame, ChildOf(s)));
+    commands.insert_resource(Sections(titles));
+}
+
+fn on_section_click(ev: On<PointerClick>, heads: Query<&SectionHead>, mut texts: Query<&mut Text>, mut bodies: Query<(&SectionBody, &mut Node)>, sections: Res<Sections>) {
+    let Ok(h) = heads.get(ev.entity) else { return };
+    for (b, mut n) in &mut bodies {
+        if b.0 != h.0 { continue; }
+        let open = n.display == Display::None;
+        n.display = if open { Display::Flex } else { Display::None };
+        if let (Ok(mut t), Some(name)) = (texts.get_mut(ev.entity), sections.0.get(h.0)) { t.0 = head_text(name, open); }
+    }
 }
 
 fn input(key: Option<Res<ButtonInput<KeyCode>>>, mut d: ResMut<Panel>) {
@@ -238,20 +290,43 @@ fn input(key: Option<Res<ButtonInput<KeyCode>>>, mut d: ResMut<Panel>) {
 // ---- events from the widgets ----
 fn kind(q: &Query<&Wid>, e: Entity) -> Option<Wid> { q.get(e).ok().copied() }
 
-fn on_activate(ev: On<Activate>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, storms: Option<ResMut<crate::storms::Storms>>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>) {
+/// Title of the section at index `i` of the panel's section list.
+fn titles_key(s: &Sections, i: usize) -> Option<String> { s.0.get(i).cloned() }
+
+fn on_activate(ev: On<Activate>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, storms: Option<ResMut<crate::storms::Storms>>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>,
+    knobs: Res<Knobs>, sections: Res<Sections>) {
     let base = wx.cfg.clock.minutes_per_second / 60.0;
     match kind(&q, ev.entity) {
         Some(Wid::Close) => d.0.open = false,
         Some(Wid::PlayPause) => wx.rate = if wx.rate > 0.0 { 0.0 } else { base },
         Some(Wid::Reset) => d.0.reset_weather(),
         Some(Wid::StormNow) => if let Some(mut s) = storms && let Some(p) = cam.iter().next().map(|g| g.translation()) { s.cfg.enabled = true; s.summon(&wx, p); },
+        Some(Wid::KnobReset(i)) => {
+            let key = titles_key(&sections, i);
+            let v = k::value(&knobs.start);
+            for kn in knobs.list.iter().filter(|x| Some(k::title(k::section(&x.path))) == key.as_deref()) { if let Some(x) = kn.read(&v) { let _ = kn.write(&mut wx.cfg, x); } }
+        }
+        Some(Wid::Save) => {
+            let path = wx.cfg.sim.settings_file.clone();
+            let mut c = d.0.saved(&wx.cfg);
+            if let Some(s) = storms.as_ref() { c.storms.enabled = s.cfg.enabled; }
+            d.1 = match std::fs::write(&path, k::diff_json(&c)) { Ok(()) => format!("saved {path}"), Err(e) => format!("save failed: {path}: {e}") };
+        }
+        Some(Wid::Load) => {
+            let path = wx.cfg.sim.settings_file.clone();
+            d.1 = match w::config::Config::load(std::path::Path::new(&path)) {
+                Ok(f) => { let (c, n) = k::merge_live(&wx.cfg, &f); wx.cfg = c; d.0.reset_weather(); d.0.coverage = f.clouds.coverage_override; format!("loaded {n} changes from {path}; startup values apply at next launch") }
+                Err(e) => format!("load failed: {e}"),
+            };
+        }
         _ => {}
     }
 }
 
-fn on_f32(ev: On<ValueChange<f32>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>) {
+fn on_f32(ev: On<ValueChange<f32>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, knobs: Res<Knobs>) {
     let v = ev.value;
     match kind(&q, ev.source) {
+        Some(Wid::Knob(i)) => { let _ = knobs.list[i].write(&mut wx.cfg, v); }
         Some(Wid::Hour) => wx.hour = v.rem_euclid(24.0),
         Some(Wid::Cov) => d.0.coverage = Some(v.clamp(0.0, 1.0)),
         Some(Wid::WindDir) => d.0.wind_from = Some(c::wrap_deg(v)),
@@ -265,9 +340,10 @@ fn on_f32(ev: On<ValueChange<f32>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx
     }
 }
 
-fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, storms: Option<ResMut<crate::storms::Storms>>) {
+fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut wx: ResMut<Weather>, storms: Option<ResMut<crate::storms::Storms>>, knobs: Res<Knobs>) {
     let v = ev.value;
     match kind(&q, ev.source) {
+        Some(Wid::Knob(i)) => { let _ = knobs.list[i].write(&mut wx.cfg, if v { 1.0 } else { 0.0 }); }
         Some(Wid::Rain) => d.0.rain = v,
         Some(Wid::FogOn) => wx.cfg.ground_fog.enabled = v,
         Some(Wid::EdgeLod) => wx.cfg.clouds.edge_lod.enabled = v,
@@ -323,7 +399,7 @@ fn apply(mut d: ResMut<Panel>, mut wx: ResMut<Weather>, mut rain: ResMut<RainSta
         p.gpu.coverage_override = d.0.gpu_coverage();
         p.gpu.precip_override = d.0.gpu_precip();
         p.gpu.debug = d.0.debug;
-        p.shadow_gpu.strength = d.0.shadow_strength(wx.cfg.clouds.shadow_strength);
+        p.shadow_draw_gpu.strength = d.0.shadow_strength(wx.cfg.clouds.shadow_strength);
     }
     if d.0.wind_from.is_some() || d.0.wind_speed.is_some() {
         wx.wind = w::wind(&c::wind_with(&wx.cfg.wind, d.0.wind_from, d.0.wind_speed), time.elapsed_secs());
@@ -376,6 +452,21 @@ fn sync_widgets(
     if *shown_map != Some(key) && let Some(m) = &map_img && let Some(mut i) = images.get_mut(&m.0) {
         i.data = Some(c::effective_rgba(&wx.map, &d.0));
         *shown_map = Some(key);
+    }
+}
+
+/// Config -> settings rows. ponytail: serialises the config every frame while the panel is open (a debug panel; about 100 us), compare a cached config if it shows.
+fn sync_knobs(mut commands: Commands, d: Res<Panel>, wx: Res<Weather>, knobs: Res<Knobs>, sliders: Query<(Entity, &Wid, &SliderValue)>, checks: Query<(Entity, &Wid, Has<Checked>), With<Checkbox>>) {
+    if !d.0.open { return; }
+    let v = k::value(&wx.cfg);
+    for (e, id, s) in &sliders {
+        let Wid::Knob(i) = id else { continue };
+        if let Some(want) = knobs.list[*i].read(&v) && (s.0 - want).abs() > 1e-6 { commands.entity(e).insert(SliderValue(want)); }
+    }
+    for (e, id, on) in &checks {
+        let Wid::Knob(i) = id else { continue };
+        let want = knobs.list[*i].read(&v).is_some_and(|x| x > 0.5);
+        if want && !on { commands.entity(e).insert(Checked); } else if !want && on { commands.entity(e).remove::<Checked>(); }
     }
 }
 
@@ -445,6 +536,7 @@ fn refresh_ui(
             Txt::Storm => storm_txt(storms.as_deref(), &wx, p),
             Txt::Hover => hover_txt.clone(),
             Txt::Pin => pin_txt.clone(),
+            Txt::Status => d.1.clone(),
         };
         if t.0 != s { t.0 = s; }
     }
