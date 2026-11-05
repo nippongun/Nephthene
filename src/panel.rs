@@ -4,15 +4,16 @@
 use crate::{clouds::CloudParams, rain::RainState, sky::Weather};
 use bevy::{
     asset::RenderAssetUsages, feathers::{FeathersPlugins, controls::*, dark_theme::create_dark_theme, display::{caption, label, label_dim}, theme::UiTheme},
-    gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore}, image::ImageSampler, input::mouse::{MouseScrollUnit, MouseWheel}, pbr::AtmosphereSettings,
+    gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore}, image::ImageSampler, pbr::AtmosphereSettings,
     picking::events::{PointerClick, PointerMove, PointerOut}, prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    ui::{Checked, RelativeCursorPosition}, ui_widgets::{Activate, Checkbox, SetSelected, SliderPrecision, SliderValue, ValueChange},
+    ui::Checked, ui_widgets::{Activate, Checkbox, ControlOrientation, ScrollArea, SetSelected, SliderPrecision, SliderValue, ValueChange},
 };
+use bevy::ecs::template::EntityTemplate;
 use nephthene_core::{self as w, dash::{self as c, Channel, Ctl}};
 use nephthene_core::knobs::{self as k, Kind, Knob};
 
 const PANEL_W: f32 = 430.0;
-const MAP_W: f32 = PANEL_W - 24.0;
+const MAP_W: f32 = PANEL_W - 34.0;
 
 #[derive(Resource)]
 pub struct Panel(pub Ctl, pub String);
@@ -56,7 +57,7 @@ impl Plugin for PanelPlugin {
             .insert_resource(Panel(Ctl { open, ..default() }, String::new())).insert_resource(Knobs { list: k::knobs(), start: cfg }).init_resource::<MapHover>().init_resource::<Sections>()
             .add_observer(on_activate).add_observer(on_f32).add_observer(on_bool).add_observer(on_select).add_observer(on_map_move).add_observer(on_map_out).add_observer(on_map_click).add_observer(on_section_click)
             .add_systems(PostStartup, (spawn, gizmo_style))
-            .add_systems(Update, (input, apply.after(crate::NephtheneSet::Tick).before(crate::NephtheneSet::Drive), sync_widgets, sync_knobs, refresh_ui, scroll, draw_gizmos).chain().after(crate::NephtheneSet::Tick));
+            .add_systems(Update, (input, apply.after(crate::NephtheneSet::Tick).before(crate::NephtheneSet::Drive), sync_widgets, sync_knobs, refresh_ui, draw_gizmos).chain().after(crate::NephtheneSet::Tick));
     }
 }
 
@@ -140,10 +141,14 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, knobs: Res<
     let cm = &mut commands;
     let base = wx.cfg.clock.minutes_per_second / 60.0;
     let rate_i = c::rate_index(if base > 0.0 { wx.rate / base } else { 0.0 });
-    let root = cm.spawn((DashPanel, RelativeCursorPosition::default(), BackgroundColor(PANEL_BG), BorderColor::all(RING),
-        Node { position_type: PositionType::Absolute, top: px(64.0), left: px(20.0), bottom: px(20.0), width: px(PANEL_W), flex_direction: FlexDirection::Column, row_gap: px(6.0),
-            padding: UiRect::all(px(12.0)), border: UiRect::all(px(3.0)), border_radius: BorderRadius::all(px(14.0)), overflow: Overflow::scroll_y(),
+    let frame = cm.spawn((DashPanel, BackgroundColor(PANEL_BG), BorderColor::all(RING),
+        Node { position_type: PositionType::Absolute, top: px(64.0), left: px(20.0), bottom: px(20.0), width: px(PANEL_W), flex_direction: FlexDirection::Column,
+            padding: UiRect::new(px(12.0), px(16.0), px(12.0), px(12.0)), border: UiRect::all(px(3.0)), border_radius: BorderRadius::all(px(14.0)),
             display: if dash.0.open { Display::Flex } else { Display::None }, ..default() })).id();
+    // the scrolling body; the bar sits outside it so it does not scroll away
+    let root = cm.spawn((ScrollArea, Node { flex_direction: FlexDirection::Column, row_gap: px(6.0), flex_grow: 1.0, min_height: px(0.0), overflow: Overflow::scroll_y(), ..default() }, ChildOf(frame))).id();
+    cm.spawn_scene(bsn! { @FeathersScrollbar { @target: {EntityTemplate::Entity(root)}, @orientation: {ControlOrientation::Vertical} }
+        Node { position_type: PositionType::Absolute, right: px(5.0), top: px(12.0), bottom: px(12.0), width: px(6.0) } }).insert(ChildOf(frame));
     // header
     let h = row(cm, root);
     cm.spawn((Text::new("WEATHER"), TextFont { font_size: FontSize::Px(26.0), ..default() }, TextColor(CREAM), ChildOf(h)));
@@ -560,13 +565,6 @@ fn refresh_ui(
             },
         }
     }
-}
-
-/// Mouse wheel scrolls the panel while the cursor is over it (it is taller than short windows).
-fn scroll(mut wheel: MessageReader<MouseWheel>, d: Res<Panel>, mut panel: Query<(&RelativeCursorPosition, &mut ScrollPosition), With<DashPanel>>) {
-    let dy: f32 = wheel.read().map(|e| match e.unit { MouseScrollUnit::Line => e.y * 28.0, MouseScrollUnit::Pixel => e.y }).sum();
-    if !d.0.open || dy == 0.0 { return; }
-    for (r, mut s) in &mut panel { if r.cursor_over { s.y = (s.y - dy).max(0.0); } }
 }
 
 fn draw_gizmos(mut g: Gizmos, d: Res<Panel>, wx: Res<Weather>, params: Option<Res<CloudParams>>, cam: Query<&GlobalTransform, With<AtmosphereSettings>>) {

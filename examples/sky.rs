@@ -8,7 +8,8 @@
 //! Shot options: `--shot <pose>` (examples/poses.json), `--out <dir>` (default shots), `--size WxH`, `--scale-factor f`,
 //! `--hour h`, `--live` (clock and wind run; default frozen), `--config file.json`, `--set path=json` (repeatable, e.g.
 //! `--set clouds.update_div=1`), `--settle frames` (default 60), `--seq count,every` / `--at a,b,c` (several frames per run),
-//! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (drive the panel with synthetic pointer input).
+//! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (scroll the panel with synthetic pointer input, print one PANEL_SCROLL line and exit;
+//! `--panel-test-red`: the same with the old unclamped wheel, the gate's red arm).
 //! `--terrain`: the test valley (nephthene_core::fog::test_valley) as the ground mesh and the plugin's `Ground`, instead of the flat plane.
 //! `--mountains`: a mountain range (nephthene_core::terrain::mountains: 48 km square, peaks to about 2.9 km, plains either side) as the
 //! ground instead; poses `mtn_west` (west plain, upwind of the default westerly), `mtn_east` (the lee) and `mtn_high` (overview).
@@ -307,13 +308,84 @@ impl Plugin for ShotPlugin {
         for i in 0..seq.as_ref().map_or(0, |s| s.0) { let _ = std::fs::remove_file(format!("{out}/{}_{i:02}.png", p.name)); }
         let turn = a.get("--turn").map(|v| { let (d, n) = v.split_once(',').unwrap_or_else(|| die("--turn deg,frames")); (d.trim().parse::<f32>().unwrap_or(0.0), n.trim().parse::<f32>().unwrap_or(1.0)) });
         app.insert_resource(Shot { pose: p, out, frames: 0, fired: false, taken: 0, seq, sf: a.num("--scale-factor").unwrap_or(1.0), sway: a.num("--sway"), turn,
-                settle: a.num("--settle").unwrap_or(SETTLE_FRAMES), timeout: a.num("--timeout").unwrap_or(240.0), panel_test: a.has("--panel-test"), describe: a.has("--describe") })
+                settle: a.num("--settle").unwrap_or(SETTLE_FRAMES), timeout: a.num("--timeout").unwrap_or(240.0), panel_test: a.has("--panel-test") || a.has("--panel-test-red"), panel_red: a.has("--panel-test-red"), describe: a.has("--describe") })
             // Deterministic frames: 60 Hz of simulated time per update, whatever the wall clock does.
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_micros(16_667)))
             .add_systems(Startup, spawn_cam)
             // The sway / turn phase reads the frame count `drive` advances: ordered, so adding systems elsewhere cannot flip which runs first
             // (an unordered pair moved the golden sway frames when the fog plugin added systems).
             .add_systems(Update, (cam_motion, drive).chain());
+        #[cfg(feature = "panel")]
+        app.add_systems(Update, panel_scroll_test);
+    }
+}
+
+/// Gate G37 (tests/panel_scroll.rs): scrolls the weather panel with synthetic pointer input over its rows, stops at the end, then
+/// comes back three notches, and prints one `PANEL_SCROLL` line. Red arm (`panel_red`): the old hand-written wheel, which moved
+/// the scroll position by 100 px per notch with no upper clamp.
+#[cfg(feature = "panel")]
+#[derive(Default)]
+struct PanelScroll { stage: u8, down: u32, up: u32, until: u32, max: f32, bottom: f32 }
+
+#[cfg(feature = "panel")]
+fn panel_scroll_test(shot: Res<Shot>, target: Res<Target>, mut input: MessageWriter<bevy::picking::pointer::PointerInput>,
+    mut areas: Query<(&mut ScrollPosition, &ComputedNode), With<bevy::ui_widgets::ScrollArea>>, mut exit: MessageWriter<AppExit>,
+    mut frame: Local<u32>, mut st: Local<PanelScroll>) {
+    use bevy::picking::pointer::{Location, PointerAction, PointerId, PointerInput};
+    use bevy::camera::NormalizedRenderTarget;
+    if !shot.panel_test { return; }
+    *frame += 1;
+    let f = *frame;
+    // Layout and hover need a few frames before the pointer is sent.
+    if f == 30 {
+        let location = Location { target: NormalizedRenderTarget::Image(ImageRenderTarget { handle: target.0.clone(), scale_factor: shot.sf }), position: Vec2::new(235.0, 300.0) };
+        input.write(PointerInput::new(PointerId::Mouse, location, PointerAction::Move { delta: Vec2::ZERO }));
+        return;
+    }
+    if f < 40 { return; }
+    // Several ScrollAreas exist (feathers widgets, most of them empty); the panel's body is the one that overflows.
+    let overflow = |n: &ComputedNode| n.content_size().y - n.size().y;
+    let Some((mut pos, node)) = areas.iter_mut().max_by(|a, b| overflow(a.1).total_cmp(&overflow(b.1))) else { eprintln!("panel test: no ScrollArea"); exit.write(AppExit::error()); return; };
+    let location = Location { target: NormalizedRenderTarget::Image(ImageRenderTarget { handle: target.0.clone(), scale_factor: shot.sf }), position: Vec2::new(235.0, 300.0) };
+    // One notch per frame: a Line scroll of -1 (down) or +1 (up), or the red arm's direct write.
+    let mut notch = |down: bool, pos: &mut ScrollPosition| {
+        if shot.panel_red {
+            let step = if down { 100.0 } else { -100.0 };
+            pos.y = (pos.y + step).max(0.0);
+        } else {
+            let y = if down { -1.0 } else { 1.0 };
+            input.write(PointerInput::new(PointerId::Mouse, location.clone(), PointerAction::Scroll { unit: bevy::input::mouse::MouseScrollUnit::Line, x: 0.0, y, phase: bevy::input::touch::TouchPhase::Moved }));
+        }
+    };
+    match st.stage {
+        0 => {
+            // ponytail: 100 px per notch is bevy's default line height; 20 extra notches overshoot the end on purpose.
+            let max = ((node.content_size() - node.size()).y * node.inverse_scale_factor).max(0.0);
+            st.max = max;
+            st.down = (max / 100.0).ceil() as u32 + 20;
+            st.stage = 1;
+            notch(true, &mut pos);
+            st.down -= 1;
+        }
+        1 => {
+            if st.down > 0 { notch(true, &mut pos); st.down -= 1; }
+            if st.down == 0 { st.stage = 2; st.until = f + 5; }
+        }
+        2 => if f >= st.until {
+            st.bottom = pos.y;
+            st.up = 3;
+            st.stage = 3;
+            notch(false, &mut pos);
+            st.up -= 1;
+        },
+        3 => {
+            if st.up > 0 { notch(false, &mut pos); st.up -= 1; }
+            if st.up == 0 { st.stage = 4; st.until = f + 5; }
+        }
+        _ => if f >= st.until {
+            println!("PANEL_SCROLL max={:.1} bottom={:.1} back={:.1}", st.max, st.bottom, pos.y);
+            exit.write(AppExit::Success);
+        },
     }
 }
 
@@ -321,7 +393,7 @@ impl Plugin for ShotPlugin {
 struct Target(Handle<Image>);
 
 #[derive(Resource)]
-struct Shot { pose: Pose, out: String, frames: u32, fired: bool, taken: u32, seq: Option<(u32, u32, Option<Vec<u32>>)>, sf: f32, sway: Option<f32>, turn: Option<(f32, f32)>, settle: u32, timeout: f32, panel_test: bool, describe: bool }
+struct Shot { pose: Pose, out: String, frames: u32, fired: bool, taken: u32, seq: Option<(u32, u32, Option<Vec<u32>>)>, sf: f32, sway: Option<f32>, turn: Option<(f32, f32)>, settle: u32, timeout: f32, panel_test: bool, panel_red: bool, describe: bool }
 
 fn spawn_cam(mut commands: Commands, shot: Res<Shot>, cfg: Res<Cfg>, mut images: ResMut<Assets<Image>>) {
     let p = &shot.pose;
@@ -353,6 +425,11 @@ fn cam_motion(mut cams: Query<&mut Transform, With<Cam>>, shot: Res<Shot>, mut b
 }
 
 fn drive(mut commands: Commands, mut shot: ResMut<Shot>, target: Res<Target>, wx: Res<Weather>, mut exit: MessageWriter<AppExit>, mut started: Local<Option<std::time::Instant>>, mut ready_frames: Local<u32>) {
+    // The panel test takes no shot and exits on its own; only the wall-clock timeout still applies.
+    if shot.panel_test {
+        if started.get_or_insert_with(std::time::Instant::now).elapsed().as_secs_f32() > shot.timeout { eprintln!("timeout"); exit.write(AppExit::from_code(3)); }
+        return;
+    }
     let (out, name) = (shot.out.clone(), shot.pose.name.clone());
     let path = format!("{out}/{name}.png");
     let screenshot = |commands: &mut Commands, to: String, sf: f32| { commands.spawn(Screenshot(RenderTarget::Image(ImageRenderTarget { handle: target.0.clone(), scale_factor: sf }))).observe(save_to_disk(to)); };
