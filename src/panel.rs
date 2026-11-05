@@ -259,7 +259,7 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, knobs: Res<
         cm.spawn((Node { width: px(26.0), height: px(10.0), border_radius: BorderRadius::all(px(3.0)), ..default() }, BackgroundColor(col(*rgb)), ChildOf(r)));
         checkbox(cm, r, Wid::Giz(i), name);
     }
-    // ponytail: about 300 rows, folded with Display::None; spawn them on first open if startup cost shows.
+    // ponytail: 170 rows, folded with Display::None; spawn them on first open if startup cost shows.
     for key in k::sections(&knobs.list) { if key == "rays" { continue; } let i = titles.len(); let s = section(cm, root, &mut titles, &expand, k::title(&key), expand.contains(&key)); knob_rows(cm, s, &knobs.list, &key, i); }
     // readout
     let s = section(cm, root, &mut titles, &expand, "Here", false);
