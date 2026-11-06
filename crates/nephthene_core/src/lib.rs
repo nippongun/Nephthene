@@ -221,12 +221,46 @@ pub fn shadow_samples(c: &config::Clouds, layer_m: f32, sun_y: f32) -> u32 {
     ((slant / c.shadow_step_m).ceil() as u32).clamp(base, c.shadow_samples_max.max(base))
 }
 
+/// Share of the newest finished cookie shown on this frame of a redraw cycle: rises 1/every .. 1 so each cycle's change spreads over its frames.
+pub fn shadow_mix(frame: u32, every: u32, blend: bool) -> f32 {
+    if !blend || every <= 1 { return 1.0; }
+    (frame % every + 1) as f32 / every as f32
+}
+
+/// UV offset from a texel of the cookie at `cur` to the texel of the cookie at `prev` covering the same light ray (uv maps to local l = (1 - 2u, 2v - 1)).
+pub fn shadow_prev_shift(cur: Vec3, prev: Vec3, right: Vec3, up: Vec3, half_m: f32) -> [f32; 2] {
+    let d = cur - prev;
+    [-d.dot(right) / (2.0 * half_m), d.dot(up) / (2.0 * half_m)]
+}
+
 #[cfg(test)]
 mod shadow_tests {
     use super::*;
     fn basis(sun: Vec3) -> (Vec3, Vec3) {
         let right = Vec3::Y.cross(sun).normalize();
         (right, sun.cross(right))
+    }
+    #[test]
+    fn shadow_mix_rises_to_one_each_cycle() {
+        let m: Vec<f32> = (0..4).map(|f| shadow_mix(f, 4, true)).collect();
+        assert_eq!(m, [0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(shadow_mix(4, 4, true), 0.25);
+        assert_eq!(shadow_mix(0, 4, false), 1.0);
+        assert_eq!(shadow_mix(0, 1, true), 1.0);
+    }
+    #[test]
+    fn shadow_prev_shift_finds_the_same_ray() {
+        let sun = Vec3::new(0.3, 0.6, 0.2).normalize();
+        let (right, up) = basis(sun);
+        let half = 10000.0;
+        let cur = right * 390.0 + up * -780.0;
+        let prev = right * -195.0 + up * 195.0;
+        let (u, v) = (0.3f32, 0.7f32);
+        let s = shadow_prev_shift(cur, prev, right, up, half);
+        let (u2, v2) = (u + s[0], v + s[1]);
+        let p = cur + right * (1.0 - 2.0 * u) * half + up * (2.0 * v - 1.0) * half;
+        let q = prev + right * (1.0 - 2.0 * u2) * half + up * (2.0 * v2 - 1.0) * half;
+        assert!((p - q).length() < 0.01, "{p:?} vs {q:?}");
     }
     #[test]
     fn samples_grow_with_slant_and_cap() {

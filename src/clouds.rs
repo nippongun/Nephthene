@@ -12,7 +12,7 @@ use nephthene_core as w;
 
 pub mod render;
 pub use render::{CloudParams, StormGpu};
-use render::{CloudGpu, FlashGpu, ShadowGpu, ShaftGpu};
+use render::{CloudGpu, FlashGpu, ShadowGpu, ShadowPresentGpu, ShaftGpu};
 
 #[derive(Resource)]
 struct SharedShaders(#[allow(dead_code)] Handle<bevy::shader::Shader>);
@@ -25,6 +25,7 @@ impl Plugin for CloudPlugin {
         embedded_asset!(app, "shaders/clouds_composite.wesl");
         embedded_asset!(app, "shaders/clouds_resolve.wesl");
         embedded_asset!(app, "shaders/clouds_shadow.wesl");
+        embedded_asset!(app, "shaders/clouds_shadow_present.wesl");
         embedded_asset!(app, "shaders/clouds_shaft.wesl");
         embedded_asset!(app, "shaders/clouds_shaft_resolve.wesl");
         embedded_asset!(app, "shaders/clouds_shaft_comp.wesl");
@@ -78,11 +79,13 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
     // Explicit linear, clamped: Bevy's clustered-light sampler is the first light texture's.
     shadow.sampler = bevy::image::ImageSampler::linear();
     let shadow_back = images.add(shadow.clone());
+    let shadow_done = images.add(shadow.clone()); let shadow_prev = images.add(shadow.clone());
     let shadow = images.add(shadow);
     for e in &sun { commands.entity(e).insert(DirectionalLightTexture { image: shadow.clone(), tiled: false }); }
     let (r, sh, n) = (&cfg.rain, &cfg.shafts, &c.noise);
+    let shadow_gpu = ShadowGpu { half_m: c.shadow_half_m, strength: c.shadow_strength, samples: c.shadow_samples, ..default() };
     commands.insert_resource(CloudParams {
-        shadow, shadow_back, shadow_gpu: ShadowGpu { half_m: c.shadow_half_m, strength: c.shadow_strength, samples: c.shadow_samples, ..default() }, shadow_draw_gpu: ShadowGpu { half_m: c.shadow_half_m, strength: c.shadow_strength, samples: c.shadow_samples, ..default() }, shadow_draw: true, shadow_band: (0, 1),
+        shadow, shadow_back, shadow_done, shadow_prev, shadow_gpu, shadow_prev_gpu: shadow_gpu, shadow_draw_gpu: shadow_gpu, shadow_present: default(), shadow_draw: true, shadow_band: (0, 1),
         shaft: ShaftGpu { scale: c.shaft_scale, slant: Vec2::ZERO, g_cell: grid.cell_m, g_min: Vec2::new(grid.min_x, grid.max_z), g_w: grid.w, g_h: grid.h,
             precip_lo: r.precip_lo, precip_hi: r.precip_hi, sigma: sh.sigma, near_m: sh.near_m, fade_m: sh.fade_m, max_m: sh.max_m, xz_m: sh.xz_m, y_m: sh.y_m,
             ground_keep: sh.ground_keep, cloud_lo: sh.cloud_lo, cloud_hi: sh.cloud_hi, streak_lo: sh.streak_lo, streak_hi: sh.streak_hi, gap: sh.gap,
@@ -109,31 +112,39 @@ fn tower_stops(curve: &[[f32; 2]], k: usize) -> Vec4 {
 pub(crate) fn drive(
     time: Res<Time>, wx: Res<Weather>, params: Option<ResMut<CloudParams>>, mut drift: Local<Vec2>, mut slant: Local<Vec2>,
     frame: Res<bevy::diagnostic::FrameCount>, cam: Query<&GlobalTransform, With<bevy::pbr::AtmosphereSettings>>,
-    mut sun: Query<(&DirectionalLight, &mut Transform, Option<&mut DirectionalLightTexture>), (With<NephtheneSun>, Without<Moon>)>, moon: Query<(&DirectionalLight, &Transform), With<Moon>>,
+    mut sun: Query<(&DirectionalLight, &mut Transform), (With<NephtheneSun>, Without<Moon>)>, moon: Query<(&DirectionalLight, &Transform), With<Moon>>,
     oro: Option<Res<crate::orographic::Orographic>>, mut images: ResMut<Assets<Image>>, mut shown: Local<u32>,
 ) {
     let Some(mut m) = params else { return };
     if wx.rate > 0.0 { *drift += wx.wind.xz() * wx.cfg.clouds.wind_scale * time.delta_secs(); }
     let body = |l: &DirectionalLight, t: &Transform| (t.back().as_vec3(), l.color.to_linear().to_vec3() * l.illuminance);
-    if let Some((l, mut t, mut tex)) = sun.iter_mut().next() {
+    if let Some((l, mut t)) = sun.iter_mut().next() {
         (m.gpu.sun_dir, m.gpu.sun_color) = body(l, &t);
-        // Cloud shadow cookie, double-buffered: a cycle redraws `shadow_every` bands, one per frame, into the back image at the cycle's
-        // origin; when the cycle ends the back image and its origin become the light's cookie together, so every band the light
-        // projects was drawn at the origin it is projected with (a single image let stale bands jump a whole texel at each snap).
+        // Cloud shadow cookie: a cycle redraws `shadow_every` bands into the back image, one per frame. Finished cookies are never shown
+        // directly: the present pass mixes the last two in the newest one's frame, so the light's origin and the shown image always agree
+        // and a cycle's change spreads over its frames instead of stepping once.
         let every = wx.cfg.clouds.shadow_every.max(1);
         m.shadow_draw = frame.0 % every == 0;
         m.shadow_band = (frame.0 % every, every);
         if m.shadow_draw && let Some(p) = cam.iter().next().map(|g| g.translation()) {
             let m = &mut *m;
-            std::mem::swap(&mut m.shadow, &mut m.shadow_back);
+            // The finished back image becomes the newest; the one before it is drawn over next.
+            std::mem::swap(&mut m.shadow_prev, &mut m.shadow_done);
+            std::mem::swap(&mut m.shadow_done, &mut m.shadow_back);
+            m.shadow_prev_gpu = m.shadow_gpu;
             m.shadow_gpu = m.shadow_draw_gpu;
-            if let Some(tex) = tex.as_mut() { tex.image = m.shadow.clone(); }
             let (r, u) = (t.right().as_vec3(), t.up().as_vec3());
             m.shadow_draw_gpu.origin = w::shadow_origin(p, r, u, wx.cfg.clouds.shadow_half_m, wx.cfg.clouds.shadow_res);
             (m.shadow_draw_gpu.right, m.shadow_draw_gpu.up) = (r, u);
         }
         m.shadow_draw_gpu.samples = w::shadow_samples(&wx.cfg.clouds, wx.cfg.clouds.top_m - wx.cfg.clouds.bottom_m, m.gpu.sun_dir.y);
         m.shadow_gpu.samples = m.shadow_draw_gpu.samples;
+        let c = &wx.cfg.clouds;
+        m.shadow_present = ShadowPresentGpu {
+            shift: w::shadow_prev_shift(m.shadow_gpu.origin, m.shadow_prev_gpu.origin, m.shadow_gpu.right, m.shadow_gpu.up, c.shadow_half_m).into(),
+            t: w::shadow_mix(frame.0, every, c.shadow_blend),
+            soft: c.shadow_soft_px / c.shadow_res as f32,
+        };
         (t.translation, t.scale) = (m.shadow_gpu.origin, Vec3::splat(wx.cfg.clouds.shadow_half_m));
     }
     if let Some((l, t)) = moon.iter().next() { (m.gpu.moon_dir, m.gpu.moon_color) = body(l, t); }

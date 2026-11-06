@@ -35,6 +35,7 @@ const MARCH: &str = "embedded://nephthene/shaders/clouds_march.wesl";
 const COMPOSITE: &str = "embedded://nephthene/shaders/clouds_composite.wesl";
 const RESOLVE: &str = "embedded://nephthene/shaders/clouds_resolve.wesl";
 const SHADOW: &str = "embedded://nephthene/shaders/clouds_shadow.wesl";
+const SHADOW_PRESENT: &str = "embedded://nephthene/shaders/clouds_shadow_present.wesl";
 const SHAFT: &str = "embedded://nephthene/shaders/clouds_shaft.wesl";
 const SHAFT_RESOLVE: &str = "embedded://nephthene/shaders/clouds_shaft_resolve.wesl";
 const SHAFT_COMP: &str = "embedded://nephthene/shaders/clouds_shaft_comp.wesl";
@@ -96,6 +97,10 @@ pub struct ShadowGpu {
     pub up: Vec3, pub samples: u32,
 }
 
+/// Uniform for clouds_shadow_present.wesl (field order identical in the shader): the shown cookie's shift to the previous cookie, the mix `t`, and the tent radius in uv.
+#[derive(Clone, Copy, Default, ShaderType)]
+pub struct ShadowPresentGpu { pub shift: Vec2, pub t: f32, pub soft: f32 }
+
 /// Uniform for clouds_shaft.wesl (field order identical in the shader): rain-shaft lean, on/off, and the ground height grid.
 #[derive(Clone, Copy, Default, ShaderType)]
 pub struct ShaftGpu {
@@ -131,10 +136,14 @@ pub struct CloudParams {
     /// The map sampler repeats (config `map.wrap`) instead of clamping at the edge.
     pub map_wrap: bool,
     pub render_scale: f32, pub temporal_alpha: f32, pub update_div: u32,
-    /// Cloud shadow cookie image (R8Unorm), its frame, and whether to redraw it this frame.
+    /// Cloud shadow cookie (R8Unorm): the shown image, written every frame by the present pass and bound by the sun light and the fog (a stable handle).
+    /// `shadow_gpu` is the newest finished cookie's frame (`shadow_done`), `shadow_prev_gpu` the one before (`shadow_prev`); `shadow_draw` is whether to redraw this frame.
     pub shadow: Handle<Image>, pub shadow_gpu: ShadowGpu, pub shadow_draw: bool,
-    /// Double buffer: the cycle being drawn goes into `shadow_back` at `shadow_draw_gpu`; `shadow`/`shadow_gpu` is the finished one the light projects.
+    /// Cookie buffers: the cycle being drawn goes into `shadow_back` at `shadow_draw_gpu`; `shadow_done` is the newest finished one and `shadow_prev` the one before.
     pub shadow_back: Handle<Image>, pub shadow_draw_gpu: ShadowGpu,
+    pub shadow_done: Handle<Image>, pub shadow_prev: Handle<Image>, pub shadow_prev_gpu: ShadowGpu,
+    /// The present pass's uniform: the mix across the cycle and the shift from `shadow_prev` to `shadow_done`'s frame (see clouds.rs `drive`).
+    pub shadow_present: ShadowPresentGpu,
     /// Incremental redraw: this frame redraws band `.0` of `.1` horizontal bands of the cookie (config clouds.shadow_every bands, one per frame).
     pub shadow_band: (u32, u32),
     /// Rain shafts (clouds_shaft.wesl): uniform and the R32Float ground heights it stops on.
@@ -184,18 +193,20 @@ pub fn plugin(app: &mut App, timing: bool) {
         .add_systems(Core3d, (transparent_begin.before(main_transparent_pass_3d), transparent_end.after(main_transparent_pass_3d)).in_set(Core3dSystems::MainPass));
 }
 
-/// clouds.pass_timing: GPU pass-boundary timestamps (Metal on Apple Silicon has no inside-encoder ones) for six spans, timestamp pair i = 2i, 2i+1:
-/// shadow, march, resolve, shaft_march, shaft_resolve, transparent (the whole main transparent pass, see transparent_begin).
+/// clouds.pass_timing: GPU pass-boundary timestamps (Metal on Apple Silicon has no inside-encoder ones) for seven spans, timestamp pair i = 2i, 2i+1:
+/// shadow, march, resolve, shaft_march, shaft_resolve, transparent (the whole main transparent pass, see transparent_begin), shadow_present.
 /// `ran` bit i is set when pass i begins this frame; read_timing adds only the bits set, so a skipped pass counts 0 (not last frame's stale value).
 /// Prints `PASSMS` every 60 frames (sum / 60: mean ms per pass per frame). Off: no query set, no readback.
 #[derive(Resource)]
-struct PassTiming { qs: wgpu::QuerySet, resolve: wgpu::Buffer, read: wgpu::Buffer, sums: [f64; 6], n: u32, ran: std::sync::atomic::AtomicU32 }
-const PASSES: [&str; 6] = ["shadow", "march", "resolve", "shaft_march", "shaft_resolve", "transparent"];
+struct PassTiming { qs: wgpu::QuerySet, resolve: wgpu::Buffer, read: wgpu::Buffer, sums: [f64; 7], n: u32, ran: std::sync::atomic::AtomicU32 }
+const PASSES: [&str; 7] = ["shadow", "march", "resolve", "shaft_march", "shaft_resolve", "transparent", "shadow_present"];
 
 #[derive(Resource)]
 struct CloudRender {
     atmo: BindGroupLayoutDescriptor, cloud: BindGroupLayoutDescriptor, composite: BindGroupLayoutDescriptor, resolve: BindGroupLayoutDescriptor,
-    march: CachedRenderPipelineId, shadow_layout: BindGroupLayoutDescriptor, shadow_pipeline: CachedRenderPipelineId, shadow_ubo: UniformBuffer<ShadowGpu>, storm_ubo: UniformBuffer<StormGpu>, flash_ubo: UniformBuffer<FlashGpu>, resolve_pipeline: CachedRenderPipelineId, composite_shader: Handle<Shader>, fullscreen: FullscreenShader,
+    march: CachedRenderPipelineId, shadow_layout: BindGroupLayoutDescriptor, shadow_pipeline: CachedRenderPipelineId, shadow_ubo: UniformBuffer<ShadowGpu>,
+    shadow_present_layout: BindGroupLayoutDescriptor, shadow_present_pipeline: CachedRenderPipelineId, shadow_present_ubo: UniformBuffer<ShadowPresentGpu>,
+    storm_ubo: UniformBuffer<StormGpu>, flash_ubo: UniformBuffer<FlashGpu>, resolve_pipeline: CachedRenderPipelineId, composite_shader: Handle<Shader>, fullscreen: FullscreenShader,
     repeat: Sampler, clamp: Sampler, ubo: UniformBuffer<CloudGpu>, renderer: Entity,
     composite_pipelines: HashMap<(u32, TextureFormat), CachedRenderPipelineId>,
     shaft_layout: BindGroupLayoutDescriptor, shaft_comp: BindGroupLayoutDescriptor, shaft_march: CachedRenderPipelineId, shaft_resolve: CachedRenderPipelineId, shaft_shader: Handle<Shader>, shaft_ubo: UniformBuffer<ShaftGpu>, shaft_renderer: Entity,
@@ -241,6 +252,16 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
         fragment: Some(FragmentState { shader: assets.load(SHADOW), targets: vec![Some(ColorTargetState { format: TextureFormat::R8Unorm, blend: None, write_mask: ColorWrites::ALL })], ..default() }),
         ..default()
     });
+    let shadow_present_layout = BindGroupLayoutDescriptor::new("cloud_shadow_present", &BindGroupLayoutEntries::sequential(S::FRAGMENT, (
+        uniform_buffer::<ShadowPresentGpu>(false), texture_2d(TextureSampleType::default()), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
+    )));
+    let shadow_present_pipeline = cache.queue_render_pipeline(RenderPipelineDescriptor {
+        label: Some("cloud_shadow_present".into()),
+        layout: vec![shadow_present_layout.clone()],
+        vertex: fullscreen.to_vertex_state(),
+        fragment: Some(FragmentState { shader: assets.load(SHADOW_PRESENT), targets: vec![Some(ColorTargetState { format: TextureFormat::R8Unorm, blend: None, write_mask: ColorWrites::ALL })], ..default() }),
+        ..default()
+    });
     let target = |format| Some(ColorTargetState { format, blend: None, write_mask: ColorWrites::ALL });
     let march = cache.queue_render_pipeline(RenderPipelineDescriptor {
         label: Some("cloud_march".into()),
@@ -278,18 +299,18 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
         mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default()
     });
     if timing_on.0 && device.features().contains(WgpuFeatures::TIMESTAMP_QUERY) {
-        let size = 12 * 8;
+        let size = 14 * 8;
         let buf = |usage, label| device.wgpu_device().create_buffer(&BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
         commands.insert_resource(PassTiming {
-            qs: device.wgpu_device().create_query_set(&wgpu::QuerySetDescriptor { label: Some("cloud_ts"), ty: wgpu::QueryType::Timestamp, count: 12 }),
+            qs: device.wgpu_device().create_query_set(&wgpu::QuerySetDescriptor { label: Some("cloud_ts"), ty: wgpu::QueryType::Timestamp, count: 14 }),
             resolve: buf(BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC, "cloud_ts_resolve"), read: buf(BufferUsages::COPY_DST | BufferUsages::MAP_READ, "cloud_ts_read"),
-            sums: [0.0; 6], n: 0, ran: default(),
+            sums: [0.0; 7], n: 0, ran: default(),
         });
     }
     let renderer = commands.spawn(Name::new("CloudRenderer")).id();
     let shaft_renderer = commands.spawn(Name::new("CloudShaftRenderer")).id();
     commands.insert_resource(CloudRender {
-        atmo, cloud, composite, resolve, march, shadow_layout, shadow_pipeline, shadow_ubo: UniformBuffer::default(), storm_ubo: UniformBuffer::default(), flash_ubo: UniformBuffer::default(), resolve_pipeline, composite_shader: assets.load(COMPOSITE), fullscreen: fullscreen.clone(),
+        atmo, cloud, composite, resolve, march, shadow_layout, shadow_pipeline, shadow_ubo: UniformBuffer::default(), shadow_present_layout, shadow_present_pipeline, shadow_present_ubo: UniformBuffer::default(), storm_ubo: UniformBuffer::default(), flash_ubo: UniformBuffer::default(), resolve_pipeline, composite_shader: assets.load(COMPOSITE), fullscreen: fullscreen.clone(),
         repeat: sampler(AddressMode::Repeat), clamp: sampler(AddressMode::ClampToEdge), ubo: UniformBuffer::default(), renderer,
         composite_pipelines: HashMap::new(),
         shaft_layout, shaft_comp, shaft_march, shaft_resolve, shaft_shader: assets.load(SHAFT_COMP), shaft_ubo: UniformBuffer::default(), shaft_renderer, shaft_pipelines: HashMap::new(),
@@ -310,7 +331,7 @@ struct CloudHistory { clip_from_view: Mat4, rot_inv: Mat4, cam: Vec3, size: UVec
 struct CloudResolveUbo(UniformBuffer<ResolveGpu>);
 
 #[derive(Component)]
-struct CloudBindGroups { atmo: BindGroup, cloud: BindGroup, composite: BindGroup, resolve: BindGroup, shadow: Option<BindGroup>, shaft: Option<BindGroup>, shaft_resolve: BindGroup, shaft_comp: BindGroup }
+struct CloudBindGroups { atmo: BindGroup, cloud: BindGroup, composite: BindGroup, resolve: BindGroup, shadow: Option<BindGroup>, shadow_present: Option<BindGroup>, shaft: Option<BindGroup>, shaft_resolve: BindGroup, shaft_comp: BindGroup }
 
 fn prepare_textures_and_uniform(
     mut commands: Commands, params: Option<Res<CloudParams>>, render: Option<ResMut<CloudRender>>, frame: Res<FrameCount>,
@@ -319,6 +340,8 @@ fn prepare_textures_and_uniform(
     let (Some(params), Some(mut render)) = (params, render) else { return };
     render.shadow_ubo.set(params.shadow_draw_gpu);
     render.shadow_ubo.write_buffer(&device, &queue);
+    render.shadow_present_ubo.set(params.shadow_present);
+    render.shadow_present_ubo.write_buffer(&device, &queue);
     render.storm_ubo.set(params.storm);
     render.storm_ubo.write_buffer(&device, &queue);
     render.flash_ubo.set(params.flash);
@@ -478,6 +501,12 @@ fn prepare_bind_groups(
             ru, &tex.cur.default_view, &tex.t.default_view, &tex.read.default_view, &render.clamp, &tex.cread.default_view,
         )));
         let shadow = render.shadow_ubo.binding().map(|b| device.create_bind_group("cloud_shadow", &cache.get_bind_group_layout(&render.shadow_layout), &BindGroupEntries::sequential((b,))));
+        let shadow_present = match (render.shadow_present_ubo.binding(), images.get(&params.shadow_done), images.get(&params.shadow_prev)) {
+            (Some(b), Some(done), Some(prev)) => Some(device.create_bind_group("cloud_shadow_present", &cache.get_bind_group_layout(&render.shadow_present_layout), &BindGroupEntries::sequential((
+                b, &done.texture_view, &prev.texture_view, &render.clamp,
+            )))),
+            _ => None,
+        };
         let shaft = render.shaft_ubo.binding().map(|b| device.create_bind_group("cloud_shaft", &cache.get_bind_group_layout(&render.shaft_layout), &BindGroupEntries::sequential((b, &ground.texture_view))));
         let shaft_resolve = device.create_bind_group("cloud_shaft_resolve", &cache.get_bind_group_layout(&render.resolve), &BindGroupEntries::sequential((
             ubo.0.binding().unwrap(), &tex.scur.default_view, &tex.st.default_view, &tex.sread.default_view, &render.clamp, &tex.cread.default_view,
@@ -485,7 +514,7 @@ fn prepare_bind_groups(
         let shaft_comp = device.create_bind_group("cloud_shaft_comp", &cache.get_bind_group_layout(&render.shaft_comp), &BindGroupEntries::sequential((
             &tex.swrite.default_view, &tex.st.default_view, &render.clamp,
         )));
-        commands.entity(e).insert(CloudBindGroups { atmo: atmo_bg, cloud, composite, resolve, shadow, shaft, shaft_resolve, shaft_comp });
+        commands.entity(e).insert(CloudBindGroups { atmo: atmo_bg, cloud, composite, resolve, shadow, shadow_present, shaft, shaft_resolve, shaft_comp });
     }
 }
 
@@ -499,11 +528,11 @@ fn read_timing(timing: Option<ResMut<PassTiming>>, device: Res<RenderDevice>, qu
     t.read.unmap();
     let period = queue.get_timestamp_period() as f64 * 1e-6;
     let ran = t.ran.swap(0, std::sync::atomic::Ordering::Relaxed);
-    for i in 0..6 { if ts[2 * i + 1] >= ts[2 * i] && ts[2 * i] > 0 && ran & (1 << i) != 0 { t.sums[i] += (ts[2 * i + 1] - ts[2 * i]) as f64 * period; } }
+    for i in 0..7 { if ts[2 * i + 1] >= ts[2 * i] && ts[2 * i] > 0 && ran & (1 << i) != 0 { t.sums[i] += (ts[2 * i + 1] - ts[2 * i]) as f64 * period; } }
     t.n += 1;
     if t.n == 60 {
         println!("PASSMS {}", PASSES.iter().zip(t.sums).map(|(n, s)| format!("{n} {:.3}", s / 60.0)).collect::<Vec<_>>().join(" | "));
-        (t.sums, t.n) = ([0.0; 6], 0);
+        (t.sums, t.n) = ([0.0; 7], 0);
     }
 }
 
@@ -519,10 +548,11 @@ fn clouds_march(
     let Some(pipeline) = cache.get_render_pipeline(render.march) else { return };
     let ts = |i: u32| timing.as_ref().map(|t| wgpu::RenderPassTimestampWrites { query_set: &t.qs, beginning_of_pass_write_index: Some(2 * i), end_of_pass_write_index: Some(2 * i + 1) });
     let (tex, bg, atmo_i, settings_i, transforms_i, view_i) = view.into_inner();
-    // Cloud shadow cookie: once per frame (the first view), every `shadow_every` frames.
-    if let (Some(params), Some(sp), Some(sbg)) = (&params, cache.get_render_pipeline(render.shadow_pipeline), &bg.shadow) {
-        if let (true, Some(img)) = (!skipped("shadow"), images.get(&params.shadow_back)) {
-            if drawn.swap(frame.0 + 1, std::sync::atomic::Ordering::Relaxed) != frame.0 + 1 {
+    // Cloud shadow cookie: once per frame (the first view). The band draw goes into the back image (every `shadow_every` frames' cycle,
+    // one band per frame); then the present pass writes the shown image every frame, mixing the two latest finished cookies.
+    if let Some(params) = &params {
+        if drawn.swap(frame.0 + 1, std::sync::atomic::Ordering::Relaxed) != frame.0 + 1 {
+            if let (true, Some(sp), Some(sbg), Some(img)) = (!skipped("shadow"), cache.get_render_pipeline(render.shadow_pipeline), &bg.shadow, images.get(&params.shadow_back)) {
                 let (band, bands) = (params.shadow_band.0, params.shadow_band.1.max(1));
                 let load = if bands > 1 { LoadOp::Load } else { LoadOp::Clear(default()) };
                 if let Some(t) = &timing { t.ran.fetch_or(1 << 0, std::sync::atomic::Ordering::Relaxed); }
@@ -538,6 +568,17 @@ fn clouds_march(
                 pass.set_pipeline(sp);
                 pass.set_bind_group(0, &bg.cloud, &[]);
                 pass.set_bind_group(1, sbg, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            if let (true, Some(pp), Some(pbg), Some(out)) = (!skipped("shadow_present"), cache.get_render_pipeline(render.shadow_present_pipeline), &bg.shadow_present, images.get(&params.shadow)) {
+                if let Some(t) = &timing { t.ran.fetch_or(1 << 6, std::sync::atomic::Ordering::Relaxed); }
+                let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
+                    label: Some("cloud_shadow_present"),
+                    color_attachments: &[Some(RenderPassColorAttachment { view: &out.texture_view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(default()), store: StoreOp::Store } })],
+                    depth_stencil_attachment: None, timestamp_writes: ts(6), occlusion_query_set: None, multiview_mask: None,
+                });
+                pass.set_pipeline(pp);
+                pass.set_bind_group(0, pbg, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
@@ -607,7 +648,7 @@ fn transparent_begin(view: ViewQuery<&ViewTarget>, timing: Option<Res<PassTiming
 }
 
 /// Timing span "transparent" ends: an empty pass on the view target, timestamp 11 at its start, then the timestamp queries are resolved
-/// (all 12, so this frame's transparent pair is read). The span is the whole main transparent pass; see transparent_begin.
+/// (all 14, so this frame's transparent pair is read). The span is the whole main transparent pass; see transparent_begin.
 fn transparent_end(view: ViewQuery<&ViewTarget>, timing: Option<Res<PassTiming>>, mut ctx: RenderContext) {
     let Some(t) = &timing else { return };
     let target = view.into_inner();
@@ -618,8 +659,8 @@ fn transparent_end(view: ViewQuery<&ViewTarget>, timing: Option<Res<PassTiming>>
         occlusion_query_set: None, multiview_mask: None,
     }));
     let e = ctx.command_encoder();
-    e.resolve_query_set(&t.qs, 0..12, &t.resolve, 0);
-    e.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, 96);
+    e.resolve_query_set(&t.qs, 0..14, &t.resolve, 0);
+    e.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, 112);
 }
 
 struct DrawCloudComposite;
