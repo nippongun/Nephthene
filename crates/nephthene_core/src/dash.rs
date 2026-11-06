@@ -1,5 +1,5 @@
 //! Weather panel, the pure half (state + maths; the Bevy adapter is the `panel` module of the plugin crate). Runtime-only
-//! overrides on top of the config: nothing here is saved and every default is "no override". Step sizes are untuned.
+//! overrides on top of the config: saved only through the panel's Save button and every default is "no override". Step sizes are untuned.
 use crate::{Wind, WeatherMap};
 
 /// Which weather-map channel the panel map shows.
@@ -118,6 +118,14 @@ impl Ctl {
     pub fn gpu_precip(&self) -> f32 { precip_override(self.rain).unwrap_or(-1.0) }
     /// Shadow strength multiplier source: the config value, or 0 with shadows off.
     pub fn shadow_strength(&self, json: f32) -> f32 { if self.shadows { json } else { 0.0 } }
+    /// The config to save: `cfg` with the panel's coverage and wind overrides written in.
+    pub fn saved(&self, cfg: &crate::config::Config) -> crate::config::Config {
+        let mut c = cfg.clone();
+        if self.coverage.is_some() { c.clouds.coverage_override = self.coverage; }
+        if let Some(d) = self.wind_from { c.wind.from_deg = d; }
+        if let Some(s) = self.wind_speed { c.wind.speed_mps = s; }
+        c
+    }
 }
 
 /// The weather at one moment, as the panel and the shader read it. Plain values, no GPU.
@@ -191,6 +199,15 @@ mod tests {
         let mut c = Ctl { coverage: Some(0.4), wind_speed: Some(9.0), rain: true, clouds: false, ..Ctl::default() };
         c.reset_weather();
         assert_eq!((c.coverage, c.wind_speed, c.rain, c.clouds), (None, None, false, false));
+    }
+    #[test]
+    fn saved_writes_only_the_set_overrides() {
+        let cfg = crate::config::Config::default();
+        assert_eq!(Ctl::default().saved(&cfg), cfg);
+        let c = Ctl { coverage: Some(0.3), wind_speed: Some(2.0), ..Ctl::default() };
+        let s = c.saved(&cfg);
+        assert_eq!((s.clouds.coverage_override, s.wind.speed_mps), (Some(0.3), 2.0));
+        assert_eq!(s.wind.from_deg, cfg.wind.from_deg);
     }
     #[test]
     fn overrides_reach_the_shader_values() {

@@ -10,6 +10,7 @@ pub mod rain;
 pub mod audio;
 pub mod orographic;
 pub mod dash;
+pub mod knobs;
 pub mod storm;
 pub mod storm_fx;
 pub mod fog;

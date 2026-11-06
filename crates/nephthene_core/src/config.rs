@@ -460,10 +460,17 @@ pub struct Rays {
     /// Resolution of the prefiltered source the rays are marched through, relative to the view (a box average; it spreads the sun disc
     /// over more than one march step, which removes ring artifacts).
     pub source_scale: f32,
+    /// Subtract the local mean of the source across each ray (perpendicular to the direction to the sun), so only contrast (lit gaps
+    /// next to shadow) adds light and an even bright sky adds none (the atmosphere already drew its glow). false = add the whole blurred
+    /// source (red arm of G36: a clear sky washes the frame white).
+    pub local_mean: bool,
+    /// Distance between the across-ray taps of that mean, as a fraction of the screen height (taps at +-1 and +-2 times this).
+    pub mean_width: f32,
 }
 impl Default for Rays {
     fn default() -> Self {
-        Rays { enabled: true, strength: 12.0, threshold: 0.8, decay: 0.97, radius: 0.35, samples: 64, render_scale: 0.5, edge_fade: 0.2, flat_source: false, source_max: 2.0, source_scale: 0.125 }
+        Rays { enabled: true, strength: 12.0, threshold: 0.8, decay: 0.97, radius: 0.35, samples: 64, render_scale: 0.5, edge_fade: 0.2, flat_source: false, source_max: 2.0, source_scale: 0.125,
+               local_mean: true, mean_width: 0.03 }
     }
 }
 
@@ -769,9 +776,13 @@ pub struct Sim {
     pub here_tau_s: f32,
     /// Open the weather panel at start.
     pub panel_open: bool,
+    /// File the panel's Save and Load buttons use (relative to the working directory). A game loads it with `Config::load`.
+    pub settings_file: String,
+    /// Panel sections open at start, by key (`rays`, `ground_fog`) or title (`Clock`).
+    pub panel_expand: Vec<String>,
 }
 impl Default for Sim {
-    fn default() -> Self { Sim { here_tau_s: 5.0, panel_open: false } }
+    fn default() -> Self { Sim { here_tau_s: 5.0, panel_open: false, settings_file: "nephthene_settings.json".into(), panel_expand: vec![] } }
 }
 
 #[cfg(test)]
