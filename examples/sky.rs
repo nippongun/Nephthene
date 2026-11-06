@@ -8,7 +8,7 @@
 //! Shot options: `--shot <pose>` (examples/poses.json), `--out <dir>` (default shots), `--size WxH`, `--scale-factor f`,
 //! `--hour h`, `--live` (clock and wind run; default frozen), `--config file.json`, `--set path=json` (repeatable, e.g.
 //! `--set clouds.update_div=1`), `--settle frames` (default 60), `--seq count,every` / `--at a,b,c` (several frames per run),
-//! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--timeout s`, `--panel-test` (scroll the panel with synthetic pointer input, print one PANEL_SCROLL line and exit;
+//! `--sway deg` (camera sway), `--turn deg,frames` (yaw turn after the first shot), `--glide vx,vz` (m/s, the camera translates and keeps looking at the pose's `look_at`), `--timeout s`, `--panel-test` (scroll the panel with synthetic pointer input, print one PANEL_SCROLL line and exit;
 //! `--panel-test-red`: the same with the old unclamped wheel, the gate's red arm).
 //! `--terrain`: the test valley (nephthene_core::fog::test_valley) as the ground mesh and the plugin's `Ground`, instead of the flat plane.
 //! `--mountains`: a mountain range (nephthene_core::terrain::mountains: 48 km square, peaks to about 2.9 km, plains either side) as the
@@ -307,7 +307,8 @@ impl Plugin for ShotPlugin {
         let _ = std::fs::remove_file(format!("{out}/{}.png", p.name));
         for i in 0..seq.as_ref().map_or(0, |s| s.0) { let _ = std::fs::remove_file(format!("{out}/{}_{i:02}.png", p.name)); }
         let turn = a.get("--turn").map(|v| { let (d, n) = v.split_once(',').unwrap_or_else(|| die("--turn deg,frames")); (d.trim().parse::<f32>().unwrap_or(0.0), n.trim().parse::<f32>().unwrap_or(1.0)) });
-        app.insert_resource(Shot { pose: p, out, frames: 0, fired: false, taken: 0, seq, sf: a.num("--scale-factor").unwrap_or(1.0), sway: a.num("--sway"), turn,
+        let glide = a.get("--glide").map(|v| { let (x, z) = v.split_once(',').unwrap_or_else(|| die("--glide vx,vz")); Vec3::new(x.trim().parse().unwrap_or_else(|_| die("--glide")), 0.0, z.trim().parse().unwrap_or_else(|_| die("--glide"))) });
+        app.insert_resource(Shot { pose: p, out, frames: 0, fired: false, taken: 0, seq, sf: a.num("--scale-factor").unwrap_or(1.0), sway: a.num("--sway"), turn, glide,
                 settle: a.num("--settle").unwrap_or(SETTLE_FRAMES), timeout: a.num("--timeout").unwrap_or(240.0), panel_test: a.has("--panel-test") || a.has("--panel-test-red"), panel_red: a.has("--panel-test-red"), describe: a.has("--describe") })
             // Deterministic frames: 60 Hz of simulated time per update, whatever the wall clock does.
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_micros(16_667)))
@@ -393,7 +394,7 @@ fn panel_scroll_test(shot: Res<Shot>, target: Res<Target>, mut input: MessageWri
 struct Target(Handle<Image>);
 
 #[derive(Resource)]
-struct Shot { pose: Pose, out: String, frames: u32, fired: bool, taken: u32, seq: Option<(u32, u32, Option<Vec<u32>>)>, sf: f32, sway: Option<f32>, turn: Option<(f32, f32)>, settle: u32, timeout: f32, panel_test: bool, panel_red: bool, describe: bool }
+struct Shot { pose: Pose, out: String, frames: u32, fired: bool, taken: u32, seq: Option<(u32, u32, Option<Vec<u32>>)>, sf: f32, sway: Option<f32>, turn: Option<(f32, f32)>, glide: Option<Vec3>, settle: u32, timeout: f32, panel_test: bool, panel_red: bool, describe: bool }
 
 fn spawn_cam(mut commands: Commands, shot: Res<Shot>, cfg: Res<Cfg>, mut images: ResMut<Assets<Image>>) {
     let p = &shot.pose;
@@ -411,6 +412,12 @@ fn spawn_cam(mut commands: Commands, shot: Res<Shot>, cfg: Res<Cfg>, mut images:
 /// `--turn deg,frames`: yaw by deg over that many frames from the first shot, then hold (turn onto a cloud, stand still).
 fn cam_motion(mut cams: Query<&mut Transform, With<Cam>>, shot: Res<Shot>, mut base: Local<Option<Quat>>) {
     let Ok(mut t) = cams.single_mut() else { return };
+    if let Some(v) = shot.glide {
+        // 60 Hz like the manual clock, from the first frame: the settle frames run at speed too, so the cookie is already moving.
+        t.translation += v / 60.0;
+        *t = t.looking_at(Vec3::from(shot.pose.look_at), Vec3::Y);
+        return;
+    }
     let b = *base.get_or_insert(t.rotation);
     if let Some((deg, n)) = shot.turn {
         let k = if shot.fired { (shot.frames as f32 / n).min(1.0) } else { 0.0 };

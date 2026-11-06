@@ -91,6 +91,30 @@ fn cost_cloud_shadow() {
     finish("COST cloud shadow", f);
 }
 
+// ---------------------------------------------------------------- cloud shadow present
+
+/// Budget 0.3 ms: a texture filter over the 512 x 512 cookie must stay under half of the shadow band pass it serves (about 0.6 ms on the
+/// reference Mac).
+const PRESENT_BUDGET_MS: f64 = 0.3;
+
+/// The span reads about 0.58 ms on Metal whatever the pass does (1 to 18 texture reads per texel read the same), so the span alone is a
+/// timer floor. The pass's own cost is the slope: (2048 span - 512 span) / 15, the span's growth per 512 x 512 of texels.
+/// Red arm: `clouds.shadow_res` 2048 must read above the default, otherwise the timer does not see the pass and the slope is meaningless.
+#[test]
+#[ignore = "manual gate"]
+fn cost_shadow_present() {
+    if software() && std::env::var("NEPHTHENE_COST_ON_CPU").is_err() { println!("COST skipped: software renderer"); return; }
+    let default = run("cost_present_512", &["clouds.coverage_override=0.3"], false)["shadow_present"];
+    let big = run("cost_present_2048", &["clouds.coverage_override=0.3", "clouds.shadow_res=2048"], false)["shadow_present"];
+    let slope = (big - default) / 15.0;
+    println!("COST shadow present: {slope:.3} ms per 512^2 (budget {PRESENT_BUDGET_MS}); spans: 512 {default:.3}, red arm 2048 {big:.3}");
+    if software() { return; }
+    let mut f = vec![];
+    if slope > PRESENT_BUDGET_MS { f.push(format!("shadow present {slope:.3} ms > {PRESENT_BUDGET_MS}")); }
+    if big <= default { f.push(format!("red arm {big:.3} not above default {default:.3}: the gate cannot fail, delete it and log it (roadmap rule)")); }
+    finish("COST shadow present", f);
+}
+
 // ---------------------------------------------------------------- cloud march + resolve
 
 /// Budget 1.2 ms: the roadmap's split for cloud march plus resolve (owner's call).

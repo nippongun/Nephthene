@@ -10,7 +10,7 @@ const LIVE: &[&str] = &[
     "rays.", "ground_fog.", "fog.", "wind.", "climate.", "daylight_ev100", "ambient_day_brightness",
     "clock.latitude_deg", "clock.day_of_year", "clock.axial_tilt_deg", "moon.phase", "moon.full_lux",
     "sky.sun_occlusion", "sky.occlusion_keep", "sky.occlusion_steps", "sky.cloud_shafts", "sky.cloud_shafts_ignore_clouds",
-    "map.advect", "clouds.wind_scale", "clouds.shadow_every", "clouds.shadow_samples", "clouds.shadow_step_m", "clouds.shadow_samples_max",
+    "map.advect", "clouds.wind_scale", "clouds.shadow_every", "clouds.shadow_samples", "clouds.shadow_step_m", "clouds.shadow_samples_max", "clouds.shadow_blend", "clouds.shadow_soft_px",
     "clouds.edge_lod.enabled", "clouds.edge_lod.step_scale", "resolve.cut_deg", "resolve.cut_m",
     "shafts.shear_frac", "shafts.slant_tau_s", "shafts.lean_intensity", "shafts.gust_lean",
     "air.mean_c", "air.season_c", "air.lag_days", "air.heat_k_per_h", "air.cool_k_per_h", "air.restore_per_h", "air.cloud_shade", "air.cloud_block",

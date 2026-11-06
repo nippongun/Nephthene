@@ -253,6 +253,8 @@ pub struct Clouds {
     /// redraw bands (one per frame), extinction multiplier on the shadow (1 = the sky's extinction), metres per slant sample, sample cap.
     pub shadow_res: u32, pub shadow_half_m: f32, pub shadow_samples: u32, pub shadow_every: u32, pub shadow_strength: f32,
     pub shadow_step_m: f32, pub shadow_samples_max: u32,
+    /// Cookie present pass: blend the two latest finished cookies across each redraw cycle (false = the cookie steps once per cycle, the test red arm), and the tent filter radius in cookie texels (0 = off; 1.0 untuned).
+    pub shadow_blend: bool, pub shadow_soft_px: f32,
     /// Resolve update division (1, 2 or 4): the march covers 1 pixel in div x div per frame (HZD). 1 = every pixel every frame (reference, ~16x the march cost of 4).
     pub update_div: u32,
     /// Storm towers: curve of (cloud type 0..1, tower depth m), piecewise-linear; at most 4 stops; empty = the flat layer.
@@ -296,7 +298,7 @@ impl Default for Clouds {
             base_tile2_m: 4300.0, coverage_var: 0.5, curl_m: 120.0, extinction: 0.04, ambient_scale: 1.0, steps: 72,
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
-            shadow_step_m: 120.0, shadow_samples_max: 48, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
+            shadow_step_m: 120.0, shadow_samples_max: 48, shadow_blend: true, shadow_soft_px: 1.0, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
             enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true, over_terrain: true, storm_step_opacity: true,
             look: CloudLook::default(), edge_lod: EdgeLod::default(), noise: CloudNoise::default(),
         }
