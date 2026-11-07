@@ -37,7 +37,7 @@ at any (x, z) and draw it how you like (`examples/sky.rs` has a worked ground ma
 - Manual storm gates G25-G26 (a storm overhead rains on the camera, rain shafts under a storm): `cargo test --release --test storms -- --ignored --nocapture --test-threads=1`.
 - Manual lightning gates G23-G24 (channel reads as a line, flash lights the ground): `cargo test --release --test lightning -- --ignored --nocapture --test-threads=1`.
 - Manual fog gates G15-G16 (terrain, mountain shadow): `cargo test --release --test fog -- --ignored --nocapture --test-threads=1`.
-- Manual cloud gates G7-G14 (a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
+- Manual cloud gates G7-G14 and G39 (clouds meet a ridge without 8 px steps; a few minutes of GPU): `cargo test --release --test clouds -- --ignored --nocapture --test-threads=1`. Each gate has a red arm made by a config switch, so a passing gate is proven able to fail.
 - Manual edge LOD gate G33 (the switch changes the screen edges, not the centre): `cargo test --release --test edge_lod -- --ignored --nocapture --test-threads=1`.
 - Manual cloud shadow gate G38 (the cookie moves every frame, shadow edges are soft): `cargo test --release --test cookie -- --ignored --nocapture --test-threads=1`.
 - Regenerate goldens after an approved look change: `NEPHTHENE_UPDATE_GOLDEN=1 cargo test --release --test golden golden_cloud_sky`.

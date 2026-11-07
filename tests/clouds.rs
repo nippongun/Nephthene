@@ -382,3 +382,39 @@ fn resolve_history_matters() {
     println!("history: dots per 1000 sky px with history {with:.3}, without (alpha 1) {without:.3}");
     finish("history", if without > 3.0 * with.max(0.01) { vec![] } else { vec![format!("alpha-1 arm {without:.3} not above 3x default {with:.3}; the resolve is not gated")] });
 }
+
+/// G39: clouds meet a mountain ridge without 8 px steps. Scene: `--mountains`, pose `mtn_west` (1600x900, the peaks rise into the
+/// 1.5 km cloud base), default weather and update_div 4 at render_scale 0.5, so one march texel covers an 8 x 8 px block. The
+/// composite depth-tests the cloud at one texel's depth, from whichever pixel of the block was marched: on a ridge that pixel's
+/// cloud front is often beyond this pixel's terrain, so the bare mountain showed through the deck in 8 px rectangles.
+/// Metric, rows 300..500 (the ridge band): strong horizontal luma steps (> 40 levels) counted by x mod 8; the score is the busiest
+/// phase over the mean phase. Natural edges fall on every phase (score near 1; the update_div 1 reference reads ~1.4 from few
+/// edges); the rectangles stand their sides on one phase. Budget 2.0: twice the even share. Red arm: `clouds.depth_nearest=false`
+/// (the one texel) must exceed it.
+const G39_BUDGET: f32 = 2.0;
+
+fn g39_grid_steps(label: &str, extra: &[&str]) -> f32 {
+    let mut args = vec!["--mountains"];
+    for s in extra { args.extend(["--set", *s]); }
+    let im: RgbImage = still(label, "mtn_west", &args);
+    assert_eq!((im.width(), im.height()), (1600, 900), "{label}: G39 rows assume 1600x900");
+    let mut phase = [0usize; 8];
+    for y in 300..500 { for x in 1..im.width() {
+        if (luma(im.get_pixel(x, y)) - luma(im.get_pixel(x - 1, y))).abs() > 40.0 { phase[(x % 8) as usize] += 1; }
+    } }
+    let total: usize = phase.iter().sum();
+    println!("{label}: steps by x mod 8 {phase:?}");
+    *phase.iter().max().unwrap() as f32 / (total.max(1) as f32 / 8.0)
+}
+
+#[test]
+#[ignore = "manual gate"]
+fn g39_clouds_meet_a_ridge_without_steps() {
+    let on = g39_grid_steps("g39_on", &[]);
+    let red = g39_grid_steps("g39_red", &["clouds.depth_nearest=false"]);
+    println!("G39 grid-step score: on {on:.2}, red arm (depth_nearest false) {red:.2}, budget <= {G39_BUDGET}");
+    let mut f = vec![];
+    if on > G39_BUDGET { f.push(format!("score {on:.2} > {G39_BUDGET}: terrain shows through the cloud in 8 px blocks")); }
+    if red <= G39_BUDGET { f.push(format!("red arm {red:.2} <= {G39_BUDGET}: the gate does not see the blocks")); }
+    finish("G39", f);
+}

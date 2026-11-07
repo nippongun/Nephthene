@@ -279,6 +279,11 @@ pub struct Clouds {
     /// in front of a cloud hides it, and the march runs below the horizon up to the ground and ends where the ray enters the terrain
     /// (the ground height grid). Test switch (red arm): false draws clouds on sky samples only and marches through the terrain.
     pub over_terrain: bool,
+    /// The composite's depth test takes the nearest cloud front over the 3x3 march texels around the pixel. The march writes one
+    /// pixel per 4x4 block each frame (update_div), so a single texel's depth is whichever pixel was marched: on a ridge it is the
+    /// cloud behind the mountain for half the block, and that cloud's depth test then passes or fails per block, drawing clouds
+    /// over the mountain in 8 px steps. Test switch (red arm): false reads the one texel under the pixel.
+    pub depth_nearest: bool,
     /// A storm sample's opacity uses the step the march actually takes (ds in the storm interval, dt in the shell). Test switch (red
     /// arm): false uses the shell step dt for storm samples too, which is negative on rays whose shell interval is empty (the cloud
     /// base beyond max_distance, just above the horizon from low cameras): transmittance above 1, a white strip with black dots on
@@ -299,7 +304,7 @@ impl Default for Clouds {
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
             shadow_step_m: 120.0, shadow_samples_max: 48, shadow_blend: true, shadow_soft_px: 1.0, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
-            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true, over_terrain: true, storm_step_opacity: true,
+            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true, over_terrain: true, depth_nearest: true, storm_step_opacity: true,
             look: CloudLook::default(), edge_lod: EdgeLod::default(), noise: CloudNoise::default(),
         }
     }
