@@ -31,6 +31,8 @@ pub struct RaysGpu {
     pub aspect: f32, pub flat_source: u32,
     /// rays.source_max.
     pub source_max: f32,
+    /// rays.local_mean as 0/1, rays.mean_width.
+    pub local_mean: u32, pub mean_width: f32,
 }
 
 /// Main world -> render world, every frame: config rays and the sun's direction (towards the sun, world axes).
@@ -147,6 +149,7 @@ fn prepare(
         let mut ubo = UniformBuffer::from(RaysGpu {
             sun_uv: uv, fade, strength: c.strength, threshold: c.threshold, decay: c.decay, radius: c.radius, samples: c.samples,
             aspect: full.x as f32 / full.y.max(1) as f32, flat_source: c.flat_source as u32, source_max: c.source_max,
+            local_mean: c.local_mean as u32, mean_width: c.mean_width,
         });
         ubo.write_buffer(&device, &queue);
         commands.entity(e).insert(RaysView { source, march, composite, src_tex, low, ubo, fade });

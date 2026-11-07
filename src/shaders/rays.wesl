@@ -2,7 +2,8 @@
 // `source_max`; sky and sunlit cloud edges) into a low-resolution target (rays.source_scale), so the sun disc spreads over more than one
 // march step. `march` walks from each pixel toward the sun's screen position through that source, with a weight that decays per step
 // and a Gaussian mask around the sun, at rays.render_scale. `composite` adds the result to the HDR scene (additive blend). Clouds and
-// terrain in front of the sun send no light, so the gaps between them stream. Every constant comes from config `rays` (src/rays.rs).
+// terrain in front of the sun send no light, so the gaps between them stream. `march` subtracts the source's mean across the ray
+// (rays.local_mean, rays.mean_width), so an even bright sky adds nothing. Every constant comes from config `rays` (src/rays.rs).
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 
 struct Rays {
@@ -16,6 +17,8 @@ struct Rays {
     aspect: f32,
     flat_source: u32,
     source_max: f32,
+    local_mean: u32,
+    mean_width: f32,
 }
 
 @group(0) @binding(0) var<uniform> r: Rays;
@@ -55,17 +58,34 @@ fn march(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let j = fract(52.9829189 * fract(dot(in.position.xy, vec2(0.06711056, 0.00583715))));
     var acc = vec3(0.0);
     var w = 1.0;
+    // Unit vector across the ray (perpendicular to the direction to the sun, in aspect-corrected screen space), back in uv.
+    let dsc = (r.sun_uv - in.uv) * vec2(r.aspect, 1.0);
+    // ponytail: 1e-6 keeps normalize finite at the sun's own pixel.
+    let pn = normalize(vec2(-dsc.y, dsc.x) + vec2(1e-6, 0.0));
+    let perp = vec2(pn.x / r.aspect, pn.y) * r.mean_width;
     for (var k = 0u; k < n; k++) {
         let q = mix(in.uv, r.sun_uv, (f32(k) + j) / f32(n));
         if all(q >= vec2(0.0)) && all(q <= vec2(1.0)) {
             var c = vec3(1.0);
-            if r.flat_source == 0u { c = textureSampleLevel(src, smp, q, 0.0).rgb; }
+            if r.flat_source == 0u {
+                c = textureSampleLevel(src, smp, q, 0.0).rgb;
+                // Local mean across the ray (taps at +-1 and +-2 mean_width): an even sky cancels, lit gaps next to shadow remain.
+                if r.local_mean == 1u {
+                    var m = vec3(0.0);
+                    for (var t = 1; t <= 2; t++) {
+                        let o = perp * f32(t);
+                        m += textureSampleLevel(src, smp, q + o, 0.0).rgb + textureSampleLevel(src, smp, q - o, 0.0).rgb;
+                    }
+                    c -= 0.25 * m;
+                }
+            }
             let dq = (q - r.sun_uv) * vec2(r.aspect, 1.0);
             acc += c * exp(-dot(dq, dq) / max(r.radius * r.radius, 1e-6)) * w;
         }
         w *= r.decay;
     }
-    return vec4(min(acc * (r.strength * r.fade / f32(n)), vec3(F16_MAX)), 1.0);
+    // ponytail: added light only; shadow streaks would subtract below the atmosphere's light (signed output is the upgrade path).
+    return vec4(clamp(acc * (r.strength * r.fade / f32(n)), vec3(0.0), vec3(F16_MAX)), 1.0);
 }
 
 // src = the `march` target.

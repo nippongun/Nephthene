@@ -187,6 +187,8 @@
     "shadow_strength": 1.0,
     "shadow_step_m": 120.0,
     "shadow_samples_max": 48,
+    "shadow_blend": true,
+    "shadow_soft_px": 1.0,
     "update_div": 4,
     "tower_depth_m": [],
     "background": null,

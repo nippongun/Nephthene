@@ -13,6 +13,7 @@ const FOG: &str = include_str!("../../../src/shaders/fog.wesl");
 const RAYS_RS: &str = include_str!("../../../src/rays.rs");
 const RAYS: &str = include_str!("../../../src/shaders/rays.wesl");
 const COMMON: &str = include_str!("../../../src/shaders/clouds_common.wesl");
+const SHADOW_PRESENT: &str = include_str!("../../../src/shaders/clouds_shadow_present.wesl");
 const SHAFT: &str = include_str!("../../../src/shaders/clouds_shaft.wesl");
 const RESOLVE: &str = include_str!("../../../src/shaders/clouds_resolve.wesl");
 const RAIN: &str = include_str!("../../../src/shaders/rain.wesl");
@@ -73,6 +74,12 @@ fn same_fields(rust: &str, wgsl: &str, rust_head: &str, wgsl_head: &str) {
 
 #[test]
 fn cloud_uniform_matches_wgsl() { same_order(RENDER, "pub struct CloudGpu {", COMMON, "struct Clouds {"); }
+#[test]
+fn shadow_present_uniform_matches_wgsl() {
+    // Four fields, so `same_fields`'s five-field floor does not apply: compare the parsed lists directly.
+    let rs: Vec<_> = fields(&one_line(RENDER, "pub struct ShadowPresentGpu {")).into_iter().map(|(n, t)| (n, rust_to_wgsl(&t))).collect();
+    assert_eq!(rs, fields(&one_line(SHADOW_PRESENT, "struct Present {")), "ShadowPresentGpu and WGSL `Present` drifted apart");
+}
 #[test]
 fn shaft_uniform_matches_wgsl() { same_order(RENDER, "pub struct ShaftGpu {", SHAFT, "struct Shaft {"); }
 #[test]

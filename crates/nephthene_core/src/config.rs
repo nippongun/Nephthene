@@ -253,6 +253,8 @@ pub struct Clouds {
     /// redraw bands (one per frame), extinction multiplier on the shadow (1 = the sky's extinction), metres per slant sample, sample cap.
     pub shadow_res: u32, pub shadow_half_m: f32, pub shadow_samples: u32, pub shadow_every: u32, pub shadow_strength: f32,
     pub shadow_step_m: f32, pub shadow_samples_max: u32,
+    /// Cookie present pass: blend the two latest finished cookies across each redraw cycle (false = the cookie steps once per cycle, the test red arm), and the tent filter radius in cookie texels (0 = off; 1.0 untuned).
+    pub shadow_blend: bool, pub shadow_soft_px: f32,
     /// Resolve update division (1, 2 or 4): the march covers 1 pixel in div x div per frame (HZD). 1 = every pixel every frame (reference, ~16x the march cost of 4).
     pub update_div: u32,
     /// Storm towers: curve of (cloud type 0..1, tower depth m), piecewise-linear; at most 4 stops; empty = the flat layer.
@@ -296,7 +298,7 @@ impl Default for Clouds {
             base_tile2_m: 4300.0, coverage_var: 0.5, curl_m: 120.0, extinction: 0.04, ambient_scale: 1.0, steps: 72,
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
-            shadow_step_m: 120.0, shadow_samples_max: 48, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
+            shadow_step_m: 120.0, shadow_samples_max: 48, shadow_blend: true, shadow_soft_px: 1.0, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
             enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true, over_terrain: true, storm_step_opacity: true,
             look: CloudLook::default(), edge_lod: EdgeLod::default(), noise: CloudNoise::default(),
         }
@@ -460,10 +462,17 @@ pub struct Rays {
     /// Resolution of the prefiltered source the rays are marched through, relative to the view (a box average; it spreads the sun disc
     /// over more than one march step, which removes ring artifacts).
     pub source_scale: f32,
+    /// Subtract the local mean of the source across each ray (perpendicular to the direction to the sun), so only contrast (lit gaps
+    /// next to shadow) adds light and an even bright sky adds none (the atmosphere already drew its glow). false = add the whole blurred
+    /// source (red arm of G36: a clear sky washes the frame white).
+    pub local_mean: bool,
+    /// Distance between the across-ray taps of that mean, as a fraction of the screen height (taps at +-1 and +-2 times this).
+    pub mean_width: f32,
 }
 impl Default for Rays {
     fn default() -> Self {
-        Rays { enabled: true, strength: 12.0, threshold: 0.8, decay: 0.97, radius: 0.35, samples: 64, render_scale: 0.5, edge_fade: 0.2, flat_source: false, source_max: 2.0, source_scale: 0.125 }
+        Rays { enabled: true, strength: 12.0, threshold: 0.8, decay: 0.97, radius: 0.35, samples: 64, render_scale: 0.5, edge_fade: 0.2, flat_source: false, source_max: 2.0, source_scale: 0.125,
+               local_mean: true, mean_width: 0.03 }
     }
 }
 
@@ -769,9 +778,13 @@ pub struct Sim {
     pub here_tau_s: f32,
     /// Open the weather panel at start.
     pub panel_open: bool,
+    /// File the panel's Save and Load buttons use (relative to the working directory). A game loads it with `Config::load`.
+    pub settings_file: String,
+    /// Panel sections open at start, by key (`rays`, `ground_fog`) or title (`Clock`).
+    pub panel_expand: Vec<String>,
 }
 impl Default for Sim {
-    fn default() -> Self { Sim { here_tau_s: 5.0, panel_open: false } }
+    fn default() -> Self { Sim { here_tau_s: 5.0, panel_open: false, settings_file: "nephthene_settings.json".into(), panel_expand: vec![] } }
 }
 
 #[cfg(test)]

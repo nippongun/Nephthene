@@ -61,7 +61,20 @@ pub struct Ground(pub r::HeightGrid);
 
 /// The roof grid of every [`Shelter`] and its texture (rain.wesl `shelter`).
 #[derive(Resource)]
-struct Roofs { grid: r::HeightGrid, tex: Handle<Image> }
+struct Roofs { grid: r::HeightGrid, tex: Handle<Image>, boxes: Vec<(Vec3, Vec3)> }
+
+impl Roofs {
+    /// Rebuilds the grid and rewrites the texture only when the world boxes differ from the last build. A host can re-flag a static roof
+    /// as changed every frame (a physics sync that rewrites an unmoved Transform); the rebuild costs milliseconds, the compare almost nothing.
+    /// Returns whether it rebuilt.
+    fn update(&mut self, boxes: Vec<(Vec3, Vec3)>, cell_m: f32, max_cells: u32, images: &mut Assets<Image>) -> bool {
+        if boxes == self.boxes { return false; }
+        self.grid = r::shelter_grid(&boxes, cell_m, max_cells);
+        self.boxes = boxes;
+        if let Some(mut img) = images.get_mut(&self.tex) { *img = ground_image(&self.grid); }
+        true
+    }
+}
 
 /// Live rain. `intensity` 0..1 at the camera, `wetness` 0..1 of the ground, `vel` the drop velocity (m/s). `snow_vel` the flake velocity (m/s),
 /// `kind` the precipitation kind 0 rain .. 1 snow (sleet between) at the camera, `sheltered` the camera stands under a [`Shelter`]. `panel` is the panel toggle's
@@ -141,7 +154,7 @@ fn spawn(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
         commands.spawn((Name::new(if mode == 0 { "RainStreaks" } else { "RainSplashes" }), Mesh3d(mesh), MeshMaterial3d(m.clone()),
             RainQuads(m, levels), NoFrustumCulling, NotShadowCaster, Visibility::Hidden));
     }
-    commands.insert_resource(Roofs { grid: roofs, tex: roof_tex });
+    commands.insert_resource(Roofs { grid: roofs, tex: roof_tex, boxes: Vec::new() });
 }
 
 /// Rebuilds the roof grid when a [`Shelter`] is added, moved, resized or removed (bounding boxes come from Bevy's `Aabb`).
@@ -151,8 +164,7 @@ fn roofs(all: Query<(&Aabb, &GlobalTransform), With<Shelter>>, changed: Query<()
     if changed.is_empty() && removed.read().count() == 0 { return; }
     let c = &wx.cfg.rain;
     let boxes: Vec<(Vec3, Vec3)> = if c.ignore_shelter { vec![] } else { all.iter().map(|(a, t)| world_box(a, t)).collect() };
-    roofs.grid = r::shelter_grid(&boxes, c.shelter_cell_m, c.shelter_max_cells);
-    if let Some(mut img) = images.get_mut(&roofs.tex) { *img = ground_image(&roofs.grid); }
+    roofs.update(boxes, c.shelter_cell_m, c.shelter_max_cells, &mut images);
 }
 
 /// World-space min/max corners of a mesh's local bounding box.
@@ -235,5 +247,28 @@ impl Surfaces<'_> {
         let place = w::climate::place(&wx.cfg.climate, wx.climate.as_ref(), mx, mz);
         let (wet, snow) = self.rain.as_deref().map_or((0.0, 0.0), |r| (r.wetness, r.snow_cover));
         r::surface_at(&wx.cfg.rain, wet, snow, &place, roofed)
+    }
+}
+
+#[cfg(test)]
+mod roof_tests {
+    use super::*;
+
+    /// A roof re-flagged as changed without moving must not rebuild the grid or rewrite the texture; a moved, added or removed roof must.
+    #[test]
+    fn rebuilds_only_when_a_box_moves() {
+        let (cell, max) = (1.0, 1 << 16);
+        let mut images = Assets::<Image>::default();
+        let tex = images.add(ground_image(&r::shelter_grid(&[], cell, max)));
+        let mut roofs = Roofs { grid: r::shelter_grid(&[], cell, max), tex: tex.clone(), boxes: Vec::new() };
+        let a = (Vec3::new(-3540.0, 75.0, 338.0), Vec3::new(-3536.0, 75.3, 341.0));
+        assert!(roofs.update(vec![a], cell, max, &mut images), "a new roof must build the grid");
+        let top = roofs.grid.top(-3538.0, 339.5);
+        assert!(top > 70.0, "the grid holds the roof (top {top})");
+        assert!(!roofs.update(vec![a], cell, max, &mut images), "an unmoved roof re-flagged as changed rebuilt the grid");
+        let moved = (a.0 + Vec3::X * 2.0, a.1 + Vec3::X * 2.0);
+        assert!(roofs.update(vec![moved], cell, max, &mut images), "a moved roof must rebuild");
+        assert!(roofs.update(vec![], cell, max, &mut images), "a removed roof must rebuild");
+        assert!(roofs.grid.top(-3538.0, 339.5) < top, "the removed roof is gone from the grid");
     }
 }
