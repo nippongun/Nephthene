@@ -190,6 +190,7 @@ fn drive(
     // The air's shadow: terrain where there is a terrain Ground, the cloud cookie where clouds draw (sky.cloud_shafts).
     (g.occ_terrain, g.occ_cloud, g.occ_cloud_y) = (b.terrain as u32 as f32, (sky.cloud_shafts && g.sh_on > 0.0) as u32 as f32, wx.cfg.clouds.bottom_m);
     g.occ_cloud_mask = (!sky.cloud_shafts_ignore_clouds) as u32 as f32;
+    g.occ_unbounded = sky.cloud_shafts_unbounded as u32 as f32;
     g.occ_on = (sky.sun_occlusion && (g.occ_terrain > 0.0 || g.occ_cloud > 0.0)) as u32 as f32;
     if let Some(h) = cookie { params.cookie = h; }
 }
