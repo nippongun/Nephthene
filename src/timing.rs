@@ -7,7 +7,7 @@
 //! A slot is resolved one frame after its end timestamp (at the next frame's start): on Metal an end-of-pass timestamp resolved in the same
 //! command buffer still reads 0.
 //! The readback never blocks: SLOTS query pairs, each mapped asynchronously and read when ready; a frame takes any free slot and is
-//! skipped when none is (n counts the frames actually read).
+//! skipped when none is (n counts the frames actually read; early windows read fewer than 60 while the GPU queue fills).
 //! Bounds: the span starts before Core3d's Prepass set and ends after its PostProcess set; GPU work outside them (Bevy's GPU preprocess,
 //! the UI pass, upscaling to the output) is not in it. Nephthene's passes all are.
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};

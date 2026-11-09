@@ -303,13 +303,15 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
         let er = length((fp + 0.5) / vec2(u.full_w, u.full_h) * 2.0 - 1.0);
         let ks = select(0.0, smoothstep(u.edge_r0, u.edge_r1, er), edge);
         let n = max(floor(f32(u.steps) * mix(u.horizon_step_boost, 1.0, smoothstep(0.0, u.horizon_step_y, d.y)) * mix(1.0, u.edge_step_scale, ks)), 1.0);
-        // Distant LOD (clouds.far_lod): up to tn the march is unchanged (same step length, so nearer pixels match the full march); the
+        // Distant LOD (clouds.far_lod): up to tn the march is unchanged (same step length: a ray that ends before tn matches the full march); the
         // steps past tn are replaced by far_samples long steps (with detail erosion only if far_detail). Off or unclipped: tn = t1, the full march.
         let far = u.far_on > 0.5 && t1 > max(u.far_m, t0);
         let tn = select(t1, max(u.far_m, t0), far);
         let dt_far = (t1 - tn) / u.far_samples;
-        // Whole shell past the start: long steps from the beginning.
-        var dt = select((t1 - t0) / n, dt_far, tn <= t0);
+        // Whole shell past the start: long steps from the beginning. Only when far: a ray with no shell (t1 <= t0, storm only) keeps the
+        // old (t1 - t0) / n (a verifier found far off giving those rays dt 0, which broke G32's red arm).
+        var far_mode = far && tn <= t0;
+        var dt = select((t1 - t0) / n, dt_far, far_mode);
         let cs = dot(d, u.sun_dir);
         let cm = dot(d, u.moon_dir);
         let jit = ign_f(fp);
@@ -359,9 +361,10 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
             if u.over_terrain != 0u && view.world_position.y + d.y * t < ground_y(xz) { break; }
             let alt = r - R;
             let inside = h >= 0.0 && h <= 1.0;
-            // Into the far part: long steps from here, no cheap mode (a long cheap stride would back up a whole far step).
+            // Into the far part: long steps from here, re-jittered over the long step (the near phase would cover only dt of each dt_far),
+            // no cheap mode (a long cheap stride would back up a whole far step).
             let in_far = far && in_sh && t >= tn;
-            if in_far { dt = dt_far; cheap = false; }
+            if in_far && !far_mode { far_mode = true; dt = dt_far; cheap = false; t = tn + dt_far * jit; continue; }
             if cheap && !in_st {
                 // Density without detail: if any, back up one full step and march properly from there.
                 if inside && density_shell(xz, alt, h, false) > 0.0 { cheap = false; empty = 0u; t = max(t - dt, t0); } else { t += dt; } // a 2*dt coarse stride skipped thin layers by altitude, which showed as horizontal bands

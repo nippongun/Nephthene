@@ -363,7 +363,7 @@ impl Default for EdgeLod {
 /// shell in `samples` long steps (detail erosion only with `detail`; never the cheap empty-space mode). The march's cost is its step count,
 /// not its distance (measured 2026-11-09: max_distance_m 30 km did not save, the horizon step boost off saved half), and low rays take
 /// the most steps (up to `look.horizon_step_boost` x) over the longest paths, so the saving is the far steps replaced. Pixels whose
-/// cloud is nearer than `start_m` match the full march. Off by default (the look is unchanged); every value untuned. Measured 2026-11-09
+/// rays end before `start_m` (opaque near cloud) match the full march; see-through near cloud shows the changed far cloud behind it. Off by default (the look is unchanged); every value untuned. Measured 2026-11-09
 /// (M5 Max, 1080p, coverage 0.6): 10 km saves 42% of the clouds' cost for a mean change of 0.35 levels (p99 7); 5 km saves 70% but
 /// moves the far band by p99 22-45 levels; `detail` costs nothing measurable and does not reduce the change at 10 km.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
