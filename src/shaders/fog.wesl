@@ -85,6 +85,8 @@ struct Fog {
     occ_cloud: f32,
     occ_cloud_y: f32,
     occ_cloud_mask: f32,
+    // 1 = the aerial correction ignores the scene colour (test switch); 0 = bounded by it (see march_low).
+    occ_unbounded: f32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -102,6 +104,9 @@ struct Fog {
 // The cloud composite's colour (premultiplied, alpha = cloud opacity); zeros when clouds are off.
 @group(1) @binding(8) var cloud_rgba: texture_2d<f32>;
 // Composite pass: the half-resolution march (premultiplied fog, surface distance per texel).
+// march_low only: the scene after the main pass, and after the opaque pass only (before transparents); see the bound in march_low.
+@group(2) @binding(5) var scene: texture_2d<f32>;
+@group(2) @binding(6) var opaque: texture_2d<f32>;
 @group(2) @binding(0) var low_fog: texture_2d<f32>;
 @group(2) @binding(1) var low_t: texture_2d<f32>;
 @group(2) @binding(2) var t_smp: sampler;
@@ -305,7 +310,18 @@ fn march_low(in: FullscreenVertexOutput) -> Low {
     // Sky pixels (no surface) are shadowed out to the cookie's half-width, the farthest the cookie knows about.
     let t_occ = select(f.sh_half, t_scene, t_scene > 0.0);
     if occ && (t_scene > 0.0 || f.occ_cloud > 0.0) {
-        x_ap = shadowed(eye, d, t_occ, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (vec3(1.0) - kept(dot(d, f.sun_dir))) * sample_aerial_view_lut(in.uv, t_occ) * view.exposure;
+        let a_ap = sample_aerial_view_lut(in.uv, t_occ) * view.exposure;
+        x_ap = shadowed(eye, d, t_occ, pcg(u32(in.position.x) + 4096u * u32(in.position.y) + f.frame * 16777619u + 7u)) * (vec3(1.0) - kept(dot(d, f.sun_dir))) * a_ap;
+        // Only what the transparents in front let through (sky.cloud_shafts_unbounded off): the in-scatter sits in the opaque scene, and
+        // alpha-blended glass (which writes no depth) passes a share of it, final / opaque per channel. Without this the full correction
+        // came off a glass pixel that holds a fraction of it: negative, black and red cloud-shaped cut-outs in window glass.
+        if f.occ_unbounded == 0.0 {
+            let dims = vec2<f32>(textureDimensions(scene));
+            let px = vec2<i32>(clamp(in.uv * dims, vec2(0.0), dims - 1.0));
+            let fin = max(textureLoad(scene, px, 0).rgb, vec3(0.0));
+            let opq = max(textureLoad(opaque, px, 0).rgb, vec3(0.0));
+            x_ap *= min(vec3(1.0), fin / max(opq, vec3(1e-6)));
+        }
         // Clouds drawn over this pixel carry their own air (clouds_march.wesl air_segment), not Bevy's aerial perspective: only the uncovered share takes the correction.
         let cov = textureSampleLevel(cloud_rgba, smp, in.uv, 0.0).a;
         x_ap *= vec3(1.0 - select(0.0, clamp(cov, 0.0, 1.0), f.occ_cloud_mask > 0.0));

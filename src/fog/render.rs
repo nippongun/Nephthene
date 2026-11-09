@@ -64,6 +64,8 @@ pub struct FogGpu {
     pub map_y0: f32, pub g_y0: f32,
     /// Aerial occlusion terms (sky.sun_occlusion): occ_terrain 1 = terrain shadows the air; occ_cloud 1 = the cloud cookie shadows the air (sky.cloud_shafts); occ_cloud_y = clouds.bottom_m, above which the cookie term is skipped; occ_cloud_mask 1 = weight the correction by the share the clouds leave uncovered (0 = sky.cloud_shafts_ignore_clouds, red arm).
     pub occ_terrain: f32, pub occ_cloud: f32, pub occ_cloud_y: f32, pub occ_cloud_mask: f32,
+    /// sky.cloud_shafts_unbounded: 1 = the correction ignores what the pixel holds (red arm), 0 = bounded by the scene colour.
+    pub occ_unbounded: f32,
 }
 
 /// Uniform for fog.wesl's `resolve`; field order identical in the shader (`struct FogResolve`). Last frame's view, as the clouds' ResolveGpu.
@@ -92,7 +94,8 @@ pub fn plugin(app: &mut App) {
     render_app
         .add_systems(RenderStartup, init)
         .add_systems(Render, (read_timing.in_set(RenderSystems::Cleanup), prepare.in_set(RenderSystems::PrepareResources)))
-        .add_systems(Core3d, fog_pass.after(Core3dSystems::MainPass).before(Core3dSystems::EarlyPostProcess));
+        .add_systems(Core3d, fog_pass.after(Core3dSystems::MainPass).before(Core3dSystems::EarlyPostProcess))
+        .add_systems(Core3d, copy_opaque.in_set(Core3dSystems::MainPass).after(bevy::core_pipeline::core_3d::main_opaque_pass_3d).before(bevy::core_pipeline::core_3d::main_transparent_pass_3d));
 }
 
 /// clouds.pass_timing: GPU timestamps for `ground_fog_march`, `ground_fog_resolve` and `ground_fog_composite`. Prints `FOGMS` every 60 frames (mean ms).
@@ -106,7 +109,9 @@ pub(crate) struct FogTiming {
 
 #[derive(Resource)]
 pub(crate) struct FogRender {
-    atmo: BindGroupLayoutDescriptor, data: [BindGroupLayoutDescriptor; 2], comp: BindGroupLayoutDescriptor, resolve_layout: BindGroupLayoutDescriptor, shader: Handle<Shader>, fullscreen: FullscreenShader,
+    atmo: BindGroupLayoutDescriptor, data: [BindGroupLayoutDescriptor; 2], comp: BindGroupLayoutDescriptor, resolve_layout: BindGroupLayoutDescriptor,
+    /// march_low's group 2: the scene colour at binding 5 (fog.wesl `scene`; bindings 0..4 of group 2 are the resolve's).
+    scene_layout: BindGroupLayoutDescriptor, shader: Handle<Shader>, fullscreen: FullscreenShader,
     smp: Sampler, repeat: Sampler, nearest: Sampler, ubo: UniformBuffer<FogGpu>,
     /// March pipeline per MSAA, resolve pipeline per MSAA, composite pipeline per (MSAA, target format).
     march: HashMap<bool, CachedRenderPipelineId>, resolve: HashMap<bool, CachedRenderPipelineId>, composite: HashMap<(bool, TextureFormat), CachedRenderPipelineId>,
@@ -115,7 +120,9 @@ pub(crate) struct FogRender {
 /// The view's pipelines, its half-resolution march targets (premultiplied fog, surface distance) and the resolved history pair
 /// (`read`/`write`, swapped every frame; the composite shows `write`) with the resolve uniform.
 #[derive(Component)]
-pub(crate) struct FogView { march: CachedRenderPipelineId, resolve: CachedRenderPipelineId, composite: CachedRenderPipelineId, low: CachedTexture, t: CachedTexture, read: CachedTexture, write: CachedTexture, ubo: UniformBuffer<FogResolveGpu> }
+pub(crate) struct FogView { march: CachedRenderPipelineId, resolve: CachedRenderPipelineId, composite: CachedRenderPipelineId,
+    /// The scene after the opaque pass, before transparents (copy_opaque): with the final scene it gives what the transparents let through.
+    opaque: CachedTexture, low: CachedTexture, t: CachedTexture, read: CachedTexture, write: CachedTexture, ubo: UniformBuffer<FogResolveGpu> }
 
 /// Last frame's view, kept on the render-world view entity. A size change, a skipped frame, a cut or a frame the fog pass skipped resets the history.
 #[derive(Component)]
@@ -143,7 +150,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     )));
     let sampler = |mode| device.create_sampler(&SamplerDescriptor { address_mode_u: mode, address_mode_v: mode, address_mode_w: mode, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default() });
     commands.insert_resource(FogRender {
-        atmo, data: [data(false), data(true)], comp, resolve_layout, shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp: sampler(AddressMode::ClampToEdge), repeat: sampler(AddressMode::Repeat), nearest: device.create_sampler(&SamplerDescriptor::default()),
+        atmo, data: [data(false), data(true)], comp, resolve_layout, scene_layout: BindGroupLayoutDescriptor::new("fog_scene", &BindGroupLayoutEntries::with_indices(S::FRAGMENT, ((5, texture_2d(TextureSampleType::default())), (6, texture_2d(TextureSampleType::default()))))), shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp: sampler(AddressMode::ClampToEdge), repeat: sampler(AddressMode::Repeat), nearest: device.create_sampler(&SamplerDescriptor::default()),
         ubo: UniformBuffer::default(), march: HashMap::new(), resolve: HashMap::new(), composite: HashMap::new(),
     });
 }
@@ -169,7 +176,7 @@ fn prepare(
         let defs = if ms { vec!["MULTISAMPLED".into()] } else { vec![] };
         let march = *render.march.entry(ms).or_insert_with(|| cache.queue_render_pipeline(RenderPipelineDescriptor {
             label: Some("ground_fog_march".into()),
-            layout: vec![render.atmo.clone(), render.data[ms as usize].clone()],
+            layout: vec![render.atmo.clone(), render.data[ms as usize].clone(), render.scene_layout.clone()],
             vertex: render.fullscreen.to_vertex_state(),
             fragment: Some(FragmentState {
                 shader: render.shader.clone(), entry_point: Some("march_low".into()), shader_defs: defs.clone(),
@@ -209,6 +216,12 @@ fn prepare(
             dimension: TextureDimension::D2, format, usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING, view_formats: &[],
         });
         let (a, b) = (tex("fog_hist_a", TextureFormat::Rgba16Float), tex("fog_hist_b", TextureFormat::Rgba16Float));
+        let (low, t) = (tex("fog_low", TextureFormat::Rgba16Float), tex("fog_low_t", TextureFormat::R32Float));
+        drop(tex);
+        let opaque = textures.get(&device, TextureDescriptor {
+            label: Some("fog_opaque"), size: target.main_texture().size(), mip_level_count: 1, sample_count: 1, dimension: TextureDimension::D2,
+            format, usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        });
         let (read, write) = if frame.0 % 2 == 0 { (a, b) } else { (b, a) };
         let rot = Mat4::from_mat3(Mat3::from(view.world_from_view.affine().matrix3));
         let cam = view.world_from_view.translation();
@@ -223,7 +236,7 @@ fn prepare(
         // fog_pass skips the frame (and writes no history) when there is no fog band and no sun occlusion.
         let drawn = !(params.gpu.y_hi <= params.gpu.y_lo && params.gpu.occ_on <= 0.0);
         commands.entity(e).insert((
-            FogView { march, resolve, composite, low: tex("fog_low", TextureFormat::Rgba16Float), t: tex("fog_low_t", TextureFormat::R32Float), read, write, ubo },
+            FogView { march, resolve, composite, opaque, low, t, read, write, ubo },
             FogHistory { clip_from_view: view.clip_from_view, rot_inv: rot.transpose(), cam, size, frame: frame.0, drawn },
         ));
     }
@@ -253,6 +266,7 @@ pub(crate) fn fog_pass(
         u, &map.texture_view, &ground.texture_view, &cookie.texture_view, &render.smp, depth_view, &noise.texture_view, &render.repeat,
         clouds.map_or(&fallback.texture_view, |c| &c.write.default_view),
     )));
+    let scene = device.create_bind_group("fog_scene", &cache.get_bind_group_layout(&render.scene_layout), &BindGroupEntries::with_indices(((5, target.main_texture_view()), (6, &fv.opaque.default_view))));
     let res = device.create_bind_group("fog_resolve", &cache.get_bind_group_layout(&render.resolve_layout), &BindGroupEntries::sequential((&fv.low.default_view, &fv.t.default_view, &render.nearest, &fv.read.default_view, ru)));
     let comp = device.create_bind_group("fog_composite", &cache.get_bind_group_layout(&render.comp), &BindGroupEntries::sequential((&fv.write.default_view, &fv.t.default_view, &render.nearest)));
     let offsets = [atmo_i.index(), settings_i.index(), transforms_i.index(), view_i.offset];
@@ -266,6 +280,7 @@ pub(crate) fn fog_pass(
     pass.set_pipeline(march);
     pass.set_bind_group(0, &atmo_bg, &offsets);
     pass.set_bind_group(1, &data, &[]);
+    pass.set_bind_group(2, &scene, &[]);
     pass.draw(0..3, 0..1);
     drop(pass);
     let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
@@ -294,6 +309,12 @@ pub(crate) fn fog_pass(
         e.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, 48);
         t.recorded = true;
     }
+}
+
+/// After the opaque pass, before transparents: copy the scene, so march_low can tell what the transparents (glass) let through.
+fn copy_opaque(view: ViewQuery<(&ViewTarget, &FogView)>, mut ctx: RenderContext) {
+    let (target, fv) = view.into_inner();
+    ctx.command_encoder().copy_texture_to_texture(target.main_texture().as_image_copy(), fv.opaque.texture.as_image_copy(), target.main_texture().size());
 }
 
 /// Cleanup (after submit): map the resolved timestamps and print the running mean every 60 frames. Skipped on frames fog_pass did not record.

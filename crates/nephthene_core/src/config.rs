@@ -179,10 +179,16 @@ pub struct Sky {
     pub cloud_shafts: bool,
     /// Test switch (red arm of G34's over-darkening budget): true = the cloud-shaft correction ignores the clouds drawn over a pixel, so it darkens cloud and the sky behind it (the bug it guards). Default false.
     pub cloud_shafts_ignore_clouds: bool,
+    /// Test switch (red arm of G42): true = the correction subtracts the shadowed share of the aerial in-scatter whatever the pixel
+    /// holds. A surface that writes no depth (alpha-blended glass, a backdrop) hides most of that in-scatter, so the subtraction went
+    /// negative behind it: black and red cloud-shaped cut-outs in window glass. false (default) = the removal is bounded by the pixel:
+    /// X min(1, scene / aerial) per channel, so an opaque pixel (which holds the full in-scatter) keeps the whole correction and glass
+    /// keeps only its share.
+    pub cloud_shafts_unbounded: bool,
 }
 impl Default for Sky {
     fn default() -> Self {
-        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8, cloud_shafts: true, cloud_shafts_ignore_clouds: false }
+        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8, cloud_shafts: true, cloud_shafts_ignore_clouds: false, cloud_shafts_unbounded: false }
     }
 }
 
