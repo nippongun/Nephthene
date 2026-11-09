@@ -6,8 +6,10 @@
 //! FRAMEMS difference between a run with it and one without (tests/cost.rs).
 //! A slot is resolved one frame after its end timestamp (at the next frame's start): on Metal an end-of-pass timestamp resolved in the same
 //! command buffer still reads 0.
-//! The readback never blocks: a ring of SLOTS query pairs, each mapped asynchronously and read when ready; a slot still in flight
-//! skips that frame's write (n counts the frames actually read).
+//! The readback never blocks: SLOTS query pairs, each mapped asynchronously and read when ready; a frame takes any free slot and is
+//! skipped when none is (n counts the frames actually read).
+//! Bounds: the span starts before Core3d's Prepass set and ends after its PostProcess set; GPU work outside them (Bevy's GPU preprocess,
+//! the UI pass, upscaling to the output) is not in it. Nephthene's passes all are.
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
 use bevy::{
@@ -21,8 +23,9 @@ use bevy::{
     },
 };
 
-/// Readback ring length. ponytail: four frames in flight is more than Bevy's pipelined rendering keeps; raise it if n drops below 60.
-const SLOTS: usize = 4;
+/// Readback slots: headless, the CPU runs many frames ahead of the GPU and a slot's map completes 16+ frames after its write (4 slots
+/// read 4-13 frames per window, 16 slots about 26). 256 bytes each. ponytail: raise it if n drops well below 60.
+const SLOTS: usize = 64;
 /// Byte stride of a slot in the resolve buffer: wgpu's QUERY_RESOLVE_BUFFER_ALIGNMENT.
 const STRIDE: u64 = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT;
 /// Frames per printed mean, as PASSMS and FOGMS.
@@ -35,7 +38,7 @@ enum Slot { Free, Ended, Written, Mapping }
 struct FrameTiming {
     qs: wgpu::QuerySet, resolve: wgpu::Buffer, read: Vec<wgpu::Buffer>, ready: Vec<Arc<AtomicBool>>, state: [Slot; SLOTS],
     /// The slot this frame writes, None when it is still in flight (skip) or the frame's span is already written (a second view).
-    cur: Option<usize>, frame: usize,
+    cur: Option<usize>,
     gpu: Vec<f64>, wall: Vec<f64>, last: Option<Instant>, frames: u32,
 }
 
@@ -58,17 +61,15 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, on: Res<FrameTimingOn
         qs: d.create_query_set(&wgpu::QuerySetDescriptor { label: Some("frame_ts"), ty: wgpu::QueryType::Timestamp, count: 2 * SLOTS as u32 }),
         resolve: d.create_buffer(&BufferDescriptor { label: Some("frame_ts_resolve"), size: STRIDE * SLOTS as u64, usage: BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC, mapped_at_creation: false }),
         read: (0..SLOTS).map(|_| buf(BufferUsages::COPY_DST | BufferUsages::MAP_READ, "frame_ts_read")).collect(),
-        ready: (0..SLOTS).map(|_| default()).collect(), state: [Slot::Free; SLOTS], cur: None, frame: 0,
+        ready: (0..SLOTS).map(|_| default()).collect(), state: [Slot::Free; SLOTS], cur: None,
         gpu: Vec::new(), wall: Vec::new(), last: None, frames: 0,
     });
 }
 
-/// Pick this frame's slot, or none when it is still in flight.
+/// Pick this frame's slot: any free one, or none when all are in flight (the frame is skipped).
 fn begin_frame(timing: Option<ResMut<FrameTiming>>) {
     let Some(mut t) = timing else { return };
-    let slot = t.frame % SLOTS;
-    t.frame += 1;
-    t.cur = (t.state[slot] == Slot::Free).then_some(slot);
+    t.cur = t.state.iter().position(|s| *s == Slot::Free);
 }
 
 /// Resolve the slots last frame ended, then an empty pass on the view target writes this frame's first timestamp at its beginning.
