@@ -39,7 +39,7 @@ struct SectionBody(usize);
 struct Sections(Vec<String>);
 /// Which control an event came from.
 #[derive(Component, Clone, Copy, PartialEq, Debug)]
-pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, StormsOn, StormNow, Clouds, Shadows, Debug, UpdateDiv, EdgeLod, Channel, Giz(usize), Knob(usize), KnobReset(usize), Save, Load }
+pub enum Wid { Close, Hour, PlayPause, Rate, CovMode, Cov, WindDir, WindSpeed, Rain, Reset, FogOn, FogMode, FogAmount, FogBurn, FogDepth, FogVis, FogWisp, StormsOn, StormNow, Clouds, Shadows, Debug, UpdateDiv, EdgeLod, FarLod, Channel, Giz(usize), Knob(usize), KnobReset(usize), Save, Load }
 /// Option index a select currently shows (so a state change elsewhere moves it).
 #[derive(Component)]
 struct SelShown(usize);
@@ -239,6 +239,10 @@ fn spawn(mut commands: Commands, wx: Res<Weather>, dash: Res<Panel>, knobs: Res<
     let r = row(cm, s);
     lbl(cm, r, "Cloud edge LOD");
     toggle(cm, r, Wid::EdgeLod);
+    // Distant LOD: long steps past clouds.far_lod.start_m (its distance and step count are sliders in the Settings section).
+    let r = row(cm, s);
+    lbl(cm, r, "Cloud far LOD");
+    toggle(cm, r, Wid::FarLod);
     // map
     let s = section(cm, root, &mut titles, &expand, "Map", false);
     let r = row(cm, s);
@@ -352,6 +356,7 @@ fn on_bool(ev: On<ValueChange<bool>>, q: Query<&Wid>, mut d: ResMut<Panel>, mut 
         Some(Wid::Rain) => d.0.rain = v,
         Some(Wid::FogOn) => wx.cfg.ground_fog.enabled = v,
         Some(Wid::EdgeLod) => wx.cfg.clouds.edge_lod.enabled = v,
+        Some(Wid::FarLod) => wx.cfg.clouds.far_lod.enabled = v,
         Some(Wid::StormsOn) => if let Some(mut s) = storms { s.cfg.enabled = v; },
         Some(Wid::Clouds) => d.0.clouds = v,
         Some(Wid::Shadows) => d.0.shadows = v,
@@ -435,7 +440,7 @@ fn sync_widgets(
         if (v.0 - want).abs() > 1e-4 { commands.entity(e).insert(SliderValue(want)); }
     }
     for (e, k, on) in &checks {
-        let want = match k { Wid::Rain => d.0.rain, Wid::FogOn => g.enabled, Wid::EdgeLod => wx.cfg.clouds.edge_lod.enabled, Wid::StormsOn => storms.as_ref().is_some_and(|s| s.cfg.enabled), Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
+        let want = match k { Wid::Rain => d.0.rain, Wid::FogOn => g.enabled, Wid::EdgeLod => wx.cfg.clouds.edge_lod.enabled, Wid::FarLod => wx.cfg.clouds.far_lod.enabled, Wid::StormsOn => storms.as_ref().is_some_and(|s| s.cfg.enabled), Wid::Clouds => d.0.clouds, Wid::Shadows => d.0.shadows, Wid::Giz(i) => d.0.gizmos[*i], _ => continue };
         if want && !on { commands.entity(e).insert(Checked); } else if !want && on { commands.entity(e).remove::<Checked>(); }
     }
     for (e, k, v) in &nums {

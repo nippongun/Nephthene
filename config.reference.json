@@ -197,6 +197,7 @@
     "coverage_override": null,
     "debug_view": 0,
     "pass_timing": false,
+    "frame_timing": false,
     "air_guard": true,
     "over_terrain": true,
     "depth_nearest": true,
@@ -218,6 +219,12 @@
       "step_scale": 0.5,
       "detail_r0": 0.8,
       "detail_r1": 1.2
+    },
+    "far_lod": {
+      "enabled": false,
+      "start_m": 10000.0,
+      "samples": 8,
+      "detail": false
     },
     "noise": {
       "base_res": 128,

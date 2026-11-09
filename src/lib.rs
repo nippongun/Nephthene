@@ -25,6 +25,7 @@ mod rain;
 mod rays;
 mod sky;
 mod storms;
+mod timing;
 
 pub use clouds::CloudParams;
 pub use fog::FogState;
@@ -65,6 +66,7 @@ impl Plugin for NephthenePlugin {
         app.add_plugins(fog::FogPlugin);
         app.add_plugins(rays::RaysPlugin);
         app.add_plugins(orographic::OroPlugin);
+        timing::plugin(app, self.config.clouds.frame_timing);
         #[cfg(feature = "panel")]
         app.add_plugins(panel::PanelPlugin);
     }

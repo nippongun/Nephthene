@@ -106,6 +106,12 @@ struct Clouds {
     edge_detail_r1: f32,
     // clouds.depth_nearest: 1 = the composite tests the nearest cloud front over 3x3 march texels, 0 = the one texel (test switch).
     depth_nearest: u32,
+    // Distant cloud LOD (config clouds.far_lod): on (1) / off (0), ray distance (m) where the long steps begin, their count.
+    far_on: f32,
+    far_m: f32,
+    far_samples: f32,
+    // 1 = the far steps keep the detail erosion, 0 = base shape only.
+    far_detail: f32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).
