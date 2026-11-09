@@ -501,11 +501,18 @@ pub struct Rays {
     pub local_mean: bool,
     /// Distance between the across-ray taps of that mean, as a fraction of the screen height (taps at +-1 and +-2 times this).
     pub mean_width: f32,
+    /// Only pixels farther than `source_min_m` send light (scene depth): sky, and clouds composited in front of terrain, but no opaque
+    /// geometry, so a bright wall or ceiling near the sun on screen does not stream rays indoors (GPU Gems 3 ch. 13 draws geometry
+    /// black in its occlusion pass). false = every bright pixel is a source (test red arm of G41).
+    pub sky_source: bool,
+    /// Scene depth (m along the view axis) beyond which a pixel counts as sky for `sky_source`. Untuned: past any room or nearby
+    /// building, nearer than the cloud base (clouds.bottom_m 1500).
+    pub source_min_m: f32,
 }
 impl Default for Rays {
     fn default() -> Self {
         Rays { enabled: true, strength: 12.0, threshold: 0.8, decay: 0.97, radius: 0.35, samples: 64, render_scale: 0.5, edge_fade: 0.2, flat_source: false, source_max: 2.0, source_scale: 0.125,
-               local_mean: true, mean_width: 0.03 }
+               local_mean: true, mean_width: 0.03, sky_source: true, source_min_m: 1000.0 }
     }
 }
 

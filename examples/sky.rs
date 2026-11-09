@@ -15,6 +15,8 @@
 //! ground instead; poses `mtn_west` (west plain, upwind of the default westerly), `mtn_east` (the lee) and `mtn_high` (overview).
 //! `--pose <name>` (interactive): start the flying camera at that pose of examples/poses.json instead of the origin.
 //! `--roof`: a 200 x 200 m slab 4 m up over the origin, marked `Shelter` (precipitation occlusion tests: no rain falls under it).
+//! `--room` / `--room-window`: a closed 6 x 6 x 3.5 m room around the origin with a bright unlit ceiling over dim walls (opaque geometry
+//! next to the sun on screen), the second with a 2 x 1.4 m window in the west wall; pose `room_sun` looks west toward the afternoon sun (G41).
 //! `--print-config` prints the effective config as JSON and exits (the reference file).
 //! `--describe` (shots): after the settle frames, prints one `DESCRIBE` line: the weather at the camera (`nephthene_core::dash::describe`).
 //! Exit codes: 0 ok, 3 timeout, 4 bad argument.
@@ -148,6 +150,7 @@ fn main() {
     if args.has("--terrain") { app.insert_resource(nephthene::Ground(nephthene::core::fog::test_valley())); }
     if args.has("--mountains") { app.insert_resource(nephthene::Ground(nephthene::core::terrain::mountains())); }
     if args.has("--roof") { app.insert_resource(Roof); }
+    if args.has("--room") || args.has("--room-window") { app.insert_resource(Room { window: args.has("--room-window") }); }
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     // The host owns its surfaces: this example's material, its shader and the system that fills it from Nephthene's published state.
     load_internal_asset!(app, SURFACE_SHADER, "surface.wesl", Shader::from_wesl);
@@ -164,6 +167,9 @@ fn main() {
 struct Cfg(Config);
 #[derive(Resource)]
 struct Roof;
+/// The G41 room: walls and ceiling, a west window when `window`.
+#[derive(Resource)]
+struct Room { window: bool }
 #[derive(Resource)]
 struct StartPose(Option<Pose>);
 #[derive(Component)]
@@ -182,7 +188,7 @@ fn camera_bundle(cfg: &Config) -> impl Bundle {
 }
 
 /// Flat ground (or the `--terrain` mesh over a lowered curved disc) and the sun; the camera is spawned by the mode (look-around or shot).
-fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, mut surf: ResMut<Assets<SurfaceMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>, roof: Option<Res<Roof>>) {
+fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, mut surf: ResMut<Assets<SurfaceMaterial>>, cfg: Res<Cfg>, terrain: Option<Res<nephthene::Ground>>, roof: Option<Res<Roof>>, room: Option<Res<Room>>) {
     let ground = surf.add(SurfaceMaterial { base: StandardMaterial { base_color: Color::srgb(0.55, 0.46, 0.34), perceptual_roughness: 0.95, reflectance: 0.1, ..default() }, extension: WeatherSurface::default() });
     // Under the terrain the plane sits just below its lowest point, so it shows only past the terrain's edge.
     let below = terrain.as_ref().map_or(0.0, |t| t.0.y.iter().cloned().fold(f32::MAX, f32::min) - 10.0);
@@ -194,6 +200,29 @@ fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
         CascadeShadowConfigBuilder { maximum_distance: 250.0, first_cascade_far_bound: 8.0, ..default() }.build(), Transform::default(),
     ));
     if roof.is_some() { commands.spawn((Name::new("Roof"), Shelter, Mesh3d(meshes.add(Cuboid::new(200.0, 0.3, 200.0))), MeshMaterial3d(mats.add(StandardMaterial { base_color: Color::srgb(0.5, 0.5, 0.5), perceptual_roughness: 0.9, ..default() })), Transform::from_xyz(0.0, 4.15, 0.0))); }
+    if let Some(room) = room {
+        // ponytail: test geometry, not a look. Unlit, so the values hold under any exposure: a bright ceiling (HDR 3, above
+        // rays.threshold) over dim walls (0.3), a strong edge at the seam next to the sun like a sunlit ceiling indoors. (Uniform bright
+        // walls send nothing: rays.local_mean cancels them.)
+        let wall = mats.add(StandardMaterial { base_color: Color::linear_rgb(0.3, 0.3, 0.3), unlit: true, ..default() });
+        let ceiling = mats.add(StandardMaterial { base_color: Color::linear_rgb(3.0, 3.0, 3.0), unlit: true, ..default() });
+        // (centre, size): interior x and z -3..3, y 0..3.5, 0.2 m thick; the west wall (x = -3.1) in pieces around the window
+        // (z -1..1, y 1.2..2.6) or whole.
+        let mut parts = vec![
+            (Vec3::new(0.0, 3.6, 0.0), Vec3::new(6.4, 0.2, 6.4)), (Vec3::new(3.1, 1.75, 0.0), Vec3::new(0.2, 3.5, 6.4)),
+            (Vec3::new(0.0, 1.75, 3.1), Vec3::new(6.4, 3.5, 0.2)), (Vec3::new(0.0, 1.75, -3.1), Vec3::new(6.4, 3.5, 0.2)),
+        ];
+        if room.window {
+            parts.extend([(Vec3::new(-3.1, 0.6, 0.0), Vec3::new(0.2, 1.2, 6.4)), (Vec3::new(-3.1, 3.05, 0.0), Vec3::new(0.2, 0.9, 6.4)),
+                (Vec3::new(-3.1, 1.9, 2.1), Vec3::new(0.2, 1.4, 2.2)), (Vec3::new(-3.1, 1.9, -2.1), Vec3::new(0.2, 1.4, 2.2))]);
+        } else {
+            parts.push((Vec3::new(-3.1, 1.75, 0.0), Vec3::new(0.2, 3.5, 6.4)));
+        }
+        for (i, (c, s)) in parts.into_iter().enumerate() {
+            let m = if i == 0 { ceiling.clone() } else { wall.clone() };
+            commands.spawn((Name::new("Room"), Mesh3d(meshes.add(Cuboid::new(s.x, s.y, s.z))), MeshMaterial3d(m), Transform::from_translation(c)));
+        }
+    }
     let _ = cfg;
 }
 
