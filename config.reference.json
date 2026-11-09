@@ -220,6 +220,12 @@
       "detail_r0": 0.8,
       "detail_r1": 1.2
     },
+    "far_lod": {
+      "enabled": false,
+      "start_m": 10000.0,
+      "samples": 8,
+      "detail": false
+    },
     "noise": {
       "base_res": 128,
       "base_freqs": [

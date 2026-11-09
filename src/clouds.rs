@@ -172,6 +172,8 @@ pub(crate) fn drive(
     let e = &wx.cfg.clouds.edge_lod;
     (m.gpu.edge_on, m.gpu.edge_r0, m.gpu.edge_r1, m.gpu.edge_step_scale, m.gpu.edge_detail_r0, m.gpu.edge_detail_r1) =
         (e.enabled as u32 as f32, e.r0, e.r1, e.step_scale, e.detail_r0, e.detail_r1);
+    let f = &wx.cfg.clouds.far_lod;
+    (m.gpu.far_on, m.gpu.far_m, m.gpu.far_samples, m.gpu.far_detail) = (f.enabled as u32 as f32, f.start_m, f.samples.max(1) as f32, f.detail as u32 as f32);
 }
 
 /// Tileable cloud noise, `n`^3 RGBA8 (Schneider 2015). With `perlin` = Some(f): R is the base shape, Perlin fbm at

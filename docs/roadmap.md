@@ -123,7 +123,7 @@ The denominator for the 80% target. `have` requires a green gate with a kept red
 | 1 | Raymarched volumetric clouds, temporally resolved | have | G7-G14 |
 | 2 | Cloud shadows on the world | have | shadow cookie, cost gate |
 | 3 | Cloud types and presets (cumulus - stratus - cumulonimbus) | partial | map B channel exists, no preset library |
-| 4 | Distant cloud LOD (cheap horizon layer, not the march) | none | Phase 1 |
+| 4 | Distant cloud LOD (cheap horizon layer, not the march) | partial | `clouds.far_lod` (off by default): long steps past 10 km, G40 + `cost_clouds_far_lod` green on Metal; owner's look call and default |
 | 5 | Physically based sky and aerial perspective | have | Bevy `Atmosphere`, `sky.sun_occlusion`, G1/G2 |
 | 6 | Terrain-following volumetric ground fog | have | G15-G19, G21 |
 | 7 | Light shafts through cloud gaps (god rays) | partial | rain shafts only |

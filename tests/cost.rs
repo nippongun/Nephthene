@@ -245,6 +245,33 @@ fn cost_clouds_edge_lod() {
     finish("COST cloud edge LOD", f);
 }
 
+// ---------------------------------------------------------------- distant cloud LOD
+
+/// Share 0.7: with `clouds.far_lod` on, the clouds' cost at 1080p is at most 0.7 x the same with it off. A saving under 30% would not
+/// pay for a change G40 lets reach 12 levels in the far band.
+const FAR_LOD_SHARE: f64 = 0.7;
+
+/// The far LOD earns its change (clouds' cost = frame minus the frame with clouds off, shafts off in every arm). Red arm: on, with the
+/// start at infinity (`start_m` 1e9, the full march), must read above 0.7 x off; if it does not, the gate cannot fail.
+#[test]
+#[ignore = "manual gate"]
+fn cost_clouds_far_lod() {
+    if skip() { return; }
+    let r = arms(&[
+        ("cost_far_none", &["clouds.enabled=false"], false), ("cost_far_off", &["clouds.shaft_scale=0"], false),
+        ("cost_far_on", &["clouds.shaft_scale=0", "clouds.far_lod.enabled=true"], false),
+        ("cost_far_red", &["clouds.shaft_scale=0", "clouds.far_lod.enabled=true", "clouds.far_lod.start_m=1e9"], false),
+    ]);
+    let (off, on, red) = (diff(r[1], r[0]), diff(r[2], r[0]), diff(r[3], r[0]));
+    let limit = scale(off, FAR_LOD_SHARE);
+    println!("COST cloud far LOD: off {off}, on {on} ms (budget <= {FAR_LOD_SHARE} x off = {limit}); red arm (start at infinity) {red}");
+    if software() { return; }
+    let mut f = vec![];
+    at_most(&mut f, "far LOD on", on, limit);
+    red_above(&mut f, red, limit);
+    finish("COST cloud far LOD", f);
+}
+
 // ---------------------------------------------------------------- rain shafts
 
 /// Budget 0.3 ms: the roadmap's split for the rain shafts (owner's call).

@@ -297,6 +297,8 @@ pub struct Clouds {
     pub look: CloudLook,
     /// Fewer march steps and less detail toward the screen edges (off by default).
     pub edge_lod: EdgeLod,
+    /// Distant cloud LOD: past `start_m` the march takes a few long steps without detail instead of the horizon-boosted full march.
+    pub far_lod: FarLod,
     /// Procedural noise textures.
     pub noise: CloudNoise,
 }
@@ -309,7 +311,7 @@ impl Default for Clouds {
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
             shadow_step_m: 120.0, shadow_samples_max: 48, shadow_blend: true, shadow_soft_px: 1.0, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
             enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, frame_timing: false, air_guard: true, over_terrain: true, depth_nearest: true, storm_step_opacity: true,
-            look: CloudLook::default(), edge_lod: EdgeLod::default(), noise: CloudNoise::default(),
+            look: CloudLook::default(), edge_lod: EdgeLod::default(), far_lod: FarLod::default(), noise: CloudNoise::default(),
         }
     }
 }
@@ -355,6 +357,28 @@ pub struct EdgeLod {
 }
 impl Default for EdgeLod {
     fn default() -> Self { EdgeLod { enabled: false, r0: 0.5, r1: 1.2, step_scale: 0.5, detail_r0: 0.8, detail_r1: 1.2 } }
+}
+
+/// Distant cloud LOD. A ray marches the cloud shell unchanged (same steps, same detail) up to `start_m`, then crosses the rest of the
+/// shell in `samples` long steps (detail erosion only with `detail`; never the cheap empty-space mode). The march's cost is its step count,
+/// not its distance (measured 2026-11-09: max_distance_m 30 km did not save, the horizon step boost off saved half), and low rays take
+/// the most steps (up to `look.horizon_step_boost` x) over the longest paths, so the saving is the far steps replaced. Pixels whose
+/// cloud is nearer than `start_m` match the full march. Off by default (the look is unchanged); every value untuned. Measured 2026-11-09
+/// (M5 Max, 1080p, coverage 0.6): 10 km saves 42% of the clouds' cost for a mean change of 0.35 levels (p99 7); 5 km saves 70% but
+/// moves the far band by p99 22-45 levels; `detail` costs nothing measurable and does not reduce the change at 10 km.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct FarLod {
+    pub enabled: bool,
+    /// Ray distance (m) where the far steps begin. 1e9 = never (the red arm: the full march).
+    pub start_m: f32,
+    /// Long steps across the far part of the shell (>= 1).
+    pub samples: u32,
+    /// The far steps keep the detail erosion (false: base shape only, cheaper, softer far edges).
+    pub detail: bool,
+}
+impl Default for FarLod {
+    fn default() -> Self { FarLod { enabled: false, start_m: 10000.0, samples: 8, detail: false } }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -815,6 +839,13 @@ mod tests {
         assert!(e.step_scale > 0.0 && e.step_scale <= 1.0, "{e:?}");
         let c = Config::from_json(r#"{"clouds": {"edge_lod": {"enabled": true}}}"#).unwrap();
         assert!(c.clouds.edge_lod.enabled && c.clouds.edge_lod.r1 == e.r1);
+    }
+    #[test]
+    fn far_lod_is_off_by_default_and_partial_json_keeps_the_rest() {
+        let f = FarLod::default();
+        assert!(!f.enabled && f.samples >= 1 && f.start_m > 0.0, "{f:?}");
+        let c = Config::from_json(r#"{"clouds": {"far_lod": {"enabled": true}}}"#).unwrap();
+        assert!(c.clouds.far_lod.enabled && c.clouds.far_lod.start_m == f.start_m && c.clouds.far_lod.samples == f.samples);
     }
     #[test]
     fn set_path_sets_float_bool_int_nested_array_and_option() {
