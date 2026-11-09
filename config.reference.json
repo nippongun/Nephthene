@@ -297,7 +297,9 @@
     "source_max": 2.0,
     "source_scale": 0.125,
     "local_mean": true,
-    "mean_width": 0.03
+    "mean_width": 0.03,
+    "sky_source": true,
+    "source_min_m": 1000.0
   },
   "rain": {
     "enabled": true,

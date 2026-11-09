@@ -11,10 +11,10 @@ use bevy::{
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
-        render_resource::{binding_types::{sampler, texture_2d, uniform_buffer}, *},
+        render_resource::{binding_types::{sampler, texture_2d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer}, *},
         renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
         texture::{CachedTexture, TextureCache},
-        view::{ExtractedView, ViewTarget},
+        view::{ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget},
     },
     shader::Shader,
 };
@@ -33,6 +33,8 @@ pub struct RaysGpu {
     pub source_max: f32,
     /// rays.local_mean as 0/1, rays.mean_width.
     pub local_mean: u32, pub mean_width: f32,
+    /// rays.sky_source as 0/1; near plane / rays.source_min_m (reverse-Z depth at that distance: farther pixels have less).
+    pub sky_source: u32, pub depth_max: f32,
 }
 
 /// Main world -> render world, every frame: config rays and the sun's direction (towards the sun, world axes).
@@ -63,38 +65,34 @@ fn drive(wx: Res<crate::sky::Weather>, mut params: ResMut<RaysParams>, sun: Quer
 #[derive(Resource)]
 pub(crate) struct RaysRender {
     layout: BindGroupLayoutDescriptor, shader: Handle<Shader>, fullscreen: FullscreenShader, smp: Sampler,
-    source: Option<CachedRenderPipelineId>, march: Option<CachedRenderPipelineId>, composite: HashMap<TextureFormat, CachedRenderPipelineId>,
+    /// The source pass's layout, by MSAA on/off: the layout plus the scene depth.
+    source_layout: [BindGroupLayoutDescriptor; 2],
+    source: [Option<CachedRenderPipelineId>; 2], march: Option<CachedRenderPipelineId>, composite: HashMap<TextureFormat, CachedRenderPipelineId>,
 }
 
 /// The view's pipelines, its source and half-resolution march targets and the uniform (`fade` 0 skips the passes).
 #[derive(Component)]
-pub(crate) struct RaysView { source: CachedRenderPipelineId, march: CachedRenderPipelineId, composite: CachedRenderPipelineId, src_tex: CachedTexture, low: CachedTexture, ubo: UniformBuffer<RaysGpu>, fade: f32 }
+pub(crate) struct RaysView { ms: bool, source: CachedRenderPipelineId, march: CachedRenderPipelineId, composite: CachedRenderPipelineId, src_tex: CachedTexture, low: CachedTexture, ubo: UniformBuffer<RaysGpu>, fade: f32 }
 
 fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServer>, fullscreen: Res<FullscreenShader>) {
     let layout = BindGroupLayoutDescriptor::new("rays", &BindGroupLayoutEntries::sequential(ShaderStages::FRAGMENT, (
         uniform_buffer::<RaysGpu>(false), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
     )));
+    let source_layout = [false, true].map(|ms| BindGroupLayoutDescriptor::new("rays_source", &BindGroupLayoutEntries::sequential(ShaderStages::FRAGMENT, (
+        uniform_buffer::<RaysGpu>(false), texture_2d(TextureSampleType::default()), sampler(SamplerBindingType::Filtering),
+        if ms { texture_depth_2d_multisampled() } else { texture_depth_2d() },
+    ))));
     let smp = device.create_sampler(&SamplerDescriptor { address_mode_u: AddressMode::ClampToEdge, address_mode_v: AddressMode::ClampToEdge, address_mode_w: AddressMode::ClampToEdge, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default() });
-    commands.insert_resource(RaysRender { layout, shader: assets.load(RAYS), fullscreen: fullscreen.clone(), smp, source: None, march: None, composite: HashMap::new() });
+    commands.insert_resource(RaysRender { layout, source_layout, shader: assets.load(RAYS), fullscreen: fullscreen.clone(), smp, source: [None, None], march: None, composite: HashMap::new() });
 }
 
 fn prepare(
     mut commands: Commands, params: Option<Res<RaysParams>>, render: Option<ResMut<RaysRender>>, cache: Res<PipelineCache>, device: Res<RenderDevice>, queue: Res<RenderQueue>,
-    mut textures: ResMut<TextureCache>, views: Query<(Entity, &ExtractedView, &ViewTarget, Option<&MainPassResolutionOverride>)>,
+    mut textures: ResMut<TextureCache>, views: Query<(Entity, &ExtractedView, &ViewTarget, &Msaa, Option<&MainPassResolutionOverride>)>,
 ) {
     let (Some(params), Some(mut render)) = (params, render) else { return };
     let render = &mut *render;
     let c = &params.cfg;
-    let source = *render.source.get_or_insert_with(|| cache.queue_render_pipeline(RenderPipelineDescriptor {
-        label: Some("rays_source".into()),
-        layout: vec![render.layout.clone()],
-        vertex: render.fullscreen.to_vertex_state(),
-        fragment: Some(FragmentState {
-            shader: render.shader.clone(), entry_point: Some("source".into()),
-            targets: vec![Some(TextureFormat::Rgba16Float.into())], ..default()
-        }),
-        ..default()
-    }));
     let march = *render.march.get_or_insert_with(|| cache.queue_render_pipeline(RenderPipelineDescriptor {
         label: Some("rays_march".into()),
         layout: vec![render.layout.clone()],
@@ -105,8 +103,20 @@ fn prepare(
         }),
         ..default()
     }));
-    for (e, view, target, over) in &views {
+    for (e, view, target, msaa, over) in &views {
         let format = target.main_texture_format();
+        let ms = *msaa != Msaa::Off;
+        let (shader, fullscreen, layout) = (render.shader.clone(), render.fullscreen.clone(), render.source_layout[ms as usize].clone());
+        let source = *render.source[ms as usize].get_or_insert_with(|| cache.queue_render_pipeline(RenderPipelineDescriptor {
+            label: Some("rays_source".into()),
+            layout: vec![layout],
+            vertex: fullscreen.to_vertex_state(),
+            fragment: Some(FragmentState {
+                shader, entry_point: Some("source".into()), shader_defs: if ms { vec!["MULTISAMPLED".into()] } else { vec![] },
+                targets: vec![Some(TextureFormat::Rgba16Float.into())], ..default()
+            }),
+            ..default()
+        }));
         let composite = *render.composite.entry(format).or_insert_with(|| cache.queue_render_pipeline(RenderPipelineDescriptor {
             label: Some("rays_composite".into()),
             layout: vec![render.layout.clone()],
@@ -150,20 +160,23 @@ fn prepare(
             sun_uv: uv, fade, strength: c.strength, threshold: c.threshold, decay: c.decay, radius: c.radius, samples: c.samples,
             aspect: full.x as f32 / full.y.max(1) as f32, flat_source: c.flat_source as u32, source_max: c.source_max,
             local_mean: c.local_mean as u32, mean_width: c.mean_width,
+            // Bevy's perspective is infinite reverse Z: depth = near / distance along the view axis, near = clip_from_view[3][2].
+            sky_source: c.sky_source as u32, depth_max: view.clip_from_view.w_axis.z / c.source_min_m.max(1e-3),
         });
         ubo.write_buffer(&device, &queue);
-        commands.entity(e).insert(RaysView { source, march, composite, src_tex, low, ubo, fade });
+        commands.entity(e).insert(RaysView { ms, source, march, composite, src_tex, low, ubo, fade });
     }
 }
 
-pub(crate) fn rays_pass(view: ViewQuery<(&ViewTarget, &RaysView)>, render: Option<Res<RaysRender>>, cache: Res<PipelineCache>, mut ctx: RenderContext) {
+pub(crate) fn rays_pass(view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &RaysView)>, render: Option<Res<RaysRender>>, cache: Res<PipelineCache>, mut ctx: RenderContext) {
     let Some(render) = render else { return };
-    let (target, rv) = view.into_inner();
+    let (target, depth, rv) = view.into_inner();
+    let Some(depth_view) = depth.attachment.depth_stencil_views().depth_only_view() else { return };
     if rv.fade <= 0.0 { return; }
     let (Some(source), Some(march), Some(composite)) = (cache.get_render_pipeline(rv.source), cache.get_render_pipeline(rv.march), cache.get_render_pipeline(rv.composite)) else { return };
     let (Some(u), Some(u2), Some(u3)) = (rv.ubo.binding(), rv.ubo.binding(), rv.ubo.binding()) else { return };
     let device = ctx.render_device().clone();
-    let source_bg = device.create_bind_group("rays_source", &cache.get_bind_group_layout(&render.layout), &BindGroupEntries::sequential((u, target.main_texture_view(), &render.smp)));
+    let source_bg = device.create_bind_group("rays_source", &cache.get_bind_group_layout(&render.source_layout[rv.ms as usize]), &BindGroupEntries::sequential((u, target.main_texture_view(), &render.smp, depth_view)));
     let march_bg = device.create_bind_group("rays_march", &cache.get_bind_group_layout(&render.layout), &BindGroupEntries::sequential((u2, &rv.src_tex.default_view, &render.smp)));
     let composite_bg = device.create_bind_group("rays_composite", &cache.get_bind_group_layout(&render.layout), &BindGroupEntries::sequential((u3, &rv.low.default_view, &render.smp)));
     let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
