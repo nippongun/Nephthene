@@ -197,6 +197,7 @@
     "coverage_override": null,
     "debug_view": 0,
     "pass_timing": false,
+    "frame_timing": false,
     "air_guard": true,
     "over_terrain": true,
     "depth_nearest": true,

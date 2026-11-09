@@ -269,8 +269,12 @@ pub struct Clouds {
     pub coverage_override: Option<f32>,
     /// Probe output instead of the look: 0 off, 1 exposed max channel, 2 direct light, 3 sky ambient, 4 cloud alpha, 5 cloud depth.
     pub debug_view: u32,
-    /// Print GPU pass timings every 60 frames (needs TIMESTAMP_QUERY).
+    /// Print GPU pass timings every 60 frames (needs TIMESTAMP_QUERY): PASSMS and FOGMS. Their readback blocks the CPU each frame, and on
+    /// Metal a span runs from the frame's start to the pass's end (see src/timing.rs); measure cost with frame_timing.
     pub pass_timing: bool,
+    /// Print FRAMEMS every 60 frames: the frame's GPU span and wall time, read back without blocking. Read with clouds off too. A
+    /// feature's cost is the difference between a run with it and one without (tests/cost.rs).
+    pub frame_timing: bool,
     /// The air's transmittance between the eye and a cloud or rain shaft integrates the medium's density along the path (8 samples).
     /// Test switch (red arm): false uses Bevy's LUT ratio, which breaks on long grazing rays at the horizon (black-and-white speckle
     /// on distant clouds).
@@ -304,7 +308,7 @@ impl Default for Clouds {
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
             shadow_step_m: 120.0, shadow_samples_max: 48, shadow_blend: true, shadow_soft_px: 1.0, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
-            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, air_guard: true, over_terrain: true, depth_nearest: true, storm_step_opacity: true,
+            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, frame_timing: false, air_guard: true, over_terrain: true, depth_nearest: true, storm_step_opacity: true,
             look: CloudLook::default(), edge_lod: EdgeLod::default(), noise: CloudNoise::default(),
         }
     }
