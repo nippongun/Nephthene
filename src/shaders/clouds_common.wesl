@@ -104,6 +104,8 @@ struct Clouds {
     edge_step_scale: f32,
     edge_detail_r0: f32,
     edge_detail_r1: f32,
+    // clouds.depth_nearest: 1 = the composite tests the nearest cloud front over 3x3 march texels, 0 = the one texel (test switch).
+    depth_nearest: u32,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).

@@ -2,7 +2,11 @@
 // cloud's front (the march's transmittance-weighted depth `t`), depth-tested per MSAA sample: a cloud in front of terrain covers it,
 // terrain in front of a cloud hides it, and the sky (the cleared far plane) always takes it. With no cloud depth (t 0) or
 // clouds.over_terrain off, the depth is the far plane, so only sky samples take cloud (the old rule). Colour is bilinear, depth nearest
-// (R32Float, unfilterable), as clouds_shaft_comp.wesl. The lightning light on the clouds is added from its own low-res march target,
+// (R32Float, unfilterable), as clouds_shaft_comp.wesl. The march fills one pixel of each update_div block per frame, so one texel's
+// depth belongs to whichever pixel was marched: with clouds.depth_nearest the test takes the nearest cloud front over the 3x3 texels
+// around the pixel. The colour already ends at the terrain along each pixel's own ray, so a nearer depth only lets that colour through;
+// a farther depth from another pixel of the block failed the test on this pixel's nearer terrain, so bare terrain showed through the
+// cloud in 8 px steps (and moved with the 4x4 offset each frame). The lightning light on the clouds is added from its own low-res march target,
 // never through the history.
 import bevy_pbr::atmosphere::{bindings::view, functions::uv_to_ray_direction};
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
@@ -30,7 +34,17 @@ fn main(in: FullscreenVertexOutput) -> Out {
     // Lightning light (clouds_march.wesl MarchOut.flash), added this frame: additive, alpha unchanged.
     let f = textureSampleLevel(flash, cloud_sampler, in.uv, 0.0);
     let dim = vec2<i32>(textureDimensions(cloud_t));
-    let t = textureLoad(cloud_t, clamp(vec2<i32>(in.uv * vec2<f32>(dim)), vec2(0), dim - 1), 0).r;
+    // Texel i holds render pixel i * march_div + offset (clouds_march.wesl); the render size is not always a multiple of march_div.
+    let lp = clamp(vec2<i32>(in.uv * vec2(u.full_w, u.full_h) / u.march_div), vec2(0), dim - 1);
+    var t = textureLoad(cloud_t, lp, 0).r;
+    if u.depth_nearest != 0u {
+        for (var dy = -1; dy <= 1; dy++) {
+            for (var dx = -1; dx <= 1; dx++) {
+                let s = textureLoad(cloud_t, clamp(lp + vec2(dx, dy), vec2(0), dim - 1), 0).r;
+                if s > 0.0 && (t <= 0.0 || s < t) { t = s; }
+            }
+        }
+    }
     var depth = 0.0;
     if u.over_terrain != 0u && t > 0.0 {
         let clip = view.clip_from_world * vec4(view.world_position + uv_to_ray_direction(in.uv) * t, 1.0);

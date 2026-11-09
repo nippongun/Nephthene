@@ -199,6 +199,7 @@
     "pass_timing": false,
     "air_guard": true,
     "over_terrain": true,
+    "depth_nearest": true,
     "storm_step_opacity": true,
     "look": {
       "cov_boost": 1.5,
@@ -287,7 +288,9 @@
     "edge_fade": 0.2,
     "flat_source": false,
     "source_max": 2.0,
-    "source_scale": 0.125
+    "source_scale": 0.125,
+    "local_mean": true,
+    "mean_width": 0.03
   },
   "rain": {
     "enabled": true,
@@ -674,6 +677,8 @@
   },
   "sim": {
     "here_tau_s": 5.0,
-    "panel_open": false
+    "panel_open": false,
+    "settings_file": "nephthene_settings.json",
+    "panel_expand": []
   }
 }

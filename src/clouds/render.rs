@@ -87,6 +87,8 @@ pub struct CloudGpu {
     /// clouds.edge_lod: on (1) / off (0), step-reduction radii, step multiplier at full reduction, detail-skip radii. See clouds_march.wesl.
     pub edge_on: f32, pub edge_r0: f32, pub edge_r1: f32, pub edge_step_scale: f32,
     pub edge_detail_r0: f32, pub edge_detail_r1: f32,
+    /// clouds.depth_nearest (1 = the composite tests the nearest cloud front over 3x3 march texels; 0 = the one texel, test red arm). See clouds_composite.wesl.
+    pub depth_nearest: u32,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.
