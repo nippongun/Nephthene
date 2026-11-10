@@ -10,6 +10,7 @@ import bevy_pbr::atmosphere::{
     functions::{sample_transmittance_lut, sample_sky_view_lut, sample_aerial_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, uv_to_ndc, get_view_position},
 };
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
+import bevy_pbr::render::mesh_view_types::{Lights, DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT};
 
 struct Fog {
     sun_dir: vec3<f32>,
@@ -87,6 +88,9 @@ struct Fog {
     occ_cloud_mask: f32,
     // 1 = the aerial correction ignores the scene colour (test switch); 0 = bounded by it (see march_low).
     occ_unbounded: f32,
+    // 1 = clouds behind a surface mask its correction (test switch); 1 = the sun's shadow cascades shadow the air (sky.scene_shadow).
+    occ_mask_behind: f32,
+    occ_scene: f32,
 }
 
 @group(1) @binding(0) var<uniform> f: Fog;
@@ -107,6 +111,40 @@ struct Fog {
 // march_low only: the scene after the main pass, and after the opaque pass only (before transparents); see the bound in march_low.
 @group(2) @binding(5) var scene: texture_2d<f32>;
 @group(2) @binding(6) var opaque: texture_2d<f32>;
+// march_low only (sky.scene_shadow): Bevy's lights uniform and directional shadow maps (the sun's cascades), and the cloud march's front
+// depth (sky.cloud_shafts_mask_behind off: only cloud nearer than the surface masks its correction).
+@group(2) @binding(7) var<uniform> lights: Lights;
+@group(2) @binding(8) var sun_shadow_tex: texture_depth_2d_array;
+@group(2) @binding(9) var sun_shadow_cmp: sampler_comparison;
+@group(2) @binding(10) var cloud_t: texture_2d<f32>;
+
+// The shadow-casting directional light that is the sun (direction within ~8 deg of f.sun_dir), or n_directional_lights if none.
+// ponytail: 0.99 cosine picks the sun over a moon light; a host with two shadowing suns side by side would need an index from the CPU.
+fn sun_light() -> u32 {
+    for (var i = 0u; i < lights.n_directional_lights; i++) {
+        let l = lights.directional_lights[i];
+        if (l.flags & DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u && dot(l.direction_to_light, f.sun_dir) > 0.99 { return i; }
+    }
+    return lights.n_directional_lights;
+}
+
+// The sun's shadow cascades at world point p: 1 lit, 0 in the shadow of scene geometry; lit past the last cascade or outside it (as
+// bevy_pbr shadows.wesl, one hardware comparison tap, no filtering: the march's jitter and the temporal resolve average it).
+fn scene_lit(li: u32, p: vec3<f32>) -> f32 {
+    if li >= lights.n_directional_lights { return 1.0; }
+    let l = lights.directional_lights[li];
+    let vz = -(view.view_from_world * vec4(p, 1.0)).z;
+    for (var c = 0u; c < l.num_cascades; c++) {
+        if vz < l.cascades[c].far_bound {
+            let q = l.cascades[c].clip_from_world * vec4(p + l.shadow_depth_bias * l.direction_to_light, 1.0);
+            if q.w <= 0.0 { return 1.0; }
+            let n = q.xyz / q.w;
+            if any(n.xy < vec2(-1.0)) || any(n > vec3(1.0)) || n.z < 0.0 { return 1.0; }
+            return textureSampleCompareLevel(sun_shadow_tex, sun_shadow_cmp, n.xy * vec2(0.5, -0.5) + 0.5, i32(l.depth_texture_base_index + c), n.z);
+        }
+    }
+    return 1.0;
+}
 @group(2) @binding(0) var low_fog: texture_2d<f32>;
 @group(2) @binding(1) var low_t: texture_2d<f32>;
 @group(2) @binding(2) var t_smp: sampler;
@@ -273,11 +311,12 @@ fn shadowed(eye: vec3<f32>, d: vec3<f32>, t_end: f32, jit: f32) -> f32 {
     let half = 0.5 * f.map_cell * f32(f.map_n);
     let centre = f.map_min + vec2(half, -half);
     var s = 0.0;
+    let li = select(lights.n_directional_lights, sun_light(), f.occ_scene > 0.0);
     for (var k = 0u; k < f.occ_steps; k++) {
         let p = eye + d * (t_end * (f32(k) + jit) / f32(f.occ_steps));
-        var l = 1.0;
+        var l = scene_lit(li, p);
         // ponytail: air inside or above the cloud layer counts as sunlit (the cookie is the whole layer's transmittance); a per-height cookie is the upgrade.
-        if f.occ_cloud > 0.0 && p.y < f.occ_cloud_y { l = cloud_shadow(p); }
+        if f.occ_cloud > 0.0 && p.y < f.occ_cloud_y { l *= cloud_shadow(p); }
         if f.occ_terrain > 0.0 && max(abs(p.x - centre.x), abs(p.z - centre.y)) <= half { l *= lit(p.y, map_at(p.xz).z); }
         s += 1.0 - l;
     }
@@ -323,7 +362,23 @@ fn march_low(in: FullscreenVertexOutput) -> Low {
             x_ap *= min(vec3(1.0), fin / max(opq, vec3(1e-6)));
         }
         // Clouds drawn over this pixel carry their own air (clouds_march.wesl air_segment), not Bevy's aerial perspective: only the uncovered share takes the correction.
-        let cov = textureSampleLevel(cloud_rgba, smp, in.uv, 0.0).a;
+        var cov = textureSampleLevel(cloud_rgba, smp, in.uv, 0.0).a;
+        // On a surface only cloud in front of it counts (the composite draws a cloud over geometry only where its front is nearer):
+        // otherwise the sky's cloud outline behind a ceiling masks the ceiling's correction and prints on it.
+        // The cloud front is the composite's (clouds_composite.wesl, depth_nearest): the nearest over the 3x3 march texels around the
+        // pixel, since one texel holds whichever pixel of its block was marched.
+        if t_scene > 0.0 && f.occ_mask_behind == 0.0 {
+            let cd = vec2<i32>(textureDimensions(cloud_t));
+            let lp = clamp(vec2<i32>(in.uv * vec2<f32>(cd)), vec2(0), cd - 1);
+            var tc = 0.0;
+            for (var dy = -1; dy <= 1; dy++) {
+                for (var dx = -1; dx <= 1; dx++) {
+                    let s = textureLoad(cloud_t, clamp(lp + vec2(dx, dy), vec2(0), cd - 1), 0).r;
+                    if s > 0.0 && (tc <= 0.0 || s < tc) { tc = s; }
+                }
+            }
+            if !(tc > 0.0 && tc < t_scene) { cov = 0.0; }
+        }
         x_ap *= vec3(1.0 - select(0.0, clamp(cov, 0.0, 1.0), f.occ_cloud_mask > 0.0));
     }
     let fog = march(in, d, eye, t_scene, occ);

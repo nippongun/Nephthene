@@ -17,7 +17,7 @@
 //! `--roof`: a 200 x 200 m slab 4 m up over the origin, marked `Shelter` (precipitation occlusion tests: no rain falls under it).
 //! `--room` / `--room-window`: a closed 6 x 6 x 3.5 m room around the origin with a bright unlit ceiling over dim walls (opaque geometry
 //! next to the sun on screen), the second with a 2 x 1.4 m alpha-blended glass window in the west wall; pose `room_sun` looks west toward the afternoon sun (G41). Add
-//! `--room-lit` for lit concrete instead of the unlit test colours, `--room-tint` for dark tinted glass (G42).
+//! `--room-lit` for lit concrete instead of the unlit test colours, `--room-tint` for dark tinted glass (G42), `--room-deep` to put the west wall 13 m away (G43).
 //! `--print-config` prints the effective config as JSON and exits (the reference file).
 //! `--describe` (shots): after the settle frames, prints one `DESCRIBE` line: the weather at the camera (`nephthene_core::dash::describe`).
 //! Exit codes: 0 ok, 3 timeout, 4 bad argument.
@@ -151,7 +151,7 @@ fn main() {
     if args.has("--terrain") { app.insert_resource(nephthene::Ground(nephthene::core::fog::test_valley())); }
     if args.has("--mountains") { app.insert_resource(nephthene::Ground(nephthene::core::terrain::mountains())); }
     if args.has("--roof") { app.insert_resource(Roof); }
-    if args.has("--room") || args.has("--room-window") { app.insert_resource(Room { window: args.has("--room-window"), lit: args.has("--room-lit"), tint: args.has("--room-tint") }); }
+    if args.has("--room") || args.has("--room-window") { app.insert_resource(Room { window: args.has("--room-window"), lit: args.has("--room-lit"), tint: args.has("--room-tint"), deep: args.has("--room-deep") }); }
     app.add_plugins(NephthenePlugin::new(cfg.clone())).insert_resource(Cfg(cfg)).add_systems(Startup, scene);
     // The host owns its surfaces: this example's material, its shader and the system that fills it from Nephthene's published state.
     load_internal_asset!(app, SURFACE_SHADER, "surface.wesl", Shader::from_wesl);
@@ -170,7 +170,7 @@ struct Cfg(Config);
 struct Roof;
 /// The G41 room: walls and ceiling, a west window when `window`.
 #[derive(Resource)]
-struct Room { window: bool, lit: bool, tint: bool }
+struct Room { window: bool, lit: bool, tint: bool, deep: bool }
 #[derive(Resource)]
 struct StartPose(Option<Pose>);
 #[derive(Component)]
@@ -206,25 +206,29 @@ fn scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: Res
         // rays.threshold) over dim walls (0.3), a strong edge at the seam next to the sun like a sunlit ceiling indoors. (Uniform bright
         // walls send nothing: rays.local_mean cancels them.)
         // `--room-lit`: lit grey concrete instead (a host's room, for what the weather passes draw over lit geometry indoors).
-        let concrete = StandardMaterial { base_color: Color::srgb(0.45, 0.44, 0.42), perceptual_roughness: 0.9, ..default() };
+        // Dark, like a host's interior concrete at an indoor exposure (a faint air glow then reads against it).
+        let concrete = StandardMaterial { base_color: Color::srgb(0.12, 0.11, 0.10), perceptual_roughness: 0.9, ..default() };
         let wall = mats.add(if room.lit { concrete.clone() } else { StandardMaterial { base_color: Color::linear_rgb(0.3, 0.3, 0.3), unlit: true, ..default() } });
         let ceiling = mats.add(if room.lit { concrete } else { StandardMaterial { base_color: Color::linear_rgb(3.0, 3.0, 3.0), unlit: true, ..default() } });
         // (centre, size): interior x and z -3..3, y 0..3.5, 0.2 m thick; the west wall (x = -3.1) in pieces around the window
         // (z -1..1, y 1.2..2.6) or whole.
+        // West wall at x = w (-3.1, or -13.1 with `--room-deep`); the ceiling and side walls span it.
+        let w = if room.deep { -13.1 } else { -3.1 };
+        let (cx, lx) = ((w + 3.1) * 0.5, 3.1 - w + 0.2);
         let mut parts = vec![
-            (Vec3::new(0.0, 3.6, 0.0), Vec3::new(6.4, 0.2, 6.4)), (Vec3::new(3.1, 1.75, 0.0), Vec3::new(0.2, 3.5, 6.4)),
-            (Vec3::new(0.0, 1.75, 3.1), Vec3::new(6.4, 3.5, 0.2)), (Vec3::new(0.0, 1.75, -3.1), Vec3::new(6.4, 3.5, 0.2)),
+            (Vec3::new(cx, 3.6, 0.0), Vec3::new(lx, 0.2, 6.4)), (Vec3::new(3.1, 1.75, 0.0), Vec3::new(0.2, 3.5, 6.4)),
+            (Vec3::new(cx, 1.75, 3.1), Vec3::new(lx, 3.5, 0.2)), (Vec3::new(cx, 1.75, -3.1), Vec3::new(lx, 3.5, 0.2)),
         ];
         if room.window {
             // Alpha-blended glass in the window (writes no depth, like a host's window glass).
             // `--room-tint`: dark tinted glass (much darker than the sky behind it, what G42 needs to show a subtraction going negative).
             let tint = if room.tint { Color::srgba(0.02, 0.02, 0.02, 0.9) } else { Color::srgba(0.8, 0.9, 1.0, 0.25) };
             let glass = mats.add(StandardMaterial { base_color: tint, alpha_mode: AlphaMode::Blend, perceptual_roughness: 0.1, unlit: room.tint, ..default() });
-            commands.spawn((Name::new("Glass"), Mesh3d(meshes.add(Cuboid::new(0.02, 1.4, 2.0))), MeshMaterial3d(glass), Transform::from_xyz(-3.1, 1.9, 0.0)));
-            parts.extend([(Vec3::new(-3.1, 0.6, 0.0), Vec3::new(0.2, 1.2, 6.4)), (Vec3::new(-3.1, 3.05, 0.0), Vec3::new(0.2, 0.9, 6.4)),
-                (Vec3::new(-3.1, 1.9, 2.1), Vec3::new(0.2, 1.4, 2.2)), (Vec3::new(-3.1, 1.9, -2.1), Vec3::new(0.2, 1.4, 2.2))]);
+            commands.spawn((Name::new("Glass"), Mesh3d(meshes.add(Cuboid::new(0.02, 1.4, 2.0))), MeshMaterial3d(glass), Transform::from_xyz(w, 1.9, 0.0)));
+            parts.extend([(Vec3::new(w, 0.6, 0.0), Vec3::new(0.2, 1.2, 6.4)), (Vec3::new(w, 3.05, 0.0), Vec3::new(0.2, 0.9, 6.4)),
+                (Vec3::new(w, 1.9, 2.1), Vec3::new(0.2, 1.4, 2.2)), (Vec3::new(w, 1.9, -2.1), Vec3::new(0.2, 1.4, 2.2))]);
         } else {
-            parts.push((Vec3::new(-3.1, 1.75, 0.0), Vec3::new(0.2, 3.5, 6.4)));
+            parts.push((Vec3::new(w, 1.75, 0.0), Vec3::new(0.2, 3.5, 6.4)));
         }
         for (i, (c, s)) in parts.into_iter().enumerate() {
             let m = if i == 0 { ceiling.clone() } else { wall.clone() };

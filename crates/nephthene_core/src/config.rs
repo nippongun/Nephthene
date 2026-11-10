@@ -185,10 +185,18 @@ pub struct Sky {
     /// X min(1, scene / aerial) per channel, so an opaque pixel (which holds the full in-scatter) keeps the whole correction and glass
     /// keeps only its share.
     pub cloud_shafts_unbounded: bool,
+    /// Test switch (red arm of G43's ceiling half): true = a cloud behind a surface (farther than it) still masks the surface's
+    /// correction, so the sky's cloud outline is printed on near geometry (a ceiling under broken cloud). false (default) = only cloud
+    /// whose front is nearer than the surface counts.
+    pub cloud_shafts_mask_behind: bool,
+    /// Scene geometry shadows the air: the sun's shadow cascades join the terrain and the cloud cookie in the air's shadow, so the air
+    /// inside a building (sun behind its walls) loses its sun in-scatter (the forward Mie glow on an interior wall). Needs a
+    /// shadow-casting sun. false = terrain and clouds only (test red arm of G43's wall half).
+    pub scene_shadow: bool,
 }
 impl Default for Sky {
     fn default() -> Self {
-        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8, cloud_shafts: true, cloud_shafts_ignore_clouds: false, cloud_shafts_unbounded: false }
+        Sky { mie_scattering: 8.0e-6, mie_absorption: 2.0e-6, mie_asymmetry: 0.8, mie_scale_height_km: 1.6, msaa_fix: true, sun_occlusion: true, occlusion_keep: 0.2, occlusion_steps: 8, cloud_shafts: true, cloud_shafts_ignore_clouds: false, cloud_shafts_unbounded: false, cloud_shafts_mask_behind: false, scene_shadow: true }
     }
 }
 

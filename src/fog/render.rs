@@ -7,14 +7,14 @@ use bevy::{
     camera::MainPassResolutionOverride,
     diagnostic::FrameCount,
     core_pipeline::{FullscreenShader, schedule::Core3d, Core3dSystems},
-    pbr::{ExtractedAtmosphere, GpuAtmosphereSettings, resources::{AtmosphereSampler, AtmosphereTextures, AtmosphereTransform, AtmosphereTransforms, AtmosphereTransformsOffset, GpuAtmosphere}},
+    pbr::{ExtractedAtmosphere, GpuAtmosphereSettings, GpuLights, LightMeta, ShadowSamplers, ViewLightsUniformOffset, ViewShadowBindings, resources::{AtmosphereSampler, AtmosphereTextures, AtmosphereTransform, AtmosphereTransforms, AtmosphereTransformsOffset, GpuAtmosphere}},
     prelude::*,
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
         extract_component::{ComponentUniforms, DynamicUniformIndex},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
-        render_resource::{binding_types::{sampler, texture_2d, texture_3d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer}, *},
+        render_resource::{binding_types::{sampler, texture_2d, texture_2d_array, texture_3d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer}, *},
         renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
         texture::{CachedTexture, FallbackImageZero, GpuImage, TextureCache},
         view::{ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
@@ -66,6 +66,9 @@ pub struct FogGpu {
     pub occ_terrain: f32, pub occ_cloud: f32, pub occ_cloud_y: f32, pub occ_cloud_mask: f32,
     /// sky.cloud_shafts_unbounded: 1 = the correction ignores what the pixel holds (red arm), 0 = bounded by the scene colour.
     pub occ_unbounded: f32,
+    /// sky.cloud_shafts_mask_behind (1 = clouds behind a surface mask its correction, red arm); sky.scene_shadow (1 = the sun's shadow
+    /// cascades shadow the air).
+    pub occ_mask_behind: f32, pub occ_scene: f32,
 }
 
 /// Uniform for fog.wesl's `resolve`; field order identical in the shader (`struct FogResolve`). Last frame's view, as the clouds' ResolveGpu.
@@ -150,7 +153,10 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
     )));
     let sampler = |mode| device.create_sampler(&SamplerDescriptor { address_mode_u: mode, address_mode_v: mode, address_mode_w: mode, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, ..default() });
     commands.insert_resource(FogRender {
-        atmo, data: [data(false), data(true)], comp, resolve_layout, scene_layout: BindGroupLayoutDescriptor::new("fog_scene", &BindGroupLayoutEntries::with_indices(S::FRAGMENT, ((5, texture_2d(TextureSampleType::default())), (6, texture_2d(TextureSampleType::default()))))), shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp: sampler(AddressMode::ClampToEdge), repeat: sampler(AddressMode::Repeat), nearest: device.create_sampler(&SamplerDescriptor::default()),
+        atmo, data: [data(false), data(true)], comp, resolve_layout, scene_layout: BindGroupLayoutDescriptor::new("fog_scene", &BindGroupLayoutEntries::with_indices(S::FRAGMENT, ((5, texture_2d(TextureSampleType::default())), (6, texture_2d(TextureSampleType::default())),
+            (7, uniform_buffer::<GpuLights>(true)), (8, texture_2d_array(TextureSampleType::Depth)), (9, binding_types::sampler(SamplerBindingType::Comparison)),
+            (10, texture_2d(TextureSampleType::Float { filterable: false })),
+        ))), shader: assets.load(FOG), fullscreen: fullscreen.clone(), smp: sampler(AddressMode::ClampToEdge), repeat: sampler(AddressMode::Repeat), nearest: device.create_sampler(&SamplerDescriptor::default()),
         ubo: UniformBuffer::default(), march: HashMap::new(), resolve: HashMap::new(), composite: HashMap::new(),
     });
 }
@@ -243,7 +249,8 @@ fn prepare(
 }
 
 pub(crate) fn fog_pass(
-    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &Msaa, &FogView, &AtmosphereTextures, &DynamicUniformIndex<GpuAtmosphere>, &DynamicUniformIndex<GpuAtmosphereSettings>, &AtmosphereTransformsOffset, &ViewUniformOffset, Option<&crate::clouds::render::CloudTextures>)>,
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &Msaa, &FogView, &AtmosphereTextures, &DynamicUniformIndex<GpuAtmosphere>, &DynamicUniformIndex<GpuAtmosphereSettings>, &AtmosphereTransformsOffset, &ViewUniformOffset, Option<&crate::clouds::render::CloudTextures>, &ViewShadowBindings, &ViewLightsUniformOffset)>,
+    light_meta: Res<LightMeta>, shadow_samplers: Res<ShadowSamplers>,
     render: Option<Res<FogRender>>, params: Option<Res<FogParams>>, images: Res<RenderAssets<GpuImage>>, cache: Res<PipelineCache>, fallback: Res<FallbackImageZero>,
     atmo_sampler: Res<AtmosphereSampler>, view_uniforms: Res<ViewUniforms>, transforms: Res<AtmosphereTransforms>,
     atmo_uniforms: Res<ComponentUniforms<GpuAtmosphere>>, settings_uniforms: Res<ComponentUniforms<GpuAtmosphereSettings>>, mut ctx: RenderContext,
@@ -252,7 +259,8 @@ pub(crate) fn fog_pass(
     let (Some(render), Some(params)) = (render, params) else { return };
     if params.gpu.y_hi <= params.gpu.y_lo && params.gpu.occ_on <= 0.0 { return; }
     let mut timing = timing.filter(|_| params.timing);
-    let (target, depth, msaa, fv, atmo, atmo_i, settings_i, transforms_i, view_i, clouds) = view.into_inner();
+    let (target, depth, msaa, fv, atmo, atmo_i, settings_i, transforms_i, view_i, clouds, shadows, lights_offset) = view.into_inner();
+    let Some(lights_binding) = light_meta.view_gpu_lights.binding() else { return };
     let (Some(march), Some(resolve), Some(composite)) = (cache.get_render_pipeline(fv.march), cache.get_render_pipeline(fv.resolve), cache.get_render_pipeline(fv.composite)) else { return };
     let (Some(map), Some(ground), Some(cookie), Some(noise)) = (images.get(&params.map), images.get(&params.ground), images.get(&params.cookie), images.get(&params.noise)) else { return };
     let (Some(a), Some(s), Some(t), Some(v), Some(u)) = (atmo_uniforms.binding(), settings_uniforms.binding(), transforms.uniforms().binding(), view_uniforms.uniforms.binding(), render.ubo.binding()) else { return };
@@ -266,7 +274,10 @@ pub(crate) fn fog_pass(
         u, &map.texture_view, &ground.texture_view, &cookie.texture_view, &render.smp, depth_view, &noise.texture_view, &render.repeat,
         clouds.map_or(&fallback.texture_view, |c| &c.write.default_view),
     )));
-    let scene = device.create_bind_group("fog_scene", &cache.get_bind_group_layout(&render.scene_layout), &BindGroupEntries::with_indices(((5, target.main_texture_view()), (6, &fv.opaque.default_view))));
+    let scene = device.create_bind_group("fog_scene", &cache.get_bind_group_layout(&render.scene_layout), &BindGroupEntries::with_indices((
+        (5, target.main_texture_view()), (6, &fv.opaque.default_view), (7, lights_binding), (8, &shadows.directional_light_depth_texture_view),
+        (9, &shadow_samplers.directional_light_comparison_sampler), (10, clouds.map_or(&fallback.texture_view, |c| &c.t.default_view)),
+    )));
     let res = device.create_bind_group("fog_resolve", &cache.get_bind_group_layout(&render.resolve_layout), &BindGroupEntries::sequential((&fv.low.default_view, &fv.t.default_view, &render.nearest, &fv.read.default_view, ru)));
     let comp = device.create_bind_group("fog_composite", &cache.get_bind_group_layout(&render.comp), &BindGroupEntries::sequential((&fv.write.default_view, &fv.t.default_view, &render.nearest)));
     let offsets = [atmo_i.index(), settings_i.index(), transforms_i.index(), view_i.offset];
@@ -280,7 +291,7 @@ pub(crate) fn fog_pass(
     pass.set_pipeline(march);
     pass.set_bind_group(0, &atmo_bg, &offsets);
     pass.set_bind_group(1, &data, &[]);
-    pass.set_bind_group(2, &scene, &[]);
+    pass.set_bind_group(2, &scene, &[lights_offset.offset]);
     pass.draw(0..3, 0..1);
     drop(pass);
     let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
