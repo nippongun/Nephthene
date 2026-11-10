@@ -313,25 +313,33 @@ fn g21_still_view_has_no_grain() {
 /// G34 god rays: clouds shadow the air (sky.cloud_shafts). Pose fog_valley at 7.0 h (low sun ahead of the camera), clouds on at coverage
 /// 0.5, ground fog on (default). `on` is the shot with the shafts; d = (luma(off) - luma(on)) / 255 is the darkening against `off`
 /// (sky.cloud_shafts=false). Claim:
-/// (b) No over-darkening: the correction removes only the air's in-scatter, never more than the pixel had. Over the whole frame, the share
-/// of pixels with luma(off) - luma(on) > 64 (a quarter of the range; the bug blacked clouds and sky) must be at most 0.5%. The budget is a
-/// few edge texels of the half-res march. Red arm: bad (sky.cloud_shafts_ignore_clouds=true, the bug) against off must exceed 0.5%.
+/// (b) No over-darkening of the sky and the clouds: the correction removes only the air's in-scatter, never the clouds' own light (the bug
+/// blacked clouds and the sky behind them). On the sky pixels (the terrain model's ray misses the valley, `classes`, every 4th pixel), the
+/// share with luma(off) - luma(on) > 64 (a quarter of the range) must be at most 0.5%: a few edge texels of the half-res march. Red arm:
+/// bad (sky.cloud_shafts_ignore_clouds and sky.cloud_shafts_unbounded, the bug with both guards off) against off must exceed it. Terrain pixels are out of scope since 2026-11-10: with
+/// only cloud in front of a surface masking its correction (sky.cloud_shafts_mask_behind off), distant terrain under cloud shadow loses
+/// its sun in-scatter by design (owner's call, about 70 levels here; docs/bugs.md).
 #[test]
 #[ignore = "manual gate"]
 fn g34_cloud_shafts() {
     let base = ["clouds.enabled=true", "clouds.coverage_override=0.5"];
     let on = shot(&FOG_VALLEY, "g34_on", "7.0", &base, &[]);
     let off = shot(&FOG_VALLEY, "g34_off", "7.0", &[base[0], base[1], "sky.cloud_shafts=false"], &[]);
-    let bad = shot(&FOG_VALLEY, "g34_bad", "7.0", &[base[0], base[1], "sky.cloud_shafts_ignore_clouds=true"], &[]);
+    // The old bug needs both guards off: the cloud mask (ignore_clouds) and the bound by what the pixel holds (unbounded, G42).
+    let bad = shot(&FOG_VALLEY, "g34_bad", "7.0", &[base[0], base[1], "sky.cloud_shafts_ignore_clouds=true", "sky.cloud_shafts_unbounded=true"], &[]);
     let (w, h) = on.dimensions();
-    // Share of the frame whose luma drops by more than 64 levels from b (reference) to a (candidate).
+    let c = GroundFog::default();
+    let sky: Vec<(u32, u32)> = classes(&FOG_VALLEY, &c, &fog::test_valley(), &vec![0.0; (c.bake_px * c.bake_px) as usize], 7.0, w, h)
+        .into_iter().filter(|p| p.2.is_none()).map(|p| (p.0, p.1)).collect();
+    assert!(sky.len() > 1000, "{} sky samples: the pose no longer frames the sky", sky.len());
+    // Share of the sky samples whose luma drops by more than 64 levels from b (reference) to a (candidate).
     let overdark = |a: &RgbImage, b: &RgbImage| {
-        let n = a.pixels().zip(b.pixels()).filter(|(p, q)| luma(q) - luma(p) > 64.0).count();
-        n as f32 / (w * h) as f32
+        let n = sky.iter().filter(|&&(x, y)| luma(b.get_pixel(x, y)) - luma(a.get_pixel(x, y)) > 64.0).count();
+        n as f32 / sky.len() as f32
     };
     let over_on = overdark(&on, &off);
     let over_bad = overdark(&bad, &off);
-    println!("G34: over-dark on {:.3}%, bad (ignore_clouds) {:.3}%", 100.0 * over_on, 100.0 * over_bad);
+    println!("G34: over-dark on {:.3}% of sky samples, bad (ignore_clouds + unbounded) {:.3}%", 100.0 * over_on, 100.0 * over_bad);
     let mut red = vec![];
     if over_on > 0.005 { red.push(format!("over-dark on {:.3}% > budget 0.5%", 100.0 * over_on)); }
     // A red arm that passes the claim it must fail means the gate cannot fail.
