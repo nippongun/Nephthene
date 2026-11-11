@@ -307,12 +307,18 @@ pub struct Clouds {
     /// base beyond max_distance, just above the horizon from low cameras): transmittance above 1, a white strip with black dots on
     /// the horizon under distant storm cells.
     pub storm_step_opacity: bool,
+    /// The density lookup stops as soon as the result is known to be zero (above the cloud type's profile, or the first base-noise
+    /// tap already under the coverage threshold), and a lit sample reuses its own un-eroded density instead of looking it up again.
+    /// Same pixels, fewer texture taps. Test switch (red arm of the cost gate): false takes every tap, as before.
+    pub skip_empty: bool,
     /// Look constants that were shader literals.
     pub look: CloudLook,
     /// Fewer march steps and less detail toward the screen edges (off by default).
     pub edge_lod: EdgeLod,
     /// Distant cloud LOD: past `start_m` the march takes a few long steps without detail instead of the horizon-boosted full march.
     pub far_lod: FarLod,
+    /// How the cloud field is organised: mixed cloud types, cloud streets along the wind (off by default).
+    pub formation: Formation,
     /// Procedural noise textures.
     pub noise: CloudNoise,
 }
@@ -324,8 +330,8 @@ impl Default for Clouds {
             light_first_m: 25.0, light_far_m: 1500.0, max_distance_m: 90000.0, wind_scale: 1.0, light_gain: 2.0, shoulder: 1.0, shoulder_limit: 1.7,
             render_scale: 0.5, temporal_alpha: 0.1, shadow_res: 512, shadow_half_m: 10000.0, shadow_samples: 10, shadow_every: 4, shadow_strength: 1.0,
             shadow_step_m: 120.0, shadow_samples_max: 48, shadow_blend: true, shadow_soft_px: 1.0, update_div: 4, tower_depth_m: vec![], background: None, shaft_scale: 1.0,
-            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, frame_timing: false, air_guard: true, over_terrain: true, depth_nearest: true, storm_step_opacity: true,
-            look: CloudLook::default(), edge_lod: EdgeLod::default(), far_lod: FarLod::default(), noise: CloudNoise::default(),
+            enabled: true, coverage_override: None, debug_view: 0, pass_timing: false, frame_timing: false, air_guard: true, over_terrain: true, depth_nearest: true, storm_step_opacity: true, skip_empty: true,
+            look: CloudLook::default(), edge_lod: EdgeLod::default(), far_lod: FarLod::default(), formation: Formation::default(), noise: CloudNoise::default(),
         }
     }
 }
@@ -346,11 +352,16 @@ pub struct CloudLook {
     pub horizon_step_boost: f32, pub horizon_step_y: f32,
     /// Empty steps after which the adaptive march goes cheap again.
     pub cheap_empty_steps: u32,
+    /// Sky and ground light are dimmed inside the cloud: each by exp(-ambient_occlusion x the sample's extinction x the distance to the
+    /// cloud type's profile top (sky light) or to the layer's base (ground bounce)), as if the cloud above and below were as dense as
+    /// the sample (Hillaire 2016, the ambient term, with a plain exponential). Cores and thick bases go dark, thin edges stay bright, so
+    /// a cloud reads as a solid body. The factor stands for multiple scattering: 1 = single-scattering dark. 0 = off (the look before).
+    pub ambient_occlusion: f32,
 }
 impl Default for CloudLook {
     fn default() -> Self {
         CloudLook { cov_boost: 1.5, tower_vsq: 0.3, tower_billow: 0.5, background_blend: 0.05, vary_tile_mul: 2.3,
-                    horizon_step_boost: 3.0, horizon_step_y: 0.5, cheap_empty_steps: 6 }
+                    horizon_step_boost: 3.0, horizon_step_y: 0.5, cheap_empty_steps: 6, ambient_occlusion: 0.0 }
     }
 }
 
@@ -393,6 +404,28 @@ pub struct FarLod {
 }
 impl Default for FarLod {
     fn default() -> Self { FarLod { enabled: false, start_m: 10000.0, samples: 8, detail: false } }
+}
+
+/// How the cloud field is organised. A real sky is not one noise at one size: cloud types mix (small flat cumulus beside taller ones),
+/// and convection under wind lines up in rows (cloud streets), which the eye reads as lines running to a vanishing point. Everything
+/// here is off by default (the look is unchanged); every value untuned.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Formation {
+    /// The cloud type (the map's B channel: the density-height profile, so the top height) varies by +- this with the coverage-variation
+    /// noise: denser clusters grow taller, sparse ones stay low and flat. 0 = one type everywhere the map says so.
+    pub type_var: f32,
+    /// Cloud streets: the coverage is multiplied by 1 + streets x cos across the mean wind, so clouds gather in rows along it. 0 = off.
+    pub streets: f32,
+    /// Distance between rows (m).
+    pub street_m: f32,
+    /// The base shape is stretched along the wind by this factor (1 = round clouds; rows of elongated clouds above 1).
+    pub street_stretch: f32,
+    /// How far the coverage-variation noise bends the rows, in row spacings (0 = ruler-straight rows).
+    pub street_wobble: f32,
+}
+impl Default for Formation {
+    fn default() -> Self { Formation { type_var: 0.0, streets: 0.0, street_m: 6000.0, street_stretch: 1.0, street_wobble: 0.5 } }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -112,6 +112,19 @@ struct Clouds {
     far_samples: f32,
     // 1 = the far steps keep the detail erosion, 0 = base shape only.
     far_detail: f32,
+    // clouds.skip_empty: 1 = density2_at returns early once the density is known to be zero, 0 = every tap (test switch).
+    skip_empty: u32,
+    // Formation (config clouds.formation): cloud type varies by +- type_var with the coverage-variation noise; cloud streets: strength,
+    // row spacing (m), base-shape stretch along the wind, wobble in row spacings. All 0 / stretch 1 = off.
+    type_var: f32,
+    street: f32,
+    street_m: f32,
+    street_stretch: f32,
+    street_wobble: f32,
+    // clouds.look.ambient_occlusion: sky and ground light dimmed inside the cloud (clouds_march.wesl). 0 = off.
+    amb_occ: f32,
+    // Unit mean-wind direction (world xz): the rows run along it.
+    street_dir: vec2<f32>,
 }
 
 // Storm cells . One StormCell is nephthene_core::storm::pack's 4 vec4 per cell, field for field (a text-pin test, tests/storm_layout.rs, fails when the order here drifts). xz are world metres (the host subtracts the world offset).
@@ -148,7 +161,7 @@ fn phase(c: f32, k: f32) -> f32 {
 // Cloud type sets the density-height profile (untuned): 0 stratus is thin with a flat base and a hard top, 0.5 cumulus has a
 // flat base and a long soft round top, 1 cumulonimbus fills the layer with a firmer base.
 fn gradient(h: f32, kind: f32) -> f32 {
-    let top = mix(0.22, 1.0, kind);
+    let top = profile_top(kind);
     let soft = sin(kind * PI);
     let rise = mix(0.03, 0.07, soft);
     return smoothstep(0.0, rise, h) * (1.0 - smoothstep(top * mix(0.75, 0.25, soft), top, h));
@@ -197,9 +210,17 @@ fn air_segment(r: f32, mu: f32, t: f32, guard: u32) -> vec3<f32> {
 // the vertical and offset, so no period shows. The mean of two uniforms is triangular; its CDF restores a uniform value so
 // coverage c still covers a fraction c of the sky (untuned rotation and offset).
 fn base_shape_at(u: Clouds, base_tex: texture_3d<f32>, ns: sampler, p: vec3<f32>) -> f32 {
-    let a = textureSampleLevel(base_tex, ns, p / u.base_tile, 0.0).r;
+    return shape_cdf(base_a(u, base_tex, ns, p), base_b(u, base_tex, ns, p));
+}
+// The two taps of base_shape_at and the CDF of their mean, apart so density2_at can stop after the first.
+fn base_a(u: Clouds, base_tex: texture_3d<f32>, ns: sampler, p: vec3<f32>) -> f32 {
+    return textureSampleLevel(base_tex, ns, p / u.base_tile, 0.0).r;
+}
+fn base_b(u: Clouds, base_tex: texture_3d<f32>, ns: sampler, p: vec3<f32>) -> f32 {
     let q = vec3(0.7986 * p.x - 0.6018 * p.z, p.y, 0.6018 * p.x + 0.7986 * p.z) + vec3(3170.0, 910.0, 5230.0);
-    let b = textureSampleLevel(base_tex, ns, q / u.base_tile2, 0.0).r;
+    return textureSampleLevel(base_tex, ns, q / u.base_tile2, 0.0).r;
+}
+fn shape_cdf(a: f32, b: f32) -> f32 {
     let m = 0.5 * (a + b);
     return select(2.0 * m * m, 1.0 - 2.0 * (1.0 - m) * (1.0 - m), m > 0.5);
 }
@@ -231,29 +252,64 @@ fn tower_depth(u: Clouds, kind: f32) -> f32 {
     return d;
 }
 
-// Density 0..~2 at world xz, altitude `alt` above the ground and height fraction `h` in the layer. `detail` runs the detail erosion;
-// `mean_erode` (shadow pass, no detail lookup) erodes by the detail's mean (wisp ~0.5) so the shadow footprint matches what the march draws.
-fn density_at(u: Clouds, base_tex: texture_3d<f32>, detail_tex: texture_3d<f32>, ns: sampler, map_tex: texture_2d<f32>, ms: sampler,
-              oro_tex: texture_2d<f32>, os: sampler, xz: vec2<f32>, alt: f32, h_shell: f32, detail: bool, mean_erode: bool) -> f32 {
+// Top of the cloud type's profile as a fraction of the layer (gradient() is zero above it).
+fn profile_top(kind: f32) -> f32 { return mix(0.22, 1.0, kind); }
+
+// (density, density before the detail erosion, cloud type), the densities 0..~2, at world xz, altitude `alt` above the ground and height fraction `h` in the
+// layer. `detail` runs the detail erosion; `mean_erode` (shadow pass, no detail lookup) erodes by the detail's mean (wisp ~0.5) so the
+// shadow footprint matches what the march draws. With u.skip_empty the lookup returns as soon as the density is known to be zero (same
+// result, fewer taps): above or below the cloud type's profile (one map tap), and where the first base tap alone bounds the shape under
+// the coverage threshold. Not in tower mode, where the profile's height depends on the shape.
+fn density2_at(u: Clouds, base_tex: texture_3d<f32>, detail_tex: texture_3d<f32>, ns: sampler, map_tex: texture_2d<f32>, ms: sampler,
+              oro_tex: texture_2d<f32>, os: sampler, xz: vec2<f32>, alt: f32, h_shell: f32, detail: bool, mean_erode: bool) -> vec3<f32> {
     let m = map_sample(u, map_tex, ms, oro_tex, os, xz);
-    var cov = select(m.r, u.coverage_override, u.coverage_override >= 0.0);
-    let p = vec3(xz.x + u.wind.x, alt, xz.y + u.wind.y);
-    // Towers: the base shape sees a vertically squashed altitude (one coherent column per blob).
     let tower = u.tower_d.x > 0.0;
-    let pb = select(p, vec3(p.x, u.bottom + (alt - u.bottom) * u.tower_vsq, p.z), tower);
-    // Coverage varies from noise at a third, larger scale (the map alone is smooth), relative so zero stays zero.
-    let vary = textureSampleLevel(base_tex, ns, vec3(p.x, 0.0, p.z) / (u.base_tile * u.vary_tile_mul) + vec3(0.31, 0.5, 0.77), 0.0).r;
-    cov = saturate(cov * (1.0 + u.cov_var * (2.0 * vary - 1.0)));
-    let bs_col = base_shape_at(u, base_tex, ns, pb);
+    let skip = u.skip_empty != 0u && !tower;
+    let p = vec3(xz.x + u.wind.x, alt, xz.y + u.wind.y);
+    // Coverage varies from noise at a third, larger scale (the map alone is smooth), relative so zero stays zero. Read before the
+    // profile only when the cloud type varies with it (formation.type_var); otherwise after, so the early return saves the tap.
+    let vary_uv = vec3(p.x, 0.0, p.z) / (u.base_tile * u.vary_tile_mul) + vec3(0.31, 0.5, 0.77);
+    var vary = 0.0;
+    var kind = m.b;
+    if u.type_var != 0.0 {
+        vary = textureSampleLevel(base_tex, ns, vary_uv, 0.0).r;
+        kind = saturate(m.b + u.type_var * (2.0 * vary - 1.0));
+    }
+    var g = 0.0;
+    if !tower {
+        g = gradient(h_shell, kind);
+        if skip && g <= 0.0 { return vec3(0.0, 0.0, kind); }
+    }
+    var cov = select(m.r, u.coverage_override, u.coverage_override >= 0.0);
+    // Towers: the base shape sees a vertically squashed altitude (one coherent column per blob).
+    var pb = select(p, vec3(p.x, u.bottom + (alt - u.bottom) * u.tower_vsq, p.z), tower);
+    if u.type_var == 0.0 { vary = textureSampleLevel(base_tex, ns, vary_uv, 0.0).r; }
+    var cov_k = 1.0 + u.cov_var * (2.0 * vary - 1.0);
+    if u.street > 0.0 {
+        // Cloud streets: rows along the mean wind. The coverage swings across the wind (the same noise bends the rows), and the base
+        // shape is sampled compressed along the wind, so its blobs come out stretched along it.
+        let across = dot(p.xz, vec2(-u.street_dir.y, u.street_dir.x));
+        cov_k *= 1.0 + u.street * cos(2.0 * PI * (across / u.street_m + u.street_wobble * (vary - 0.5)));
+        let along = dot(pb.xz, u.street_dir) * (1.0 - 1.0 / u.street_stretch);
+        pb = vec3(pb.x - u.street_dir.x * along, pb.y, pb.z - u.street_dir.y * along);
+    }
+    cov = saturate(cov * cov_k);
+    let lo = 1.0 - min(cov * u.cov_boost, 1.0);
+    let a = base_a(u, base_tex, ns, pb);
+    // The shape is the CDF of the mean of two taps: with the second at its maximum (1) the mean is 0.5 (a + 1), in the CDF's upper
+    // half, so shape_cdf(a, 1) bounds the shape from above. Under the threshold already: no cloud whatever the second tap holds.
+    if skip && shape_cdf(a, 1.0) * g <= lo { return vec3(0.0, 0.0, kind); }
+    let bs_col = shape_cdf(a, base_b(u, base_tex, ns, pb));
     var bs = bs_col;
     if tower { bs = mix(bs_col, base_shape_at(u, base_tex, ns, p), u.tower_billow); }
-    let lo = 1.0 - min(cov * u.cov_boost, 1.0);
     // Tier-2 towers (plan 5.1): the column's depth is the type's curve times sqrt(blob strength); the height fraction is relative to it.
     var h = h_shell;
     if tower {
-    if tower { h = (alt - u.bottom) / max(tower_depth(u, m.b) * sqrt(saturate((bs_col - lo) / max(1.0 - lo, 1e-4))), 50.0); }
+        h = (alt - u.bottom) / max(tower_depth(u, kind) * sqrt(saturate((bs_col - lo) / max(1.0 - lo, 1e-4))), 50.0);
+        g = gradient(h, kind);
     }
-    var c = saturate(remap(bs * gradient(h, m.b), lo, 1.0, 0.0, 1.0));
+    var c = saturate(remap(bs * g, lo, 1.0, 0.0, 1.0));
+    let c0 = c;
     h = saturate(h);
     if detail && c > 0.0 {
         // Curl-like warp (untuned): a coarse Worley lookup displaces the detail lookup, so erosion swirls rather than tiles.
@@ -270,7 +326,12 @@ fn density_at(u: Clouds, base_tex: texture_3d<f32>, detail_tex: texture_3d<f32>,
         c = saturate(remap(c, 0.5 * u.detail_strength * mix(0.8, 1.6, h), 1.0, 0.0, 1.0));
     }
     // Rain-bearing cloud is denser and darker underneath.
-    return c * (1.0 + select(m.g, u.precip_override, u.precip_override >= 0.0));
+    return vec3(vec2(c, c0) * (1.0 + select(m.g, u.precip_override, u.precip_override >= 0.0)), kind);
+}
+
+fn density_at(u: Clouds, base_tex: texture_3d<f32>, detail_tex: texture_3d<f32>, ns: sampler, map_tex: texture_2d<f32>, ms: sampler,
+              oro_tex: texture_2d<f32>, os: sampler, xz: vec2<f32>, alt: f32, h_shell: f32, detail: bool, mean_erode: bool) -> f32 {
+    return density2_at(u, base_tex, detail_tex, ns, map_tex, ms, oro_tex, os, xz, alt, h_shell, detail, mean_erode).x;
 }
 
 // ---- Storm cells. Their constants are uniform fields s_* (config storms.render). ----

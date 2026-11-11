@@ -91,6 +91,12 @@ pub struct CloudGpu {
     pub depth_nearest: u32,
     /// clouds.far_lod: on (1) / off (0), start distance (m), long steps across the far part. See clouds_march.wesl.
     pub far_on: f32, pub far_m: f32, pub far_samples: f32, pub far_detail: f32,
+    /// clouds.skip_empty (1 = the density lookup returns early once it is known to be zero; 0 = every tap, test red arm). See clouds_common.wesl `density2_at`.
+    pub skip_empty: u32,
+    /// clouds.formation: cloud type variation, cloud streets (strength, row spacing m, stretch along the wind, wobble in row spacings,
+    /// unit mean-wind direction xz), and clouds.look.ambient_occlusion. See clouds_common.wesl `Clouds`.
+    pub type_var: f32, pub street: f32, pub street_m: f32, pub street_stretch: f32,
+    pub street_wobble: f32, pub amb_occ: f32, pub street_dir: Vec2,
 }
 
 /// Uniform for clouds_shadow.wesl (field order identical in the shader): the cookie's light-plane frame, see nephthene_core shadow_*.

@@ -272,6 +272,33 @@ fn cost_clouds_far_lod() {
     finish("COST cloud far LOD", f);
 }
 
+// ---------------------------------------------------------------- empty-space early return
+
+/// Share 0.9: with `clouds.skip_empty` on, the clouds' cost at 1080p is at most 0.9 x the same with it off. It changes no pixel, so any
+/// saving pays; 10% is what this gate can tell from run-to-run spread, and a switch that saves less is dead weight to delete.
+const SKIP_EMPTY_SHARE: f64 = 0.9;
+
+/// The early return earns its switch (clouds' cost = frame minus the frame with clouds off, shafts off in every arm). The red arm is
+/// the off arm itself (`skip_empty` false, every tap taken): by construction 1.0 x off, above the limit.
+#[test]
+#[ignore = "manual gate"]
+fn cost_clouds_skip_empty() {
+    if skip() { return; }
+    let r = arms(&[
+        ("cost_skip_none", &["clouds.enabled=false"], false), ("cost_skip_off", &["clouds.shaft_scale=0", "clouds.skip_empty=false"], false),
+        ("cost_skip_on", &["clouds.shaft_scale=0"], false),
+    ]);
+    let (off, on) = (diff(r[1], r[0]), diff(r[2], r[0]));
+    // Both costs subtract the same clouds-off frame, so compare the frames: on <= none + share x (off - none) = (1 - share) x none +
+    // share x off, which carries only a tenth of the clouds-off frame's spread.
+    let limit = Cost { ms: (1.0 - SKIP_EMPTY_SHARE) * r[0].ms + SKIP_EMPTY_SHARE * r[1].ms, unc: (1.0 - SKIP_EMPTY_SHARE) * r[0].spread + SKIP_EMPTY_SHARE * r[1].spread };
+    println!("COST cloud empty-space return: off {off}, on {on} ms; frame on {:.3} +- {:.3} (budget <= {limit}, clouds at {SKIP_EMPTY_SHARE} x off)", r[2].ms, r[2].spread);
+    if software() { return; }
+    let mut f = vec![];
+    at_most(&mut f, "skip_empty on (frame)", Cost { ms: r[2].ms, unc: r[2].spread }, limit);
+    finish("COST cloud empty-space return", f);
+}
+
 // ---------------------------------------------------------------- rain shafts
 
 /// Budget 0.3 ms: the roadmap's split for the rain shafts (owner's call).

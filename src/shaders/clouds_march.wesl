@@ -18,7 +18,7 @@ import bevy_pbr::atmosphere::{
     functions::{sample_transmittance_lut, sample_sky_view_lut, direction_world_to_atmosphere, uv_to_ray_direction, get_view_position},
 };
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
-import super::clouds_common::{Clouds, Storms, PI, F16_MAX, remap, hg, phase, gradient, pcg, ign, atmo_transmittance, base_shape_at, map_sample, density_at, StormCell, storm_unpack, storm_reach, storm_profile, storm_col_cell, air_segment};
+import super::clouds_common::{Clouds, Storms, PI, F16_MAX, remap, hg, phase, gradient, profile_top, pcg, ign, atmo_transmittance, base_shape_at, map_sample, density_at, density2_at, StormCell, storm_unpack, storm_reach, storm_profile, storm_col_cell, air_segment};
 
 @group(1) @binding(0) var<uniform> u: Clouds;
 @group(1) @binding(1) var base_tex: texture_3d<f32>;
@@ -74,9 +74,11 @@ fn ground_y(xz: vec2<f32>) -> f32 {
 }
 
 fn map_at(xz: vec2<f32>) -> vec4<f32> { return map_sample(u, map_tex, map_sampler, oro_tex, oro_sampler, xz); }
-fn density_shell(xz: vec2<f32>, alt: f32, h: f32, detail: bool) -> f32 {
-    return density_at(u, base_tex, detail_tex, noise_sampler, map_tex, map_sampler, oro_tex, oro_sampler, xz, alt, h, detail, false);
+// (density, density before the detail erosion, cloud type) of the shell.
+fn density2_shell(xz: vec2<f32>, alt: f32, h: f32, detail: bool) -> vec3<f32> {
+    return density2_at(u, base_tex, detail_tex, noise_sampler, map_tex, map_sampler, oro_tex, oro_sampler, xz, alt, h, detail, false);
 }
+fn density_shell(xz: vec2<f32>, alt: f32, h: f32, detail: bool) -> f32 { return density2_shell(xz, alt, h, detail).x; }
 // ---- Storm cells read from the `storms` uniform (the same few functions live in clouds_shadow.wesl; WGSL cannot pass a uniform
 // pointer, and passing the 1 KB struct by value hung the GPU). ----
 fn cell(i: u32) -> StormCell { return storm_unpack(storms.cells[4u * i], storms.cells[4u * i + 1u], storms.cells[4u * i + 2u], storms.cells[4u * i + 3u]); }
@@ -370,8 +372,9 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
                 if inside && density_shell(xz, alt, h, false) > 0.0 { cheap = false; empty = 0u; t = max(t - dt, t0); } else { t += dt; } // a 2*dt coarse stride skipped thin layers by altitude, which showed as horizontal bands
                 continue;
             }
-            var dens = 0.0;
-            if in_sh && inside { dens = density_shell(xz, alt, h, use_detail && (!in_far || u.far_detail > 0.5)); }
+            var d2 = vec3(0.0);
+            if in_sh && inside { d2 = density2_shell(xz, alt, h, use_detail && (!in_far || u.far_detail > 0.5)); }
+            var dens = d2.x;
             var sv = vec3(0.0);
             if in_st { sv = storm_at(xz, alt, use_detail && t < u.s_detail_m); }
             let storm_dom = sv.x > dens;
@@ -400,11 +403,21 @@ fn march(in: FullscreenVertexOutput) -> MarchOut {
                     sa = 0.5 * mix(l_gnd * gnd_vis, l_top * amb_vis, hs) * u.ambient_scale;
                     air_vis = amb_vis;
                 } else {
-                    let base = saturate(density_shell(xz, alt, h, false));
+                    // The sample's own density before the detail erosion: d2.y, or the same lookup again (skip_empty off, the red arm).
+                    var base = saturate(d2.y);
+                    if u.skip_empty == 0u { base = saturate(density_shell(xz, alt, h, false)); }
                     sd = body_light(p, r, xz, alt, u.sun_dir, u.sun_color, cs, rb, rt, jl, h, base)
                         + body_light(p, r, xz, alt, u.moon_dir, u.moon_color, cm, rb, rt, jl, h, base);
                     // Sky light: one hemisphere, isotropic; ground bounce below, the real sky above (rising with height).
                     sa = 0.5 * mix(l_gnd, l_top, saturate(h)) * u.ambient_scale;
+                    if u.amb_occ > 0.0 {
+                        // Ambient occlusion (clouds.look.ambient_occlusion): the sky's light crosses the cloud above the sample, the
+                        // ground's the cloud below it, each taken as dense as the sample itself (Hillaire 2016), up to the type's
+                        // profile top and down to the layer's base.
+                        let k = u.amb_occ * sigma * (rt - rb);
+                        let hs = saturate(h);
+                        sa = 0.5 * (l_gnd * (1.0 - hs) * exp(-k * hs) + l_top * hs * exp(-k * max(profile_top(d2.z) - hs, 0.0))) * u.ambient_scale;
+                    }
                     if storms.n > 0u {
                         // Field cloud under or near a storm sits in its shadow: the same chord and column as the storm's own samples.
                         let q = vec3(xz.x, alt, xz.y);

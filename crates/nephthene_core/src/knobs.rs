@@ -11,7 +11,7 @@ const LIVE: &[&str] = &[
     "clock.latitude_deg", "clock.day_of_year", "clock.axial_tilt_deg", "moon.phase", "moon.full_lux",
     "sky.sun_occlusion", "sky.occlusion_keep", "sky.occlusion_steps", "sky.cloud_shafts", "sky.cloud_shafts_ignore_clouds",
     "map.advect", "clouds.wind_scale", "clouds.shadow_every", "clouds.shadow_samples", "clouds.shadow_step_m", "clouds.shadow_samples_max", "clouds.shadow_blend", "clouds.shadow_soft_px",
-    "clouds.edge_lod.enabled", "clouds.edge_lod.step_scale", "clouds.far_lod.", "resolve.cut_deg", "resolve.cut_m",
+    "clouds.edge_lod.enabled", "clouds.edge_lod.step_scale", "clouds.far_lod.", "clouds.formation.", "clouds.look.ambient_occlusion", "resolve.cut_deg", "resolve.cut_m",
     "shafts.shear_frac", "shafts.slant_tau_s", "shafts.lean_intensity", "shafts.gust_lean",
     "air.mean_c", "air.season_c", "air.lag_days", "air.heat_k_per_h", "air.cool_k_per_h", "air.restore_per_h", "air.cloud_shade", "air.cloud_block",
     "air.dew_below_c", "air.wet_gain_c", "air.dust_dry_c", "air.ref_alt_m", "air.lapse_k_per_km", "air.dew_lapse_k_per_km", "air.step_h",
@@ -26,7 +26,7 @@ const LIVE: &[&str] = &[
 const EXCLUDED: &[&str] = &["rays.flat_source", "ground_fog.wind_lo_mps", "ground_fog.wind_hi_mps", "ground_fog.spread_full_c", "ground_fog.spread_none_c", "ground_fog.bake_px"];
 /// Sensible ranges where the rule in `range` does not fit (untuned).
 const RANGES: &[(&str, f32, f32)] = &[
-    ("clouds.far_lod.start_m", 2000.0, 60000.0), ("clouds.far_lod.samples", 1.0, 32.0), ("rays.strength", 0.0, 40.0), ("rays.threshold", 0.0, 4.0), ("rays.source_max", 0.1, 8.0), ("rays.radius", 0.05, 1.0), ("rays.decay", 0.8, 1.0), ("rays.mean_width", 0.005, 0.2),
+    ("clouds.far_lod.start_m", 2000.0, 60000.0), ("clouds.formation.street_m", 1000.0, 30000.0), ("clouds.formation.street_stretch", 1.0, 6.0), ("clouds.formation.street_wobble", 0.0, 2.0), ("clouds.look.ambient_occlusion", 0.0, 1.0), ("clouds.far_lod.samples", 1.0, 32.0), ("rays.strength", 0.0, 40.0), ("rays.threshold", 0.0, 4.0), ("rays.source_max", 0.1, 8.0), ("rays.radius", 0.05, 1.0), ("rays.decay", 0.8, 1.0), ("rays.mean_width", 0.005, 0.2),
     ("clock.latitude_deg", -90.0, 90.0), ("clock.day_of_year", 1.0, 365.0), ("clock.axial_tilt_deg", 0.0, 45.0), ("wind.from_deg", 0.0, 360.0), ("moon.phase", 0.0, 1.0),
 ];
 /// Panel order and titles of the sections; a section not listed sorts last under its own name.

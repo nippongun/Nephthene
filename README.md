@@ -41,6 +41,7 @@ at any (x, z) and draw it how you like (`examples/sky.rs` has a worked ground ma
 - Manual distant LOD gate G40 (the frame changes by little; build the example first, `cargo test` does not): `cargo test --release --test far_lod -- --ignored --nocapture --test-threads=1`; its cost half is `cost_clouds_far_lod` in `tests/cost.rs`.
 - Manual edge LOD gate G33 (the switch changes the screen edges, not the centre): `cargo test --release --test edge_lod -- --ignored --nocapture --test-threads=1`.
 - Manual cloud shadow gate G38 (the cookie moves every frame, shadow edges are soft): `cargo test --release --test cookie -- --ignored --nocapture --test-threads=1`.
+- Manual formation gates G44 (cloud streets line up along the wind) and G46 (ambient occlusion shades cloud bodies), and G47 (`clouds.skip_empty` changes no pixel): `cargo test --release --test formation --test skip_empty -- --ignored --nocapture --test-threads=1`; the cost half is `cost_clouds_skip_empty` in `tests/cost.rs`.
 - Regenerate goldens after an approved look change: `NEPHTHENE_UPDATE_GOLDEN=1 cargo test --release --test golden golden_cloud_sky`.
 - Python metric tools: `tools/README.md`.
 

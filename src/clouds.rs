@@ -69,7 +69,7 @@ fn spawn_params(sun: Query<Entity, With<NephtheneSun>>, mut commands: Commands, 
         s_core_flare: cfg.storms.core_flare, s_anvil_wide: cfg.storms.anvil_wide, s_anvil_p: cfg.storms.anvil_p, s_shelf_ceil: cfg.storms.shelf_ceil,
         s_curtain_full: cfg.storms.fx.curtain_full, s_couple: cfg.storms.couple as u32 as f32,
         air_guard: c.air_guard as u32,
-        storm_step_opacity: c.storm_step_opacity as u32, depth_nearest: c.depth_nearest as u32,
+        storm_step_opacity: c.storm_step_opacity as u32, depth_nearest: c.depth_nearest as u32, skip_empty: c.skip_empty as u32,
         over_terrain: c.over_terrain as u32, g_min: Vec2::new(grid.min_x, grid.max_z), g_cell: grid.cell_m, g_w: grid.w, g_h: grid.h,
         ..default()
     };
@@ -172,6 +172,9 @@ pub(crate) fn drive(
     let e = &wx.cfg.clouds.edge_lod;
     (m.gpu.edge_on, m.gpu.edge_r0, m.gpu.edge_r1, m.gpu.edge_step_scale, m.gpu.edge_detail_r0, m.gpu.edge_detail_r1) =
         (e.enabled as u32 as f32, e.r0, e.r1, e.step_scale, e.detail_r0, e.detail_r1);
+    let (fm, wd) = (&wx.cfg.clouds.formation, -w::dir(0.0, wx.cfg.wind.from_deg));
+    (m.gpu.type_var, m.gpu.street, m.gpu.street_m, m.gpu.street_stretch, m.gpu.street_wobble) = (fm.type_var, fm.streets, fm.street_m.max(1.0), fm.street_stretch.max(1e-3), fm.street_wobble);
+    (m.gpu.street_dir, m.gpu.amb_occ) = (Vec2::new(wd.x, wd.z).normalize_or(Vec2::X), wx.cfg.clouds.look.ambient_occlusion);
     let f = &wx.cfg.clouds.far_lod;
     (m.gpu.far_on, m.gpu.far_m, m.gpu.far_samples, m.gpu.far_detail) = (f.enabled as u32 as f32, f.start_m, f.samples.max(1) as f32, f.detail as u32 as f32);
 }
